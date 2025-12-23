@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+ENV/
+env/
+bin/
+include/
+pylatexenc_cache/
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+database/init_db.log
+
+# Database / Data
+database/counts.txt
+database/csvs/*.csv
+
+# IDEs/Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# UI / Flet / Desktop App related temporary files
+# (Add specific ones if discovered during usage)
