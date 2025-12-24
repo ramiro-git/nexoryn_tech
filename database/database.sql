@@ -400,6 +400,7 @@ SELECT
   td.nombre AS tipo_documento,
   td.clase,
   td.letra,
+  td.codigo_afip,
   doc.fecha,
   doc.numero_serie,
   doc.estado,
@@ -859,13 +860,20 @@ CREATE POLICY "Audit required for modification entity" ON app.entidad_comercial
   USING (true)
   WITH CHECK (current_setting('app.user_id', true) IS NOT NULL);
 
+CREATE POLICY "Audit required for modification movimiento" ON app.movimiento_articulo
+  FOR ALL
+  USING (true)
+  WITH CHECK (current_setting('app.user_id', true) IS NOT NULL);
+
 -- ============================================================================
 -- OPTIMIZED INDEXES (ADDITIONAL)
 -- ============================================================================
 
--- Case-insensitive exact match optimization
+-- Case-insensitive lookup/search optimization
 CREATE INDEX IF NOT EXISTS idx_entidad_email_lower ON app.entidad_comercial (lower(email));
 CREATE INDEX IF NOT EXISTS idx_usuario_email_lower ON seguridad.usuario (lower(email));
+CREATE INDEX IF NOT EXISTS idx_usuario_nombre_lower_trgm ON seguridad.usuario USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_usuario_email_lower_trgm ON seguridad.usuario USING gin (lower(email) gin_trgm_ops);
 
 -- Covering indexes for commonly joined columns
 CREATE INDEX IF NOT EXISTS idx_articulo_lookup_covering 
@@ -905,3 +913,25 @@ CREATE INDEX IF NOT EXISTS idx_articulo_ubicacion_lower_trgm ON app.articulo USI
 
 -- Document Search
 CREATE INDEX IF NOT EXISTS idx_doc_serie_trgm ON app.documento USING gin (numero_serie gin_trgm_ops);
+
+-- Catalog + lookup search (case-insensitive LIKE)
+CREATE INDEX IF NOT EXISTS idx_marca_nombre_lower_trgm ON ref.marca USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_rubro_nombre_lower_trgm ON ref.rubro USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_provincia_nombre_lower_trgm ON ref.provincia USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_deposito_nombre_lower_trgm ON ref.deposito USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_lista_precio_nombre_lower_trgm ON ref.lista_precio USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_unidad_medida_nombre_lower_trgm ON ref.unidad_medida USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_condicion_iva_nombre_lower_trgm ON ref.condicion_iva USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_forma_pago_desc_lower_trgm ON ref.forma_pago USING gin (lower(descripcion) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_tipo_iva_desc_lower_trgm ON ref.tipo_iva USING gin (lower(descripcion) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_tipo_porcentaje_tipo_lower_trgm ON ref.tipo_porcentaje USING gin (lower(tipo) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_pago_referencia_lower_trgm ON app.pago USING gin (lower(referencia) gin_trgm_ops);
+
+-- Document type search
+CREATE INDEX IF NOT EXISTS idx_tipo_documento_nombre_lower_trgm ON ref.tipo_documento USING gin (lower(nombre) gin_trgm_ops);
+
+-- Log search optimizations
+CREATE INDEX IF NOT EXISTS idx_log_accion_lower_trgm ON seguridad.log_actividad USING gin (lower(accion) gin_trgm_ops);
+
+-- Fast adjustments lookup (movimientos sin documento)
+CREATE INDEX IF NOT EXISTS idx_mov_ajuste_fecha ON app.movimiento_articulo (fecha DESC) WHERE id_documento IS NULL;

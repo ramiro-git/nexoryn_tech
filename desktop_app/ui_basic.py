@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import atexit
 import socket
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -15,6 +16,10 @@ if str(PROJECT_ROOT) not in sys.path:
 try:
     from desktop_app.config import load_config
     from desktop_app.database import Database
+    from desktop_app.services.afip_service import AfipService
+    from desktop_app.services.backup_service import BackupService
+    from desktop_app.components.backup_view import BackupView
+    from desktop_app.components.dashboard_view import DashboardView
     from desktop_app.components.generic_table import (
         AdvancedFilterControl,
         ColumnConfig,
@@ -24,12 +29,19 @@ try:
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
+    from services.afip_service import AfipService # type: ignore
+    from services.backup_service import BackupService # type: ignore
+    from components.backup_view import BackupView # type: ignore
+    from components.dashboard_view import DashboardView # type: ignore
     from components.generic_table import (  # type: ignore
         AdvancedFilterControl,
         ColumnConfig,
         GenericTable,
         SimpleFilterConfig,
     )
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 
 ICONS = ft.Icons
@@ -94,22 +106,26 @@ def _style_input(control: Any) -> None:
     is_dropdown = "dropdown" in name
     is_textfield = "textfield" in name
 
-    _maybe_set(control, "border_color", "#E2E8F0")
+    # HIGH VISIBILITY STYLE - "Round & Contrast"
+    _maybe_set(control, "border_color", "#475569") # Slate 600
     _maybe_set(control, "focused_border_color", COLOR_ACCENT)
-    _maybe_set(control, "border_radius", 8)
+    _maybe_set(control, "border_radius", 12)
     _maybe_set(control, "text_size", 14)
-    _maybe_set(control, "height", 48)
-    _maybe_set(control, "dense", False)
-    _maybe_set(control, "content_padding", 10)
-    
+    _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD))
+    _maybe_set(control, "content_padding", ft.padding.all(12))
+
     if is_dropdown:
-        _maybe_set(control, "bgcolor", "#FFFFFF")
+        _maybe_set(control, "bgcolor", "#F8FAFC")
+        _maybe_set(control, "filled", True)
+        _maybe_set(control, "border_width", 2)
         return
 
     _maybe_set(control, "filled", True)
     _maybe_set(control, "bgcolor", "#F8FAFC")
+    _maybe_set(control, "border_width", 1)
+
     if is_textfield and not is_dropdown:
-        pass # Height already set above
+        _maybe_set(control, "height", 50)
         _maybe_set(control, "cursor_color", COLOR_ACCENT)
         _maybe_set(control, "selection_color", "#C7D2FE")
 
@@ -182,7 +198,9 @@ def main(page: ft.Page) -> None:
     page.padding = 0
     page.spacing = 0
     page.bgcolor = COLOR_BG
+    page.window_prevent_close = False
     window_is_closing = False
+    logout_logged = False
 
     # Session state
     current_user: Dict[str, Any] = {}
@@ -192,7 +210,33 @@ def main(page: ft.Page) -> None:
     local_ip = "127.0.0.1"
     try:
         config = load_config()
-        db = Database(config.database_url)
+        db = Database(
+            config.database_url,
+            pool_min_size=config.db_pool_min,
+            pool_max_size=config.db_pool_max,
+        )
+    
+        # Initialize Backup Service & Scheduler
+        backup_service = BackupService(pg_bin_path=config.pg_bin_path)
+        scheduler = BackgroundScheduler()
+        
+        # Schedule automated backups
+        scheduler.add_job(lambda: backup_service.create_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
+        scheduler.add_job(lambda: backup_service.create_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
+        scheduler.add_job(lambda: backup_service.create_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
+        scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
+        
+        scheduler.start()
+        
+        afip: Optional[AfipService] = None
+        if config.afip_cuit and config.afip_cert and config.afip_key:
+            afip = AfipService(
+                cuit=config.afip_cuit,
+                cert_path=config.afip_cert,
+                key_path=config.afip_key,
+                production=config.afip_prod
+            )
+        
         # Try to get local IP for logging
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -274,7 +318,7 @@ def main(page: ft.Page) -> None:
                 bgcolor=COLOR_ERROR, 
                 color="#FFFFFF", 
                 on_click=do_confirm,
-                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12))
             ),
         ]
         if hasattr(page, "open"):
@@ -291,9 +335,6 @@ def main(page: ft.Page) -> None:
     proveedores_values: List[Dict[str, Any]] = []
     tipos_porcentaje_values: List[Dict[str, Any]] = []
     
-    # Mock admin check (replace with real role check later)
-    is_admin = True 
-
     def reload_catalogs() -> None:
         nonlocal marcas_values, rubros_values, tipos_iva_values, unidades_values, proveedores_values, tipos_porcentaje_values
         if db is None or db_error:
@@ -537,7 +578,7 @@ def main(page: ft.Page) -> None:
         auto_load=False,
         page_size=12,
         page_size_options=(10, 25, 50),
-        show_export_button=is_admin,
+        show_export_button=True,
     )
     entidades_table.search_field.hint_text = "Búsqueda global (nombre/razón social/cuit)…"
     
@@ -563,7 +604,7 @@ def main(page: ft.Page) -> None:
                 )
             ]
         )
-    ], expand=True, spacing=10)
+    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
     # ---- Artículos (GenericTable) ----
     articulos_advanced_nombre = ft.TextField(label="Nombre contiene", width=220)
@@ -762,7 +803,7 @@ def main(page: ft.Page) -> None:
         auto_load=False,
         page_size=12,
         page_size_options=(10, 25, 50),
-        show_export_button=is_admin,
+        show_export_button=True,
     )
     articulos_table.search_field.hint_text = "Búsqueda global (nombre)…"
     
@@ -788,7 +829,9 @@ def main(page: ft.Page) -> None:
                 )
             ]
         )
-    ], expand=True, spacing=10)
+    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    admin_export_tables = [entidades_table, articulos_table]
 
     # ---- Crear entidad / artículo ----
     form_dialog = ft.AlertDialog(modal=True)
@@ -889,7 +932,7 @@ def main(page: ft.Page) -> None:
         open_form("Nueva entidad", _prepare_entity_form_content(), [
             ft.TextButton("Cancelar", on_click=close_form),
             ft.ElevatedButton("Crear", icon=ft.Icons.ADD, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
-                              style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=crear_entidad),
+                              style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)), on_click=crear_entidad),
         ])
 
     def open_editar_entidad(ent_id: int) -> None:
@@ -922,7 +965,7 @@ def main(page: ft.Page) -> None:
             open_form("Editar entidad", _prepare_entity_form_content(), [
                 ft.TextButton("Cancelar", on_click=close_form),
                 ft.ElevatedButton("Guardar Cambios", icon=ft.Icons.SAVE_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF",
-                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=guardar_edicion_entidad),
+                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)), on_click=guardar_edicion_entidad),
             ])
         except Exception as exc:
             show_toast(f"Error: {exc}", kind="error")
@@ -986,7 +1029,8 @@ def main(page: ft.Page) -> None:
                     
                     ft.Container(height=10),
                     section_title("Contacto y Domicilio"),
-                    ft.Row([nueva_entidad_telefono, nueva_entidad_email], spacing=10),
+                    ft.Row([nueva_entidad_telefono], spacing=10),
+                    ft.Row([nueva_entidad_email], spacing=10),
                     ft.Row([nueva_entidad_domicilio], spacing=10),
                     
                     ft.Container(height=10),
@@ -999,7 +1043,7 @@ def main(page: ft.Page) -> None:
                 ],
                 spacing=10,
                 tight=True,
-                scroll=ft.ScrollMode.HIDDEN,
+                scroll=ft.ScrollMode.AUTO,
             ),
         )
 
@@ -1260,7 +1304,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.Icons.ADD,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
                     on_click=crear_articulo,
                 ),
             ],
@@ -1294,17 +1338,22 @@ def main(page: ft.Page) -> None:
                     ft.DataCell(ft.Text(p['fecha_actualizacion'].strftime("%d/%m/%Y %H:%M") if p['fecha_actualizacion'] else "—", size=11)),
                 ]))
 
-            prices_table = ft.DataTable(
-                columns=[
-                    ft.DataColumn(ft.Text("Lista")),
-                    ft.DataColumn(ft.Text("Precio")),
-                    ft.DataColumn(ft.Text("Margen/Desc")),
-                    ft.DataColumn(ft.Text("Actualizado")),
+            prices_table = ft.Row(
+                [
+                    ft.DataTable(
+                        columns=[
+                            ft.DataColumn(ft.Text("Lista")),
+                            ft.DataColumn(ft.Text("Precio")),
+                            ft.DataColumn(ft.Text("Margen/Desc")),
+                            ft.DataColumn(ft.Text("Actualizado")),
+                        ],
+                        rows=price_rows,
+                        heading_row_color="#F1F5F9",
+                        border_radius=10,
+                        border=ft.border.all(1, COLOR_BORDER),
+                    )
                 ],
-                rows=price_rows,
-                heading_row_color="#F1F5F9",
-                border_radius=10,
-                border=ft.border.all(1, COLOR_BORDER),
+                scroll=ft.ScrollMode.ADAPTIVE,
             )
 
             # Toggle active button
@@ -1710,6 +1759,44 @@ def main(page: ft.Page) -> None:
         rubros_table.refresh()
         articulos_table.refresh()
 
+    def delete_provincia(pid: int) -> None:
+        if db: db.delete_provincias([int(pid)]); reload_catalogs(); provincias_table.refresh(); show_toast("Provincia eliminada", kind="success")
+
+    def delete_localidad(lid: int) -> None:
+        if db: db.delete_localidades([int(lid)]); reload_catalogs(); localidades_table.refresh(); show_toast("Localidad eliminada", kind="success")
+
+    def delete_unidad(uid: int) -> None:
+        if db: db.delete_unidades_medida([int(uid)]); reload_catalogs(); unidades_table.refresh(); show_toast("Unidad eliminada", kind="success")
+
+    def delete_civa(cid: int) -> None:
+        if db: db.delete_condiciones_iva([int(cid)]); reload_catalogs(); civa_table.refresh(); show_toast("Condición eliminada", kind="success")
+
+    def delete_tiva(tid: int) -> None:
+        if db: db.delete_tipos_iva([int(tid)]); reload_catalogs(); tiva_table.refresh(); show_toast("Tipo IVA eliminado", kind="success")
+
+    def delete_deposito(did: int) -> None:
+        if db: db.delete_depositos([int(did)]); reload_catalogs(); depo_table.refresh(); show_toast("Depósito eliminado", kind="success")
+
+    def delete_fpay(fid: int) -> None:
+        if db: db.delete_formas_pago([int(fid)]); reload_catalogs(); fpay_table.refresh(); show_toast("Forma de pago eliminada", kind="success")
+
+    def delete_lista_precio(lid: int) -> None:
+        if db: db.delete_listas_precio([int(lid)]); reload_catalogs(); precios_table.refresh(); show_toast("Lista de precio eliminada", kind="success")
+
+    def delete_ptype(pid: int) -> None:
+        if db: db.delete_tipos_porcentaje([int(pid)]); reload_catalogs(); ptype_table.refresh(); show_toast("Tipo porcentaje eliminado", kind="success")
+
+    def delete_dtype(did: int) -> None:
+        if db: db.delete_tipos_documento([int(did)]); reload_catalogs(); dtype_table.refresh(); show_toast("Tipo documento eliminado", kind="success")
+
+    def delete_mtype(mid: int) -> None:
+        if db: db.delete_tipos_movimiento_articulo([int(mid)]); reload_catalogs(); mtype_table.refresh(); show_toast("Tipo movimiento eliminado", kind="success")
+
+    def delete_usuario(uid: int) -> None:
+        # Users might be sensitive, but consistent with others
+        if db: db.update_user_fields(int(uid), {"activo": False}); usuarios_table.refresh(); show_toast("Usuario desactivado (Soft Delete)", kind="success")
+
+
     marcas_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Marca", editable=True, width=320),
@@ -1809,7 +1896,16 @@ def main(page: ft.Page) -> None:
 
     # Provinces
     provincias_table = GenericTable(
-        columns=[ColumnConfig(key="nombre", label="Provincia", editable=True, width=320)],
+        columns=[
+            ColumnConfig(key="nombre", label="Provincia", editable=True, width=320),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta provincia?", "Eliminar", lambda: delete_provincia(int(row["id"])))
+                )
+            ),
+        ],
         data_provider=create_catalog_provider(db.fetch_provincias, db.count_provincias),
         inline_edit_callback=lambda rid, changes: db.update_provincia_fields(int(rid), changes) if db else None,
         show_inline_controls=True, show_mass_actions=False, show_selection=True, auto_load=False, page_size=12,
@@ -1832,6 +1928,13 @@ def main(page: ft.Page) -> None:
         columns=[
             ColumnConfig(key="nombre", label="Localidad", editable=True, width=200),
             ColumnConfig(key="provincia", label="Provincia", editable=False, width=200),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta localidad?", "Eliminar", lambda: delete_localidad(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_localidades, db.count_localidades),
         inline_edit_callback=lambda rid, changes: db.update_localidad_fields(int(rid), changes) if db else None,
@@ -1864,6 +1967,13 @@ def main(page: ft.Page) -> None:
         columns=[
             ColumnConfig(key="nombre", label="Unidad", editable=True, width=200),
             ColumnConfig(key="abreviatura", label="Abr.", editable=True, width=100),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta unidad?", "Eliminar", lambda: delete_unidad(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_unidades_medida, db.count_unidades_medida),
         inline_edit_callback=lambda rid, changes: db.update_unidad_medida_fields(int(rid), changes) if db else None,
@@ -1885,7 +1995,16 @@ def main(page: ft.Page) -> None:
 
     # IVA Conditions
     civa_table = GenericTable(
-        columns=[ColumnConfig(key="nombre", label="Condición IVA", editable=True, width=320)],
+        columns=[
+            ColumnConfig(key="nombre", label="Condición IVA", editable=True, width=320),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta condición?", "Eliminar", lambda: delete_civa(int(row["id"])))
+                )
+            ),
+        ],
         data_provider=create_catalog_provider(db.fetch_condiciones_iva, db.count_condiciones_iva),
         inline_edit_callback=lambda rid, changes: db.update_condicion_iva_fields(int(rid), changes) if db else None,
         show_inline_controls=True, auto_load=False, page_size=12,
@@ -1906,6 +2025,13 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="codigo", label="Cod.", editable=True, width=80),
             ColumnConfig(key="porcentaje", label="%", editable=True, width=80),
             ColumnConfig(key="descripcion", label="Descripción", editable=True, width=200),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de IVA?", "Eliminar", lambda: delete_tiva(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_iva, db.count_tipos_iva),
         inline_edit_callback=lambda rid, changes: db.update_tipo_iva_fields(int(rid), changes) if db else None,
@@ -1929,6 +2055,13 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="nombre", label="Depósito", editable=True, width=200),
             ColumnConfig(key="ubicacion", label="Ubicación", editable=True, width=200),
             ColumnConfig(key="activo", label="Activo", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este depósito?", "Eliminar", lambda: delete_deposito(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_depositos, db.count_depositos),
         inline_edit_callback=lambda rid, changes: db.update_deposito_fields(int(rid), changes) if db else None,
@@ -1951,6 +2084,13 @@ def main(page: ft.Page) -> None:
         columns=[
             ColumnConfig(key="descripcion", label="Forma de Pago", editable=True, width=320),
             ColumnConfig(key="activa", label="Activa", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta forma de pago?", "Eliminar", lambda: delete_fpay(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_formas_pago, db.count_formas_pago),
         inline_edit_callback=lambda rid, changes: db.update_forma_pago_fields(int(rid), changes) if db else None,
@@ -1972,6 +2112,13 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="nombre", label="Lista", editable=True, width=200),
             ColumnConfig(key="orden", label="Orden", editable=True, width=80),
             ColumnConfig(key="activa", label="Activa", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta lista de precios?", "Eliminar", lambda: delete_lista_precio(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_listas_precio, db.count_listas_precio),
         inline_edit_callback=lambda rid, changes: db.update_lista_precio_fields(int(rid), changes) if db else None,
@@ -1988,7 +2135,16 @@ def main(page: ft.Page) -> None:
 
     # Percentage Types
     ptype_table = GenericTable(
-        columns=[ColumnConfig(key="tipo", label="Tipo", editable=True, width=320)],
+        columns=[
+            ColumnConfig(key="tipo", label="Tipo", editable=True, width=320),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de porcentaje?", "Eliminar", lambda: delete_ptype(int(row["id"])))
+                )
+            ),
+        ],
         data_provider=create_catalog_provider(db.fetch_tipos_porcentaje, db.count_tipos_porcentaje),
         show_inline_controls=True, auto_load=False, page_size=12,
     )
@@ -2011,6 +2167,13 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="letra", label="Letra", editable=True, width=60),
             ColumnConfig(key="afecta_stock", label="Stk", editable=True, width=60, formatter=_format_bool),
             ColumnConfig(key="afecta_cuenta_corriente", label="Cta", editable=True, width=60, formatter=_format_bool),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de documento?", "Eliminar", lambda: delete_dtype(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_documento, db.count_tipos_documento),
         show_inline_controls=True, auto_load=False, page_size=12,
@@ -2044,6 +2207,13 @@ def main(page: ft.Page) -> None:
         columns=[
             ColumnConfig(key="nombre", label="Nombre", editable=True, width=240),
             ColumnConfig(key="signo_stock", label="Signo", editable=True, width=80),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de movimiento?", "Eliminar", lambda: delete_mtype(int(row["id"])))
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_movimiento_articulo, db.count_tipos_movimiento_articulo),
         show_inline_controls=True, auto_load=False, page_size=12,
@@ -2074,6 +2244,13 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="rol", label="Rol", editable=False, width=100),
             ColumnConfig(key="activo", label="Activo", editable=True, width=100, formatter=_format_bool),
             ColumnConfig(key="ultimo_login", label="Últ. Acceso", width=160),
+            ColumnConfig(
+                key="_delete", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Desactivar Usuario", icon_color="#DC2626",
+                    on_click=lambda e, rid=row.get("id"): ask_confirm("Desactivar", "¿Desactivar usuario?", "Si, desactivar", lambda: delete_usuario(int(rid))) if rid else None
+                )
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_users, db.count_users),
         inline_edit_callback=lambda rid, changes: db.update_user_fields(int(rid), changes) if db else None,
@@ -2203,77 +2380,26 @@ def main(page: ft.Page) -> None:
         ], spacing=20),
         ft.Container(height=10),
         usuarios_tabs
-    ], expand=True, spacing=10)
+    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
-    # Backup Config View
-    backup_freq = _dropdown("Frecuencia", [("OFF", "Desactivado"), ("DIARIA", "Diaria"), ("SEMANAL", "Semanal"), ("MENSUAL", "Mensual")])
-    backup_hora = ft.TextField(label="Hora (HH:MM:SS)", width=150); _style_input(backup_hora)
-    backup_destino = ft.TextField(label="Ruta Destino Local", width=400, expand=True); _style_input(backup_destino)
-    backup_retencion = _number_field("Días de Retención", width=120)
+    # Backup Config View (Replaced with Advanced BackupView)
+    def set_conn_adapter(connected: bool, msg: str):
+        # Adapter to match BackupView signature with ui_basic's global global vars approach is tricky.
+        # ui_basic uses a global status_badge. We can just update it here if we want, or pass a dummy.
+        # For now, let's just piggyback on existing UI update if possible, or ignore.
+        # Actually, let's reuse the logic that exists if we can, or just print log.
+        pass
 
-    def save_backup_config(_: Any = None):
-        try:
-            db.update_backup_config({
-                "frecuencia": backup_freq.value,
-                "hora": backup_hora.value,
-                "destino_local": backup_destino.value,
-                "retencion_dias": int(backup_retencion.value or 30)
-            })
-            show_toast("Configuración de backup guardada", kind="success")
-        except Exception as e:
-            show_toast(f"Error al guardar: {e}", kind="error")
-
-    backup_status_text = ft.Text("", size=13, color=COLOR_TEXT_MUTED)
-
-    def ejecutar_backup_manual(_: Any = None):
-        if not db: return
-        path = backup_destino.value.strip()
-        if not path:
-            show_toast("Debes definir una ruta de destino", kind="warning")
-            return
-            
-        backup_status_text.value = "⏳ Realizando respaldo... por favor espera."
-        backup_status_text.color = COLOR_WARNING
-        page.update()
-        
-        def run():
-            success, msg = db.run_manual_backup(path)
-            if success:
-                backup_status_text.value = f"✅ {msg}"
-                backup_status_text.color = COLOR_SUCCESS
-                show_toast("Respaldo completado", kind="success")
-            else:
-                backup_status_text.value = f"❌ {msg}"
-                backup_status_text.color = COLOR_ERROR
-                show_toast("Error en el respaldo", kind="error")
-            page.update()
-            
-        import threading
-        threading.Thread(target=run, daemon=True).start()
-
-
-    def load_backup_data():
-        cfg = db.fetch_backup_config()
-        if cfg:
-            backup_freq.value = cfg.get("frecuencia")
-            backup_hora.value = str(cfg.get("hora") or "00:00:00")
-            backup_destino.value = cfg.get("destino_local") or ""
-            backup_retencion.value = str(cfg.get("retencion_dias") or 30)
-            page.update()
-
-    backups_view = make_card(
-        "Backups", "Configuración de respaldos automáticos de la base de datos.",
-        ft.Column([
-            ft.Row([backup_freq, backup_hora, backup_retencion], spacing=10),
-            ft.Row([backup_destino], spacing=10),
-            ft.Row([
-                ft.ElevatedButton("Guardar Configuración", icon=ft.Icons.SAVE_ROUNDED, on_click=save_backup_config, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
-                ft.OutlinedButton("Realizar Respaldo Ahora", icon=ft.Icons.PLAY_ARROW_ROUNDED, on_click=ejecutar_backup_manual, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
-            ], spacing=15),
-            ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
-            backup_status_text,
-        ], expand=True, spacing=20)
+    backup_view_component = BackupView(page, backup_service, show_toast, set_conn_adapter)
+    
+    # Wrap in a container to match layout expectations
+    backups_view = ft.Container(
+        content=backup_view_component.build(),
+        padding=10
     )
+
+    # Ensure initial load when starting or switching
+    backup_view_component.load_data()
 
     # Documents View
     def view_doc_detail(doc_row: Dict[str, Any]):
@@ -2284,21 +2410,26 @@ def main(page: ft.Page) -> None:
         try:
             details = db.fetch_documento_detalle(doc_id)
             content = ft.Column([
-                ft.DataTable(
-                    columns=[
-                        ft.DataColumn(ft.Text("Artículo")),
-                        ft.DataColumn(ft.Text("Cant.")),
-                        ft.DataColumn(ft.Text("Unitario")),
-                        ft.DataColumn(ft.Text("Total")),
+                ft.Row(
+                    [
+                        ft.DataTable(
+                            columns=[
+                                ft.DataColumn(ft.Text("Artículo")),
+                                ft.DataColumn(ft.Text("Cant.")),
+                                ft.DataColumn(ft.Text("Unitario")),
+                                ft.DataColumn(ft.Text("Total")),
+                            ],
+                            rows=[
+                                ft.DataRow(cells=[
+                                    ft.DataCell(ft.Text(d["articulo"])),
+                                    ft.DataCell(ft.Text(str(d["cantidad"]))),
+                                    ft.DataCell(ft.Text(_format_money(d["precio_unitario"]))),
+                                    ft.DataCell(ft.Text(_format_money(d["total_linea"]))),
+                                ]) for d in details
+                            ],
+                        )
                     ],
-                    rows=[
-                        ft.DataRow(cells=[
-                            ft.DataCell(ft.Text(d["articulo"])),
-                            ft.DataCell(ft.Text(str(d["cantidad"]))),
-                            ft.DataCell(ft.Text(_format_money(d["precio_unitario"]))),
-                            ft.DataCell(ft.Text(_format_money(d["total_linea"]))),
-                        ]) for d in details
-                    ],
+                    scroll=ft.ScrollMode.ADAPTIVE,
                 )
             ], scroll=ft.ScrollMode.ADAPTIVE, height=400)
             
@@ -2316,6 +2447,88 @@ def main(page: ft.Page) -> None:
                         show_toast(f"Error al confirmar: {exc}", kind="error")
                 
                 actions.insert(0, ft.ElevatedButton("Confirmar Comprobante", icon=ft.Icons.CHECK_CIRCLE, bgcolor=COLOR_SUCCESS, color="#FFFFFF", on_click=confirm_click))
+            
+            # AFIP Authorization
+            cae = doc_row.get("cae")
+            codigo_afip = doc_row.get("codigo_afip")
+            if estado == "CONFIRMADO" and codigo_afip and not cae:
+                def authorize_afip(_):
+                    if not afip:
+                        show_toast("Servicio AFIP no configurado. Verifique CUIT y certificados en .env", kind="error")
+                        return
+                    
+                    try:
+                        # Preparar datos para AFIP
+                        # Esto es una simplificación, en producción se deben mapear todos los campos
+                        show_toast("Solicitando CAE...", kind="info")
+                        
+                        # 1. Obtener punto de venta (podría estar en config o ser fijo por ahora)
+                        punto_venta = 1 
+                        
+                        # 2. Obtener último nro para ese tipo
+                        last = afip.get_last_voucher_number(punto_venta, codigo_afip)
+                        next_num = last + 1
+                        
+                        # 3. Autorizar
+                        # Mapeo básico de datos del documento
+                        invoice_data = {
+                            "CantReg": 1,
+                            "PtoVta": punto_venta,
+                            "CbteTipo": codigo_afip,
+                            "Concepto": 1, # Productos
+                            "DocTipo": 80 if doc_row.get("cuit_receptor") else 96, # 80 CUIT, 96 DNI
+                            "DocNro": int(doc_row.get("cuit_receptor").replace("-", "")) if doc_row.get("cuit_receptor") else 0,
+                            "CbteDesde": next_num,
+                            "CbteHasta": next_num,
+                            "CbteFch": datetime.now().strftime("%Y%m%d"),
+                            "ImpTotal": float(doc_row.get("total", 0)),
+                            "ImpTotConc": 0,
+                            "ImpNeto": float(doc_row.get("total", 0)) / 1.21, # Simplificación: 21% IVA
+                            "ImpOpEx": 0,
+                            "ImpIVA": float(doc_row.get("total", 0)) - (float(doc_row.get("total", 0)) / 1.21),
+                            "ImpTrib": 0,
+                            "MonId": "PES",
+                            "MonCotiz": 1,
+                            "Iva": [
+                                {
+                                    "Id": 5, # 21%
+                                    "BaseImp": float(doc_row.get("total", 0)) / 1.21,
+                                    "Importe": float(doc_row.get("total", 0)) - (float(doc_row.get("total", 0)) / 1.21)
+                                }
+                            ]
+                        }
+                        
+                        res = afip.authorize_invoice(invoice_data)
+                        if res.get("success"):
+                            db.update_document_afip_data(
+                                doc_id, 
+                                res["CAE"], 
+                                res["CAEFchVto"], 
+                                punto_venta, 
+                                codigo_afip
+                            )
+                            show_toast(f"Autorizado! CAE: {res['CAE']}", kind="success")
+                            close_form()
+                            documentos_summary_table.refresh()
+                            refresh_all_stats()
+                        else:
+                            show_toast(f"Error AFIP: {res.get('error')}", kind="error")
+                            
+                    except Exception as e:
+                        show_toast(f"Error: {e}", kind="error")
+
+                actions.insert(0, ft.ElevatedButton("Autorizar AFIP", icon=ft.Icons.SECURITY, bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=authorize_afip))
+
+            if cae:
+                content.controls.append(ft.Container(
+                    content=ft.Column([
+                        ft.Text(f"CAE: {cae}", weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Vencimiento CAE: {doc_row.get('cae_vencimiento')}")
+                    ]),
+                    padding=10,
+                    bgcolor=ft.Colors.GREY_100,
+                    border_radius=5
+                ))
 
             open_form(f"Detalle: {doc_row.get('tipo_documento','')} {doc_row.get('numero_serie','')}", content, actions)
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
@@ -2351,7 +2564,7 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("desde", doc_adv_desde),
             AdvancedFilterControl("hasta", doc_adv_hasta),
         ],
-        show_inline_controls=False, auto_load=False, page_size=20,
+        show_inline_controls=False, auto_load=False, page_size=20, show_export_button=False,
     )
     documentos_view = ft.Column([
         ft.Row([
@@ -2365,13 +2578,12 @@ def main(page: ft.Page) -> None:
             "Consulta de facturas, presupuestos y compras.", 
             documentos_summary_table.build(),
             actions=[
-                ft.TextButton("Exportar", icon=ft.Icons.FILE_DOWNLOAD_ROUNDED),
                 ft.ElevatedButton("Nuevo Comprobante", icon=ft.Icons.ADD_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
                                    on_click=lambda e: open_nuevo_comprobante(),
                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
             ]
         )
-    ], expand=True, spacing=10)
+    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
     # Movements View
     mov_adv_art = ft.TextField(label="Artículo contiene", width=200); _style_input(mov_adv_art)
@@ -2408,7 +2620,7 @@ def main(page: ft.Page) -> None:
             "Registro histórico de entradas, salidas y transferencias.", 
             movimientos_table.build()
         )
-    ], expand=True, spacing=10)
+    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
     # Payments View
     pago_adv_ref = ft.TextField(label="Referencia contiene", width=200); _style_input(pago_adv_ref)
@@ -2443,7 +2655,7 @@ def main(page: ft.Page) -> None:
             "Registro de ingresos y egresos de caja.", 
             pagos_table.build()
         )
-    ], expand=True, spacing=10)
+    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
     # Logs View
     logs_adv_user = ft.TextField(label="Usuario contiene", width=180); _style_input(logs_adv_user)
@@ -2513,7 +2725,10 @@ def main(page: ft.Page) -> None:
         tabs=[
             ft.Tab(
                 text="Sistema",
-                content=sistema_tab_content,
+                content=ft.Container(
+                    content=sistema_tab_content,
+                    padding=10
+                )
             ),
             ft.Tab(
                 text="Marcas",
@@ -2522,7 +2737,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_marca, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_marca, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         marcas_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2532,7 +2747,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_rubro, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_rubro, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         rubros_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2542,7 +2757,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_uni_nombre, nueva_uni_abr, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_unidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         unidades_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2552,7 +2767,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_provincia_input, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_provincia, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         provincias_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2562,7 +2777,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_loc_nombre, nueva_loc_prov, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_localidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         localidades_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2572,7 +2787,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_civa, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_civa, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         civa_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2582,7 +2797,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_tiva_cod, nueva_tiva_porc, nueva_tiva_desc, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_tiva, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         tiva_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2592,7 +2807,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nuevo_depo_nom, nuevo_depo_ubi, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_deposito, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         depo_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2602,7 +2817,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_fpay, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_fpay, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         fpay_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2612,7 +2827,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nuevo_ptype, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_ptype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         ptype_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2629,7 +2844,7 @@ def main(page: ft.Page) -> None:
                         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         dtype_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
             ft.Tab(
@@ -2639,7 +2854,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nuevo_mtype_nom, nuevo_mtype_signo, ft.ElevatedButton("Agregar", icon=ft.Icons.ADD_ROUNDED, on_click=agregar_mtype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         mtype_table.build(),
                     ],
-                    expand=True, spacing=10,
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
         ],
@@ -2698,51 +2913,59 @@ def main(page: ft.Page) -> None:
         ], expand=True)
     )
 
+    # Component load handled in appropriate place
+
     # Note: entidades_view and articulos_view are already defined above with stats and actions.
-    # content_holder starts with articulos_view
-    content_holder = ft.Container(expand=1, content=articulos_view)
-    current_view = {"key": "articulos"}
+    dashboard_view_component: Optional[DashboardView] = None
+
+    def ensure_dashboard():
+        nonlocal dashboard_view_component
+        if dashboard_view_component is None and db:
+            dashboard_view_component = DashboardView(db, CURRENT_USER_ROLE)
+        return dashboard_view_component
+
+    # content_holder starts with dashboard_view if possible
+    content_holder = ft.Container(expand=1, content=ft.ProgressRing())
+    current_view = {"key": "dashboard"}
 
     def refresh_all_stats():
         def _bg_work():
             if not db: return
             try:
-                # Fetch all stats in one go
-                stats = db.get_all_dashboard_stats()
+                # Fetch all stats in one go using the new role-based method
+                stats = db.get_full_dashboard_stats(CURRENT_USER_ROLE)
                 
                 # Entidades
-                se = stats["entidades"]
-                if "entidades_clientes" in card_registry: card_registry["entidades_clientes"].value = f"{se['clientes']:,}"
-                if "entidades_proveedores" in card_registry: card_registry["entidades_proveedores"].value = f"{se['proveedores']:,}"
-                if "entidades_activos" in card_registry: card_registry["entidades_activos"].value = f"{se['activos']:,}"
+                se = stats.get("entidades", {})
+                if "entidades_clientes" in card_registry: card_registry["entidades_clientes"].value = f"{se.get('clientes_total', 0):,}"
+                if "entidades_proveedores" in card_registry: card_registry["entidades_proveedores"].value = f"{se.get('proveedores_total', 0):,}"
                 
                 # Articulos
-                sa = stats["articulos"]
-                if "articulos_total" in card_registry: card_registry["articulos_total"].value = f"{sa['total']:,}"
-                if "articulos_bajo_stock" in card_registry: card_registry["articulos_bajo_stock"].value = f"{sa['bajo_stock']:,}"
-                if "articulos_valor" in card_registry: card_registry["articulos_valor"].value = _format_money(sa['valorizacion'])
+                sa = stats.get("stock", {})
+                if "articulos_total" in card_registry: card_registry["articulos_total"].value = f"{sa.get('total', 0):,}"
+                if "articulos_bajo_stock" in card_registry: card_registry["articulos_bajo_stock"].value = f"{sa.get('bajo_stock', 0):,}"
                 
-                # Facturacion
-                sf = stats["facturacion"]
-                if "docs_ventas" in card_registry: card_registry["docs_ventas"].value = _format_money(sf['ventas_mes'])
-                if "docs_pendientes" in card_registry: card_registry["docs_pendientes"].value = f"{sf['pendientes']:,}"
-                if "docs_compras" in card_registry: card_registry["docs_compras"].value = _format_money(sf['compras_mes'])
+                val_stock = sa.get('valor_costo', 0)
+                if "articulos_valor" in card_registry: 
+                    card_registry["articulos_valor"].value = _format_money(val_stock) if isinstance(val_stock, (int, float)) else val_stock
                 
-                # Movimientos
-                sm = stats["movimientos"]
-                if "movs_ingresos" in card_registry: card_registry["movs_ingresos"].value = f"{sm['ingresos']:,}"
-                if "movs_salidas" in card_registry: card_registry["movs_salidas"].value = f"{sm['salidas']:,}"
-                if "movs_ajustes" in card_registry: card_registry["movs_ajustes"].value = f"{sm['ajustes']:,}"
+                # Facturacion / Ventas
+                sv = stats.get("ventas", {})
+                v_mes = sv.get('mes_total', 0)
+                if "docs_ventas" in card_registry: 
+                    card_registry["docs_ventas"].value = _format_money(v_mes) if isinstance(v_mes, (int, float)) else v_mes
+                if "docs_pendientes" in card_registry: 
+                    card_registry["docs_pendientes"].value = f"{sv.get('presupuestos_pend', 0):,}"
                 
-                # Pagos
-                sp = stats["pagos"]
-                if "pagos_hoy" in card_registry: card_registry["pagos_hoy"].value = _format_money(sp['hoy'])
-                if "pagos_recientes" in card_registry: card_registry["pagos_recientes"].value = f"{sp['recientes']:,}"
+                # Finanzas (if available)
+                if "finanzas" in stats:
+                    sf = stats["finanzas"]
+                    if "docs_compras" in card_registry: card_registry["docs_compras"].value = _format_money(sf.get('egresos_mes', 0))
+                    if "pagos_hoy" in card_registry: card_registry["pagos_hoy"].value = _format_money(sf.get('ingresos_hoy', 0))
                 
                 # Usuarios
-                su = stats["usuarios"]
-                if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{su['activos']:,}"
-                # Note: get_all_dashboard_stats doesn't fetch ultimo_login currently to keep it simple, 
+                so = stats.get("sistema", {})
+                if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{so.get('usuarios_activos', 0):,}"
                 # but we can add it if needed. For now, we'll keep the previous value or skip.
                 # if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = su['ultimo_login']
                 
@@ -2762,6 +2985,12 @@ def main(page: ft.Page) -> None:
     # LOGIN VIEW & AUTHENTICATION
     # =========================================================================
     CURRENT_USER_ROLE = "EMPLEADO"  # Default, will be set on login
+
+    def apply_role_permissions() -> None:
+        is_admin = CURRENT_USER_ROLE == "ADMIN"
+        for table in admin_export_tables:
+            if hasattr(table.export_button, "visible"):
+                table.export_button.visible = is_admin
     
     login_email = ft.TextField(
         label="Email o Usuario",
@@ -2796,7 +3025,7 @@ def main(page: ft.Page) -> None:
     login_container = ft.Container(visible=True, expand=True)
 
     def do_login(_=None):
-        nonlocal CURRENT_USER_ROLE, current_user
+        nonlocal CURRENT_USER_ROLE, current_user, logout_logged
         login_error.visible = False
         login_loading.visible = True
         page.update()
@@ -2831,11 +3060,13 @@ def main(page: ft.Page) -> None:
         # Successful login
         current_user = user
         CURRENT_USER_ROLE = user.get("rol", "EMPLEADO")
+        logout_logged = False
         db.set_context(user["id"], local_ip)
         
         # Update sidebar info
         sidebar_user_name.value = user["nombre"]
         sidebar_user_role.value = f"Rol: {CURRENT_USER_ROLE}"
+        apply_role_permissions()
         
         # Log login and load system config
         db.log_activity("SISTEMA", "LOGIN_OK", detalle={"modo": "BASIC_UI", "usuario": user["nombre"]})
@@ -2852,20 +3083,25 @@ def main(page: ft.Page) -> None:
         
         # Force rebuild of navigation to respect role
         update_nav()
-        set_view("articulos")
+        set_view("dashboard")
         
         show_toast(f"Bienvenido, {user['nombre']}", kind="success")
         page.update()
     
     def do_logout(_=None):
-        nonlocal CURRENT_USER_ROLE, current_user
+        nonlocal CURRENT_USER_ROLE, current_user, logout_logged
         # Log logout event
         if db and current_user.get("id"):
-            db.log_activity("SISTEMA", "LOGOUT", detalle={"usuario": current_user.get("nombre")})
+            nombre = current_user.get("nombre")
+            ok = db.log_logout("logout_usuario", usuario=nombre, use_pool=True)
+            if not ok:
+                ok = db.log_logout("logout_usuario", usuario=nombre, use_pool=False)
+            logout_logged = ok
         
         # Clear session
         current_user = {}
         CURRENT_USER_ROLE = "EMPLEADO"
+        apply_role_permissions()
         
         # Reset sidebar info
         sidebar_user_name.value = "Usuario"
@@ -2972,7 +3208,9 @@ def main(page: ft.Page) -> None:
             db.log_activity(key.upper(), "VIEW")
             refresh_all_stats()
 
-        if key == "entidades":
+        if key == "dashboard":
+            content_holder.content = ensure_dashboard()
+        elif key == "entidades":
             content_holder.content = entidades_view
         elif key == "config":
             content_holder.content = config_view
@@ -2985,7 +3223,7 @@ def main(page: ft.Page) -> None:
             content_holder.content = usuarios_view
         elif key == "backups":
             content_holder.content = backups_view
-            load_backup_data()
+            # load_backup_data() is now handled by backup_view_component.load_data() or auto_load
         elif key == "articulos":
             content_holder.content = articulos_view
             refresh_articles_listas()
@@ -3009,8 +3247,18 @@ def main(page: ft.Page) -> None:
             "documentos": documentos_summary_table,
             "movimientos": movimientos_table,
             "pagos": pagos_table,
-            "articulos": articulos_table
+            "articulos": articulos_table,
+            "dashboard": ensure_dashboard()
         }
+        def safe_table_refresh(tab):
+            try:
+                if hasattr(tab, "refresh"):
+                    tab.refresh()
+                elif hasattr(tab, "load_data"):
+                    tab.load_data()
+            except (RuntimeError, Exception):
+                pass
+
         if key == "usuarios":
             import threading
             def safe_refresh():
@@ -3020,13 +3268,12 @@ def main(page: ft.Page) -> None:
                 except (RuntimeError, Exception):
                     pass
             threading.Thread(target=safe_refresh, daemon=True).start()
+        elif key == "dashboard":
+            if dashboard_view_component:
+                dashboard_view_component.role = CURRENT_USER_ROLE
+                dashboard_view_component.load_data()
         elif key in table_map:
             import threading
-            def safe_table_refresh(tab):
-                try: 
-                    tab.refresh()
-                except (RuntimeError, Exception):
-                    pass
             threading.Thread(target=safe_table_refresh, args=(table_map[key],), daemon=True).start()
         elif key == "config":
             # Initial load for the selected tab only
@@ -3109,6 +3356,7 @@ def main(page: ft.Page) -> None:
                 ft.Column(
                     [
                         ft.Text("NAVIGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                        nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
                         nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
                         nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
                         nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
@@ -3170,11 +3418,17 @@ def main(page: ft.Page) -> None:
     main_app_content = ft.Row(
         [
             sidebar,
-            ft.Container(
-                content=content_holder,
+            ft.Column(
+                [
+                    ft.Container(
+                        content=content_holder,
+                        expand=True,
+                        padding=ft.padding.all(30),
+                        bgcolor=COLOR_BG,
+                    )
+                ],
                 expand=True,
-                padding=ft.padding.all(30),
-                bgcolor=COLOR_BG,
+                scroll=ft.ScrollMode.ADAPTIVE,
             ),
         ],
         expand=True,
@@ -3310,36 +3564,37 @@ def main(page: ft.Page) -> None:
     # Don't auto-navigate - login will call set_view after auth
     # update_nav() and set_view() are called in do_login after successful authentication
     
-    def on_app_close(e):
-        """Graceful shutdown - log session end and close database connections."""
-        nonlocal db, window_is_closing
-        if window_is_closing: return
+    # Ensure window settings are applied before shutdown hooks.
+    page.window_prevent_close = False
+    page.update()
+
+    def _shutdown(reason: str) -> None:
+        """Best-effort shutdown: log logout if needed, then close DB pool."""
+        nonlocal db, window_is_closing, logout_logged
+        if window_is_closing:
+            return
         window_is_closing = True
-        
+
         if db:
             try:
-                if current_user and current_user.get("id"):
-                    db.log_activity("SISTEMA", "LOGOUT", detalle={"motivo": "cierre_aplicacion"})
-            except Exception:
-                pass 
-            # Silence further output
-            import os
-            try:
-                sys.stderr = open(os.devnull, 'w')
-            except: pass
-            
+                if current_user and current_user.get("id") and not logout_logged:
+                    nombre = current_user.get("nombre")
+                    logout_logged = db.log_logout(reason, usuario=nombre, use_pool=False)
+            except Exception as ex:
+                print(f"DEBUG: Error logging logout: {ex}")
             try:
                 db.close()
             except Exception:
                 pass
-            db = None # Clear reference
-        
-        # Immediate exit to avoid library deallocator warnings during interpreter shutdown
-        import os
-        os._exit(0)
-    
-    page.on_close = on_app_close
-    page.on_disconnect = on_app_close
+            try:
+                scheduler.shutdown()
+            except Exception:
+                pass
+
+    atexit.register(lambda: _shutdown("salida_programa"))
+    page.on_window_event = None
+    page.on_close = None
+    page.on_disconnect = None
 
 
 

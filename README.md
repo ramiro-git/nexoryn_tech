@@ -20,6 +20,11 @@ Cliente de escritorio basado en `flet` que consume la base de datos PostgreSQL y
      DB_USER=postgres
      DB_PASSWORD=postgres
      ```
+   * Opcional: ajustar el pool de conexiones (recomendado si hay muchas PCs conectadas):
+     ```bash
+     DB_POOL_MIN=1
+     DB_POOL_MAX=4
+     ```
 3. Ejecutar la aplicación:
    ```bash
    python desktop_app/main.py

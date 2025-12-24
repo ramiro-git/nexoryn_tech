@@ -43,6 +43,7 @@ database/init_db.log
 # Database / Data
 database/counts.txt
 database/csvs/*.csv
+backups/
 
 # IDEs/Editors
 .vscode/
@@ -52,4 +53,14 @@ database/csvs/*.csv
 .DS_Store
 
 # UI / Flet / Desktop App related temporary files
-# (Add specific ones if discovered during usage)
+*.spec
+.flet_*.html
+flet_view.exe
+gui/
+build_desktop/
+
+# PyInstaller / Build Artifacts
+build/
+dist/
+*.pyz
+*.pkg

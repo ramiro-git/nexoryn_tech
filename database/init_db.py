@@ -362,15 +362,16 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     iva_map_code = { "RI": "Responsable Inscripto", "M": "Monotributista", "CF": "Consumidor Final", "EX": "Exento" }
     
     cache.preload("condicion_iva", "nombre")
-    real_iva_names = set(iva_map_code.get(c.upper(), c) for c in ivas)
+    real_iva_names = set()
+    for c in ivas:
+        val = str(c).strip()
+        if not val.isdigit() and val:
+            real_iva_names.add(iva_map_code.get(val.upper(), val))
+
     cache.bulk_create("condicion_iva", "nombre", real_iva_names)
-    
+
     cache.preload("provincia", "nombre")
     cache.bulk_create("provincia", "nombre", set(provincias))
-    if "Buenos Aires" not in cache._get_cache("ref", "provincia"):
-        cache.bulk_create("provincia", "nombre", {"Buenos Aires"})
-
-    # Localities
     prov_cache = cache._get_cache("ref", "provincia")
     df['Prov_Filled'] = df['Provincia'].fillna("Buenos Aires")
     unique_locs = df[['Loc', 'Prov_Filled']].dropna(subset=['Loc']).drop_duplicates()
@@ -919,7 +920,8 @@ def main():
             import_ventdet(conn, cache)
             update_sequences(conn)
             show_summary(conn)
-            
+
+        if not args.skip_csv:
             logger.info("Running ANALYZE to optimize query planner...")
             with conn.cursor() as cur:
                 cur.execute("ANALYZE")

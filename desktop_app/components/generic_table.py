@@ -8,7 +8,9 @@ import flet as ft
 import csv
 import os
 import threading
+import threading
 from datetime import datetime
+from desktop_app.services.export_service import ExportService
 
 SortSpec = List[Tuple[str, str]]  # [(key, "asc"|"desc")] in order
 
@@ -95,23 +97,27 @@ def _style_input(control: Any) -> None:
     is_dropdown = "dropdown" in name
     is_textfield = "textfield" in name
 
-    _maybe_set(control, "border_color", "#E2E8F0")
-    _maybe_set(control, "focused_border_color", "#6366F1")
-    _maybe_set(control, "border_radius", 8)
-    _maybe_set(control, "text_size", 13)
-    _maybe_set(control, "dense", True)
+    # HIGH VISIBILITY STYLE - "Round & Contrast"
+    _maybe_set(control, "border_color", "#475569") # Slate 600
+    _maybe_set(control, "focused_border_color", "#4F46E5")
+    _maybe_set(control, "border_radius", 12)
+    _maybe_set(control, "text_size", 14)
+    _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD))
     _maybe_set(control, "content_padding", ft.padding.all(12))
 
     if is_dropdown:
-        _maybe_set(control, "bgcolor", "#FFFFFF")
+        _maybe_set(control, "bgcolor", "#F8FAFC")
+        _maybe_set(control, "filled", True)
+        _maybe_set(control, "border_width", 2)
         return
 
     _maybe_set(control, "filled", True)
     _maybe_set(control, "bgcolor", "#F8FAFC")
+    _maybe_set(control, "border_width", 1)
 
     if is_textfield and not is_dropdown:
-        _maybe_set(control, "height", 45)
-        _maybe_set(control, "cursor_color", "#6366F1")
+        _maybe_set(control, "height", 50)
+        _maybe_set(control, "cursor_color", "#4F46E5")
         _maybe_set(control, "selection_color", "#C7D2FE")
 
 
@@ -226,12 +232,27 @@ class GenericTable:
             if self.simple_filter
             else None
         )
+        self._simple_default_value = (
+            (_ALL_VALUE if self.simple_filter.default is None else str(self.simple_filter.default))
+            if self.simple_filter
+            else None
+        )
         if self.simple_filter_dropdown:
             _style_input(self.simple_filter_dropdown)
         self.export_button = ft.IconButton(
             icon=ft.Icons.FILE_DOWNLOAD_ROUNDED,
-            tooltip="Exportar a CSV",
-            on_click=lambda e: self.export_to_csv(),
+            tooltip="Exportar datos",
+            on_click=lambda e: self._open_export_dialog(),
+        )
+        self.reset_button = ft.IconButton(
+            icon=ft.Icons.REPLAY,
+            tooltip="Reiniciar filtros",
+            on_click=lambda e: self._reset_filters(),
+        )
+        self.refresh_button = ft.IconButton(
+            icon=ft.Icons.REFRESH_ROUNDED,
+            tooltip="Actualizar",
+            on_click=lambda e: self.refresh(),
         )
         self.advanced_expander = (
             _expander(
@@ -366,7 +387,6 @@ class GenericTable:
             columns=table_columns, 
             column_spacing=24, 
             show_checkbox_column=False, 
-            expand=True,
             # divider_thickness=1,
             # heading_row_height=56,
             # data_row_max_height=52,
@@ -424,7 +444,7 @@ class GenericTable:
             ),
         )
         self._table_viewport = ft.Column(
-            [self.table],
+            [ft.Row([self.table], scroll=ft.ScrollMode.ADAPTIVE)],
             expand=True,
             scroll=_scroll_auto(),
         )
@@ -444,65 +464,159 @@ class GenericTable:
         self._loaded_once = False
         self.root: Optional[ft.Control] = None
         self._confirm_dialog = ft.AlertDialog(modal=True)
+        self._edit_dialog = ft.AlertDialog(modal=True)
         self._snack_text = ft.Text("")
         self._snack = ft.SnackBar(content=self._snack_text, open=False)
 
-    def export_to_csv(self) -> None:
+    def _open_export_dialog(self) -> None:
+        self.export_format = ft.Dropdown(
+            label="Formato",
+            value="Excel",
+            options=[
+                ft.dropdown.Option("Excel", "Excel (.xlsx)"),
+                ft.dropdown.Option("CSV", "CSV (.csv)"),
+                ft.dropdown.Option("PDF", "PDF (.pdf)"),
+            ],
+            width=200,
+        )
+        self.export_scope = ft.Dropdown(
+            label="Alcance",
+            value="All", # Default to all data
+            options=[
+                ft.dropdown.Option("All", "Todo (filtrado)"),
+                ft.dropdown.Option("Page", "Página actual"),
+            ],
+            width=200,
+        )
+        _style_input(self.export_format)
+        _style_input(self.export_scope)
+
+        def close_dlg(e):
+            if hasattr(self.root.page, "close"):
+                self.root.page.close(self.export_dialog)
+            else:
+                self.export_dialog.open = False
+                self.root.page.update()
+
+        def confirm_export(e):
+            fmt = self.export_format.value
+            scope = self.export_scope.value
+            if hasattr(self.root.page, "close"):
+                self.root.page.close(self.export_dialog)
+            else:
+                self.export_dialog.open = False
+                self.root.page.update()
+            
+            self._perform_export(fmt, scope)
+
+        self.export_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Exportar Datos"),
+            content=ft.Column([
+                ft.Text("Seleccioná el formato y el alcance de la exportación."),
+                self.export_format,
+                self.export_scope,
+            ], tight=True, spacing=20),
+            actions=[
+                ft.TextButton("Cancelar", on_click=close_dlg),
+                ft.ElevatedButton(
+                    "Exportar", 
+                    on_click=confirm_export, 
+                    bgcolor="#4F46E5", 
+                    color="white",
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12))
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        # Robust dialog opening
+        if not self.root or not self.root.page:
+            print("Error: GenericTable not attached to page")
+            return
+
+        page = self.root.page
+        if hasattr(page, "open"):
+            page.open(self.export_dialog)
+        else:
+            page.dialog = self.export_dialog
+            self.export_dialog.open = True
+            page.update()
+
+    def _perform_export(self, fmt: str, scope: str) -> None:
         try:
-            # Fetch all data for export (using a large limit)
-            search = self.search_field.value.strip() if self.search_field.value else None
-            simple_value = (self.simple_filter_dropdown.value if self.simple_filter_dropdown else None)
-            if simple_value == _ALL_VALUE: simple_value = None
-            if isinstance(simple_value, str) and not simple_value.strip(): simple_value = None
+            self._notify("Generando exportación...", kind="info")
             
-            advanced_payload = {flt.name: flt.getter(flt.control) for flt in self.advanced_filters}
-            
-            rows, _ = self.data_provider(0, 1000000, search, simple_value, advanced_payload, list(self.sorts))
-            
+            # Fetch data based on scope
+            if scope == "Page":
+                rows = self.current_rows
+            else:
+                # Fetch all filtered data
+                search = self.search_field.value.strip() if self.search_field.value else None
+                simple_value = (self.simple_filter_dropdown.value if self.simple_filter_dropdown else None)
+                if simple_value == _ALL_VALUE: simple_value = None
+                if isinstance(simple_value, str) and not simple_value.strip(): simple_value = None
+                
+                advanced_payload = {flt.name: flt.getter(flt.control) for flt in self.advanced_filters}
+                
+                # Fetch a large amount to simulate "All"
+                rows, _ = self.data_provider(0, 1000000, search, simple_value, advanced_payload, list(self.sorts))
+
             if not rows:
                 self._notify("No hay datos para exportar", kind="warning")
                 return
-                
-            # Prepare file path (Downloads folder)
+
+            # Apply formatters to raw data for friendly export
+            export_data = []
+            for row in rows:
+                clean_row = {}
+                for col in self.columns:
+                    val = row.get(col.key)
+                    if col.formatter:
+                        try: val = col.formatter(val, row)
+                        except: pass
+                    else:
+                        if isinstance(val, (int, float)):
+                            val = str(val).replace('.', ',')
+                    clean_row[col.label] = str(val) if val is not None else ""
+                export_data.append(clean_row)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"export_{timestamp}"
+            
             downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
             if not os.path.exists(downloads_path):
                 downloads_path = os.getcwd()
-                
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"export_{timestamp}.csv"
-            filepath = os.path.join(downloads_path, filename)
             
-            fieldnames = [col.key for col in self.columns]
-            labels = [col.label for col in self.columns]
+            full_path = ""
             
-            with open(filepath, mode='w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore', delimiter=';')
-                # Write header with labels
-                f.write(';'.join(labels) + '\n')
-                for row in rows:
-                    # Apply formatters if any
-                    clean_row = {}
-                    for col in self.columns:
-                        val = row.get(col.key)
-                        if col.formatter:
-                            try: val = col.formatter(val, row)
-                            except: pass
-                        else:
-                            # Basic formatting for common types if no formatter
-                            if isinstance(val, (int, float)):
-                                val = str(val).replace('.', ',')
-                        
-                        clean_row[col.key] = str(val) if val is not None else ""
-                    writer.writerow(clean_row)
-            
-            self._notify(f"Exportado: {filename}", kind="success")
-            # Open the folder
+            if fmt == "Excel":
+                filename += ".xlsx"
+                content = ExportService.export_to_excel(export_data)
+                full_path = os.path.join(downloads_path, filename)
+                with open(full_path, "wb") as f:
+                    f.write(content)
+            elif fmt == "PDF":
+                filename += ".pdf"
+                content = ExportService.export_to_pdf(export_data, title="Reporte de Datos")
+                full_path = os.path.join(downloads_path, filename)
+                with open(full_path, "wb") as f:
+                    f.write(content)
+            else: # CSV
+                filename += ".csv"
+                content = ExportService.export_to_csv(export_data)
+                full_path = os.path.join(downloads_path, filename)
+                with open(full_path, "w", encoding='utf-8-sig', newline='') as f:
+                    f.write(content)
+
+            self._notify(f"Exportado a Descargas: {filename}", kind="success")
             try:
                 os.startfile(downloads_path)
             except:
                 pass
+
         except Exception as exc:
-            self._notify(f"Error al exportar: {exc}", kind="error")
+            self._notify(f"Error exportando: {exc}", kind="error")
 
     def build(self) -> ft.Control:
         if self.auto_load and not self._loaded_once:
@@ -513,6 +627,8 @@ class GenericTable:
             self.search_field,
             ft.IconButton(icon=ft.Icons.SEARCH_ROUNDED, tooltip="Buscar", on_click=lambda e: self.refresh()),
             ft.IconButton(icon=ft.Icons.CLEAR_ROUNDED, tooltip="Limpiar", on_click=lambda e: self._clear_search()),
+            self.reset_button,
+            self.refresh_button,
         ]
         if self.simple_filter_dropdown:
             row_controls.append(self.simple_filter_dropdown)
@@ -645,6 +761,38 @@ class GenericTable:
         self.search_field.value = ""
         self.page = 1
         self._refresh_data()
+
+    def _reset_filter_control(self, control: Any) -> None:
+        if not hasattr(control, "value"):
+            return
+        try:
+            current = control.value
+        except Exception:
+            return
+        if isinstance(current, bool):
+            control.value = False
+        else:
+            control.value = ""
+
+    def _reset_filters(self) -> None:
+        if self._search_timer:
+            self._search_timer.cancel()
+        self.search_field.value = ""
+        if self.simple_filter_dropdown and self._simple_default_value is not None:
+            self.simple_filter_dropdown.value = self._simple_default_value
+        for flt in self.advanced_filters:
+            self._reset_filter_control(flt.control)
+        self.sorts.clear()
+        self._last_sort_idx = None
+        self._sync_sort_indicator()
+        self._update_sort_label()
+        self.selected_ids.clear()
+        self._update_selected_label()
+        self.page = 1
+        self._set_status("")
+        self._refresh_data()
+        if not self._last_error:
+            self._notify("Filtros reiniciados", kind="success")
 
     def _toggle_sort(self, key: str, column_index: int) -> None:
         idx_to_cast = column_index
@@ -909,7 +1057,15 @@ class GenericTable:
                     )
                 )
             for col in self.columns:
-                row_cells.append(ft.DataCell(self._render_cell(row_id, row, col)))
+                content = self._render_cell(row_id, row, col)
+                # Enable edit logic if column is editable and we have a callback
+                can_edit = col.editable and self.show_inline_controls and (self.inline_edit_callback is not None)
+                
+                on_tap = None
+                if can_edit:
+                    on_tap = lambda e, r=row, c=col: self._open_inline_edit_dialog(r, c)
+                
+                row_cells.append(ft.DataCell(content, on_tap=on_tap, show_edit_icon=False))
             result.append(ft.DataRow(cells=row_cells))
         return result
 
@@ -1124,3 +1280,84 @@ class GenericTable:
         self._refresh_data()
 
         self._refresh_data()
+
+    def _open_inline_edit_dialog(self, row: Dict[str, Any], col: ColumnConfig) -> None:
+        """Opens a simple dialog to edit a single cell value."""
+        row_id = row.get(self.id_field)
+        if not row_id: return
+
+        current_val = row.get(col.key)
+        
+        # Determine input type
+        # Ideally we check col type, or based on current val
+        input_control: ft.Control
+        
+        def save(e):
+            new_val = input_control.value
+            if col.key == "activa" or col.key == "activo" or col.key == "afecta_stock" or col.key == "afecta_cuenta_corriente":
+                 # Convert specific known boolean columns
+                 # (Hack: usually we should rely on Col Config type, but simple check works for now)
+                 pass # Dropdown handles boolean value conversion usually
+            
+            # Simple bool check from dropdown
+            if isinstance(input_control, ft.Dropdown):
+                if new_val == "true": new_val = True
+                elif new_val == "false": new_val = False
+                elif new_val == "": new_val = None
+            
+            # Call update
+            try:
+                if self.inline_edit_callback:
+                    self.inline_edit_callback(row_id, {col.key: new_val})
+                    self._notify("Actualizado", kind="success")
+                    self._edit_dialog.open = False
+                    self.update()
+                    self._refresh_data()
+            except Exception as ex:
+                self._notify(f"Error: {ex}", kind="error")
+
+        def close(e):
+            self._edit_dialog.open = False
+            self.update()
+
+        # Build Input
+        if isinstance(current_val, bool) or col.key in ["activa", "activo", "afecta_stock", "afecta_cuenta_corriente", "redondeo"]:
+             input_control = ft.Dropdown(
+                label=col.label,
+                value=str(current_val).lower(),
+                options=[
+                    ft.dropdown.Option("true", "Sí"),
+                    ft.dropdown.Option("false", "No")
+                ],
+                filled=True,
+                bgcolor="#F8FAFC",
+                border_color="#475569",
+                border_radius=12
+            )
+        else:
+            input_control = ft.TextField(
+                label=col.label,
+                value=str(current_val) if current_val is not None else "",
+                autofocus=True,
+                on_submit=save,
+                filled=True,
+                bgcolor="#F8FAFC",
+                border_color="#475569",
+                border_radius=12
+            )
+
+        self._edit_dialog.title = ft.Text(f"Editar {col.label}")
+        self._edit_dialog.content = ft.Column([
+            ft.Text(f"Valor actual: {current_val}"),
+            input_control
+        ], tight=True, width=300)
+        
+        self._edit_dialog.actions = [
+            ft.TextButton("Cancelar", on_click=close),
+            ft.ElevatedButton("Guardar", on_click=save, bgcolor="#4F46E5", color="white")
+        ]
+        
+        if self.root and self.root.page:
+            self.root.page.dialog = self._edit_dialog
+            self._edit_dialog.open = True
+            self.root.page.update()

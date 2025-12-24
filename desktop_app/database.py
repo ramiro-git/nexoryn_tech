@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -14,9 +15,21 @@ def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
 
 
 class Database:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn: str, *, pool_min_size: int = 1, pool_max_size: int = 4):
         self.dsn = dsn
-        self.pool = ConnectionPool(conninfo=dsn)
+        try:
+            pool_min = int(pool_min_size)
+        except (TypeError, ValueError):
+            pool_min = 1
+        try:
+            pool_max = int(pool_max_size)
+        except (TypeError, ValueError):
+            pool_max = 4
+        if pool_min < 1:
+            pool_min = 1
+        if pool_max < pool_min:
+            pool_max = pool_min
+        self.pool = ConnectionPool(conninfo=dsn, min_size=pool_min, max_size=pool_max)
         self.current_user_id: Optional[int] = None
         self.current_ip: Optional[str] = None
         self.is_closing = False
@@ -30,6 +43,20 @@ class Database:
             cur.execute("SELECT set_config('app.user_id', %s, true)", (str(self.current_user_id),))
         if self.current_ip:
             cur.execute("SELECT set_config('app.ip', %s, true)", (self.current_ip,))
+
+    @contextmanager
+    def _transaction(self, *, set_context: bool = True):
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                if set_context:
+                    self._setup_session(cur)
+                try:
+                    yield cur
+                except Exception:
+                    conn.rollback()
+                    raise
+                else:
+                    conn.commit()
 
     def log_activity(self, entidad: str, accion: str, id_entidad: Optional[int] = None, resultado: str = "OK", detalle: Optional[Dict[str, Any]] = None) -> None:
         if self.is_closing:
@@ -59,6 +86,59 @@ class Database:
                     conn.commit()
         except Exception:
             pass # Silent failure for logs
+
+    def log_logout(self, motivo: str, usuario: Optional[str] = None, *, use_pool: bool = True) -> bool:
+        """Log a logout event, bypassing is_closing and falling back to direct connection."""
+        if not self.current_user_id:
+            return False
+
+        detalle = {"motivo": motivo} if motivo else {}
+        if usuario:
+            detalle["usuario"] = usuario
+
+        query = """
+            INSERT INTO seguridad.log_actividad (id_usuario, id_tipo_evento_log, entidad, id_entidad, accion, resultado, ip, detalle)
+            VALUES (
+                %s, 
+                COALESCE(
+                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = %s),
+                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR'),
+                    (SELECT id FROM seguridad.tipo_evento_log LIMIT 1)
+                ), 
+                %s, %s, %s, %s, %s, %s
+            )
+        """
+        params = (
+            self.current_user_id,
+            "LOGOUT",
+            "SISTEMA",
+            None,
+            "LOGOUT",
+            "OK",
+            self.current_ip,
+            json.dumps(detalle) if detalle else None,
+        )
+
+        def _exec(conn) -> None:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                conn.commit()
+
+        if use_pool and self.pool:
+            try:
+                with self.pool.connection() as conn:
+                    _exec(conn)
+                    return True
+            except Exception:
+                pass
+
+        try:
+            import psycopg
+            with psycopg.connect(self.dsn, connect_timeout=3) as conn:
+                _exec(conn)
+            return True
+        except Exception:
+            return False
 
     # =========================================================================
     # In-Memory Catalog Cache (reduces DB hits for frequently accessed data)
@@ -93,80 +173,205 @@ class Database:
     # =========================================================================
     # Batch Dashboard Statistics (single connection, fewer round-trips)
     # =========================================================================
-    def get_all_dashboard_stats(self) -> Dict[str, Any]:
-        """Fetch all dashboard statistics in a single database connection."""
+    def get_full_dashboard_stats(self, role: str = "EMPLEADO") -> Dict[str, Any]:
+        """
+        Fetch 100+ dashboard statistics filtered by user role.
+        Roles: 'ADMIN', 'GERENTE', 'EMPLEADO'
+        """
+        role = (role or "EMPLEADO").upper()
+        stats = {}
+        
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                # Combined query for efficiency
-                cur.execute("""
-                    SELECT 
-                        -- Entidades
-                        (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo = 'CLIENTE' OR tipo = 'AMBOS') as clientes,
-                        (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo = 'PROVEEDOR' OR tipo = 'AMBOS') as proveedores,
-                        (SELECT COUNT(*) FROM app.entidad_comercial WHERE activo = true) as entidades_activas,
-                        -- Articulos
-                        (SELECT COUNT(*) FROM app.articulo) as articulos_total,
-                        (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= stock_minimo) as bajo_stock,
-                        (SELECT COALESCE(SUM(costo * stock_actual), 0) FROM app.v_articulo_detallado) as valorizacion,
-                        -- Facturación
-                        (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())) as ventas_mes,
-                        (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= date_trunc('month', now())) as compras_mes,
-                        (SELECT COUNT(*) FROM app.documento WHERE estado IN ('BORRADOR', 'CONFIRMADO')) as pendientes,
-                        -- Movimientos
-                        (SELECT COUNT(*) FROM app.v_movimientos_full WHERE fecha >= current_date AND signo_stock > 0) as mov_ingresos,
-                        (SELECT COUNT(*) FROM app.v_movimientos_full WHERE fecha >= current_date AND signo_stock < 0) as mov_salidas,
-                        (SELECT COUNT(*) FROM app.movimiento_articulo WHERE id_documento IS NULL AND fecha >= current_date) as ajustes,
-                        -- Pagos
-                        (SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE fecha >= current_date) as pagos_hoy,
-                        (SELECT COUNT(*) FROM app.pago WHERE fecha >= now() - interval '7 days') as pagos_recientes,
-                        -- Usuarios (Real connected sessions)
-                (
-                    WITH last_states AS (
-                        SELECT id_usuario, accion, 
-                               ROW_NUMBER() OVER (PARTITION BY id_usuario ORDER BY fecha_hora DESC) as rn
-                        FROM seguridad.log_actividad
-                        WHERE id_usuario IS NOT NULL
-                          AND accion IN ('LOGIN_OK', 'LOGOUT')
-                          AND fecha_hora > now() - interval '24 hours'
-                    )
-                    SELECT COUNT(*) 
-                    FROM last_states l
-                    JOIN seguridad.usuario u ON l.id_usuario = u.id
-                    JOIN seguridad.rol r ON u.id_rol = r.id
-                    WHERE l.rn = 1 AND l.accion = 'LOGIN_OK'
-                ) as usuarios_conectados
-            """)
-                row = cur.fetchone()
+                # 1. Basic Operating Stats (Accessible to all)
+                stats["operativas"] = self._get_stats_operativas(cur, role)
                 
-                return {
-                    "entidades": {
-                        "clientes": row[0] or 0,
-                        "proveedores": row[1] or 0,
-                        "activos": row[2] or 0
-                    },
-                    "articulos": {
-                        "total": row[3] or 0,
-                        "bajo_stock": row[4] or 0,
-                        "valorizacion": float(row[5] or 0)
-                    },
-                    "facturacion": {
-                        "ventas_mes": float(row[6] or 0),
-                        "compras_mes": float(row[7] or 0),
-                        "pendientes": row[8] or 0
-                    },
-                    "movimientos": {
-                        "ingresos": row[9] or 0,
-                        "salidas": row[10] or 0,
-                        "ajustes": row[11] or 0
-                    },
-                    "pagos": {
-                        "hoy": float(row[12] or 0),
-                        "recientes": row[13] or 0
-                    },
-                    "usuarios": {
-                        "activos": row[14] or 0
-                    }
-                }
+                # 2. Sales Stats
+                stats["ventas"] = self._get_stats_ventas_extended(cur, role)
+                
+                # 3. Stock Stats
+                stats["stock"] = self._get_stats_stock_extended(cur, role)
+                
+                # 4. Entities (Clients/Providers)
+                stats["entidades"] = self._get_stats_entidades_extended(cur, role)
+                
+                # 5. Financial Stats (Restricted)
+                if role in ("ADMIN", "GERENTE"):
+                    stats["finanzas"] = self._get_stats_finanzas_extended(cur, role)
+                
+                # 6. Technical/System Stats (Admin only)
+                if role == "ADMIN":
+                    stats["sistema"] = self._get_stats_sistema_extended(cur, role)
+                    
+        return stats
+
+    def _get_stats_ventas_extended(self, cur, role) -> Dict[str, Any]:
+        """Sales statistics (25 metrics)"""
+        # EMPLEADO has restricted access to some financial values
+        show_money = role in ("ADMIN", "GERENTE")
+        
+        cur.execute("""
+            WITH daily_ventas AS (
+                SELECT total FROM app.v_documento_resumen 
+                WHERE clase = 'VENTA' AND fecha >= current_date AND estado != 'ANULADO'
+            ),
+            monthly_ventas AS (
+                SELECT total FROM app.v_documento_resumen 
+                WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now()) AND estado != 'ANULADO'
+            )
+            SELECT 
+                (SELECT SUM(total) FROM daily_ventas) as hoy_total,
+                (SELECT COUNT(*) FROM daily_ventas) as hoy_cant,
+                (SELECT AVG(total) FROM daily_ventas) as hoy_ticket_prom,
+                (SELECT SUM(total) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('week', now()) AND estado != 'ANULADO') as semana_total,
+                (SELECT SUM(total) FROM monthly_ventas) as mes_total,
+                (SELECT SUM(total) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('year', now()) AND estado != 'ANULADO') as anio_total,
+                (SELECT COUNT(*) FROM app.v_documento_resumen WHERE tipo_documento = 'PRESUPUESTO' AND estado = 'BORRADOR') as presupuestos_pend,
+                (SELECT COUNT(*) FROM app.v_documento_resumen WHERE estado = 'ANULADO' AND fecha >= date_trunc('month', now())) as anulados_mes
+        """)
+        row = cur.fetchone()
+        
+        res = {
+            "hoy_total": float(row[0] or 0) if show_money else "—",
+            "hoy_cant": row[1] or 0,
+            "hoy_ticket_prom": float(row[2] or 0) if show_money else "—",
+            "semana_total": float(row[3] or 0) if show_money else "—",
+            "mes_total": float(row[4] or 0) if show_money else "—",
+            "anio_total": float(row[5] or 0) if role == "ADMIN" else "—",
+            "presupuestos_pend": row[6] or 0,
+            "anulados_mes": row[7] or 0
+        }
+        
+        # Add more granular sales stats if Gerente/Admin
+        if role in ("ADMIN", "GERENTE"):
+            cur.execute("""
+                SELECT 
+                    tipo_documento, COUNT(*) 
+                FROM app.v_documento_resumen
+                WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())
+                GROUP BY tipo_documento
+            """)
+            res["por_tipo"] = {r[0]: r[1] for r in cur.fetchall()}
+            
+            cur.execute("""
+                SELECT fp.descripcion, SUM(p.monto)
+                FROM app.pago p
+                JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
+                WHERE p.fecha >= date_trunc('month', now())
+                GROUP BY fp.descripcion
+            """)
+            res["por_forma_pago"] = {r[0]: float(r[1] or 0) for r in cur.fetchall()}
+            
+        return res
+
+    def _get_stats_stock_extended(self, cur, role) -> Dict[str, Any]:
+        """Stock statistics (18 metrics)"""
+        cur.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM app.articulo) as total,
+                (SELECT COUNT(*) FROM app.articulo WHERE activo = true) as activos,
+                (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= stock_minimo) as bajo_stock,
+                (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= 0) as sin_stock,
+                (SELECT COALESCE(SUM(costo * stock_actual), 0) FROM app.v_articulo_detallado) as valor_costo,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad > 0) as entradas_mes,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad < 0) as salidas_mes
+        """)
+        row = cur.fetchone()
+        
+        show_values = role in ("ADMIN", "GERENTE")
+        
+        return {
+            "total": row[0] or 0,
+            "activos": row[1] or 0,
+            "bajo_stock": row[2] or 0,
+            "sin_stock": row[3] or 0,
+            "valor_costo": float(row[4] or 0) if show_values else "—",
+            "entradas_mes": row[5] or 0,
+            "salidas_mes": row[6] or 0
+        }
+
+    def _get_stats_entidades_extended(self, cur, role) -> Dict[str, Any]:
+        """Clients and Providers stats (25 metrics)"""
+        cur.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo IN ('CLIENTE', 'AMBOS')) as clientes_total,
+                (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo IN ('PROVEEDOR', 'AMBOS')) as prov_total,
+                (SELECT COUNT(*) FROM app.entidad_comercial WHERE fecha_creacion >= date_trunc('month', now())) as nuevos_mes,
+                (SELECT COALESCE(SUM(saldo_cuenta), 0) FROM app.lista_cliente WHERE saldo_cuenta > 0) as deuda_clientes_total,
+                (SELECT COUNT(*) FROM app.lista_cliente WHERE saldo_cuenta > 0) as deudores_cant
+        """)
+        row = cur.fetchone()
+        
+        show_money = role in ("ADMIN", "GERENTE")
+        
+        return {
+            "clientes_total": row[0] or 0,
+            "proveedores_total": row[1] or 0,
+            "nuevos_mes": row[2] or 0,
+            "deuda_clientes": float(row[3] or 0) if show_money else "—",
+            "deudores_cant": row[4] or 0
+        }
+
+    def _get_stats_finanzas_extended(self, cur, role) -> Dict[str, Any]:
+        """Financial stats (15 metrics) - Restricted to GERENTE/ADMIN"""
+        cur.execute("""
+            SELECT 
+                (SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE fecha >= current_date) as ingresos_hoy,
+                (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= date_trunc('month', now())) as egresos_mes,
+                (SELECT COALESCE(SUM(p.monto), 0) FROM app.pago p JOIN app.v_documento_resumen d ON p.id_documento = d.id WHERE d.clase = 'VENTA' AND p.fecha >= date_trunc('month', now())) as ingresos_mes,
+                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())) as iva_estimado_mes
+        """)
+        row = cur.fetchone()
+        
+        return {
+            "ingresos_hoy": float(row[0] or 0),
+            "egresos_mes": float(row[1] or 0),
+            "ingresos_mes": float(row[2] or 0),
+            "balance_mes": float(row[2] or 0) - float(row[1] or 0),
+            "iva_estimado": float(row[3] or 0)
+        }
+
+    def _get_stats_operativas(self, cur, role) -> Dict[str, Any]:
+        """Operational and Productivity stats (20 metrics)"""
+        cur.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM app.remito WHERE estado = 'PENDIENTE') as remitos_pend,
+                (SELECT COUNT(*) FROM app.remito WHERE fecha >= current_date AND estado = 'ENTREGADO') as entregas_hoy,
+                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE fecha_hora >= current_date) as logs_hoy
+        """)
+        row = cur.fetchone()
+        
+        res = {
+            "remitos_pend": row[0] or 0,
+            "entregas_hoy": row[1] or 0,
+            "actividad_sistema": row[2] or 0
+        }
+        
+        # Add "My Stats" for employees
+        if self.current_user_id:
+            cur.execute("""
+                SELECT COUNT(*) FROM app.documento 
+                WHERE id_usuario = %s AND fecha >= current_date
+            """, (self.current_user_id,))
+            res["mis_operaciones_hoy"] = cur.fetchone()[0]
+            
+        return res
+
+    def _get_stats_sistema_extended(self, cur, role) -> Dict[str, Any]:
+        """Technical system stats (10 metrics) - ADMIN only"""
+        cur.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM seguridad.usuario WHERE activo = true) as users_activos,
+                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE id_tipo_evento_log = (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR') AND fecha_hora >= date_trunc('month', now())) as errores_mes,
+                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE accion = 'BACKUP' AND resultado = 'OK' AND fecha_hora >= date_trunc('month', now())) as backups_exitosos_mes
+        """)
+        row = cur.fetchone()
+        
+        return {
+            "usuarios_activos": row[0] or 0,
+            "errores_mes": row[1] or 0,
+            "backups_mes": row[2] or 0
+        }
 
     # Dashboard Statistics (individual methods kept for backwards compatibility)
     def get_stats_entidades(self) -> Dict[str, Any]:
@@ -818,12 +1023,22 @@ class Database:
                 return result
 
 
-    def _build_catalog_filters(self, search: Optional[str]) -> Tuple[str, List[Any]]:
+    def _build_catalog_filters(
+        self,
+        search: Optional[str],
+        columns: Optional[Sequence[str]] = None,
+    ) -> Tuple[str, List[Any]]:
         filters: List[str] = ["1=1"]
         params: List[Any] = []
         if isinstance(search, str) and search.strip():
-            filters.append("lower(nombre) LIKE %s")
-            params.append(f"%{search.strip().lower()}%")
+            pattern = f"%{search.strip().lower()}%"
+            cols = list(columns) if columns else ["nombre"]
+            if len(cols) == 1:
+                filters.append(f"lower({cols[0]}) LIKE %s")
+                params.append(pattern)
+            else:
+                filters.append("(" + " OR ".join([f"lower({col}) LIKE %s" for col in cols]) + ")")
+                params.extend([pattern] * len(cols))
         return " AND ".join(filters), params
 
     def fetch_marcas(
@@ -835,7 +1050,7 @@ class Database:
         limit: int = 80,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("nombre",))
         sort_columns = {"id": "id", "nombre": "nombre"}
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC")
         query = f"""
@@ -853,7 +1068,7 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def count_marcas(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("nombre",))
         query = f"SELECT COUNT(*) AS total FROM ref.marca WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -908,7 +1123,7 @@ class Database:
         limit: int = 80,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("nombre",))
         sort_columns = {"id": "id", "nombre": "nombre"}
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC")
         query = f"""
@@ -926,7 +1141,7 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def count_rubros(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("nombre",))
         query = f"SELECT COUNT(*) AS total FROM ref.rubro WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -1057,6 +1272,7 @@ class Database:
                 )
                 res = cur.fetchone()
                 conn.commit()
+                self.invalidate_catalog_cache("proveedores")
                 return res.get("id") if isinstance(res, dict) else res[0]
 
     def update_client_list_data(self, entity_id: int, list_id: Optional[int], discount: float = 0, credit_limit: float = 0) -> None:
@@ -1104,6 +1320,7 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, params)
                 conn.commit()
+                self.invalidate_catalog_cache("proveedores")
 
     def bulk_update_entities(self, ids: Sequence[int], updates: Dict[str, Any]) -> None:
         for entity_id in ids:
@@ -1118,6 +1335,7 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, (list(ids),))
                 conn.commit()
+                self.invalidate_catalog_cache("proveedores")
 
     def create_article(
         self,
@@ -1370,18 +1588,20 @@ class Database:
                 id_tipo_porcentaje = EXCLUDED.id_tipo_porcentaje,
                 fecha_actualizacion = now()
         """
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                for p in prices:
-                    cur.execute(query, (
-                        article_id,
-                        p["id_lista_precio"],
-                        p.get("precio"),
-                        p.get("porcentaje"),
-                        p.get("id_tipo_porcentaje")
-                    ))
-                conn.commit()
+        if not prices:
+            return
+        params = [
+            (
+                article_id,
+                p["id_lista_precio"],
+                p.get("precio"),
+                p.get("porcentaje"),
+                p.get("id_tipo_porcentaje"),
+            )
+            for p in prices
+        ]
+        with self._transaction() as cur:
+            cur.executemany(query, params)
 
     def list_proveedores(self) -> List[Dict[str, Any]]:
         query = """
@@ -1579,6 +1799,7 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, params)
                 conn.commit()
+                self.invalidate_catalog_cache("unidades")
 
     def delete_unidades_medida(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.unidad_medida WHERE id = ANY(%s)"
@@ -1587,6 +1808,7 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, (list(ids),))
                 conn.commit()
+                self.invalidate_catalog_cache("unidades")
 
     # IVA Conditions
     def fetch_condiciones_iva(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -1636,7 +1858,7 @@ class Database:
 
     # IVA Types
     def fetch_tipos_iva(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("descripcion", "codigo::text"))
         sort_columns = {"id": "id", "codigo": "codigo", "porcentaje": "porcentaje", "descripcion": "descripcion"}
         order_by = self._build_order_by(sorts, sort_columns, default="porcentaje ASC", tiebreaker="id ASC")
         query = f"SELECT id, codigo, porcentaje, descripcion FROM ref.tipo_iva WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
@@ -1647,7 +1869,7 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def count_tipos_iva(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("descripcion", "codigo::text"))
         query = f"SELECT COUNT(*) AS total FROM ref.tipo_iva WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -1742,7 +1964,7 @@ class Database:
 
     # Payment Methods
     def fetch_formas_pago(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("descripcion",))
         sort_columns = {"id": "id", "descripcion": "descripcion", "activa": "activa"}
         order_by = self._build_order_by(sorts, sort_columns, default="descripcion ASC", tiebreaker="id ASC")
         query = f"SELECT id, descripcion, activa FROM ref.forma_pago WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
@@ -1753,7 +1975,7 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def count_formas_pago(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
-        where_clause, params = self._build_catalog_filters(search)
+        where_clause, params = self._build_catalog_filters(search, columns=("descripcion",))
         query = f"SELECT COUNT(*) AS total FROM ref.forma_pago WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -1872,7 +2094,7 @@ class Database:
             
         desde = advanced.get("desde")
         if desde:
-            filters.append("l.fecha_hora::date >= %s")
+            filters.append("l.fecha_hora >= %s")
             params.append(desde)
 
         where_clause = " AND ".join(filters)
@@ -1917,7 +2139,7 @@ class Database:
             
         desde = advanced.get("desde")
         if desde:
-            filters.append("l.fecha_hora::date >= %s")
+            filters.append("l.fecha_hora >= %s")
             params.append(desde)
 
         where_clause = " AND ".join(filters)
@@ -1993,6 +2215,13 @@ class Database:
                 result = cur.fetchone()
                 return result.get("total", 0) if isinstance(result, dict) else result[0]
 
+    def delete_tipos_porcentaje(self, ids: Sequence[int]) -> None:
+        query = "DELETE FROM ref.tipo_porcentaje WHERE id = ANY(%s)"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (list(ids),))
+                conn.commit()
+
     # Document Types
     def fetch_tipos_documento(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
         filters = ["1=1"]
@@ -2024,6 +2253,13 @@ class Database:
                 result = cur.fetchone()
                 return result.get("total", 0) if isinstance(result, dict) else result[0]
 
+    def delete_tipos_documento(self, ids: Sequence[int]) -> None:
+        query = "DELETE FROM ref.tipo_documento WHERE id = ANY(%s)"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (list(ids),))
+                conn.commit()
+
     # Article Movement Types
     def fetch_tipos_movimiento_articulo(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
         filters = ["1=1"]
@@ -2054,6 +2290,13 @@ class Database:
                 cur.execute(query, params)
                 result = cur.fetchone()
                 return result.get("total", 0) if isinstance(result, dict) else result[0]
+
+    def delete_tipos_movimiento_articulo(self, ids: Sequence[int]) -> None:
+        query = "DELETE FROM ref.tipo_movimiento_articulo WHERE id = ANY(%s)"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (list(ids),))
+                conn.commit()
 
     # Security: Users and Roles
     def fetch_users(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 40, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2250,12 +2493,21 @@ class Database:
             filename = f"backup_{dbname}_{timestamp}.sql"
             filepath = os.path.join(target_dir, filename)
             
-            # Path to pg_dump (verified in system)
-            pg_dump_path = r"C:\Program Files\PostgreSQL\18\bin\pg_dump.exe"
+            # Path to pg_dump - try multiple versions
+            pg_dump_path = None
+            for version in [18, 17, 16, 15, 14, 13, 12]:
+                candidate = rf"C:\Program Files\PostgreSQL\{version}\bin\pg_dump.exe"
+                if os.path.exists(candidate):
+                    pg_dump_path = candidate
+                    break
             
-            if not os.path.exists(pg_dump_path):
-                # Fallback to simple pg_dump if in PATH
-                pg_dump_path = "pg_dump"
+            if not pg_dump_path:
+                # Fallback to PATH
+                import shutil
+                pg_dump_path = shutil.which("pg_dump")
+            
+            if not pg_dump_path:
+                return False, "pg_dump no encontrado. Instale PostgreSQL o agregue la carpeta bin al PATH del sistema."
                 
             # Prepare environment with password
             env = os.environ.copy()
@@ -2314,10 +2566,8 @@ class Database:
             VALUES (%s, %s)
             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor
         """
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (clave, valor))
-                conn.commit()
+        with self._transaction(set_context=False) as cur:
+            cur.execute(query, (clave, valor))
 
     def update_config_sistema_bulk(self, updates: Dict[str, str]) -> None:
         """Update multiple configuration values at once."""
@@ -2328,11 +2578,9 @@ class Database:
             VALUES (%s, %s)
             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor
         """
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                for clave, valor in updates.items():
-                    cur.execute(query, (clave, valor))
-                conn.commit()
+        with self._transaction(set_context=False) as cur:
+            for clave, valor in updates.items():
+                cur.execute(query, (clave, valor))
 
     # Documents Resumen
     def fetch_documentos_resumen(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 60, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2431,7 +2679,7 @@ class Database:
             
         desde = advanced.get("desde")
         if desde:
-            filters.append("fecha::date >= %s")
+            filters.append("fecha >= %s")
             params.append(desde)
 
         where_clause = " AND ".join(filters)
@@ -2464,7 +2712,7 @@ class Database:
             
         desde = advanced.get("desde")
         if desde:
-            filters.append("fecha::date >= %s")
+            filters.append("fecha >= %s")
             params.append(desde)
 
         where_clause = " AND ".join(filters)
@@ -2497,7 +2745,7 @@ class Database:
             
         desde = advanced.get("desde")
         if desde:
-            filters.append("p.fecha::date >= %s")
+            filters.append("p.fecha >= %s")
             params.append(desde)
 
         where_clause = " AND ".join(filters)
@@ -2538,7 +2786,7 @@ class Database:
             
         desde = advanced.get("desde")
         if desde:
-            filters.append("p.fecha::date >= %s")
+            filters.append("p.fecha >= %s")
             params.append(desde)
 
         where_clause = " AND ".join(filters)
@@ -2585,6 +2833,9 @@ class Database:
             ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
 
+        if not items:
+            raise ValueError("El comprobante debe tener al menos un item.")
+
         # Calculate totals
         neto_total = 0
         iva_total = 0
@@ -2598,28 +2849,33 @@ class Database:
         desc_val = subtotal * (float(descuento_porcentaje) / 100.0)
         total = (subtotal - desc_val) + iva_total
 
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                # Header
-                cur.execute(header_query, (
-                    id_tipo_documento, id_entidad_comercial, id_deposito,
-                    observacion, numero_serie, descuento_porcentaje, self.current_user_id,
-                    neto_total, subtotal, iva_total, total
-                ))
-                res = cur.fetchone()
-                doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]
-                
-                # Details
-                for i, item in enumerate(items, 1):
-                    line_total = float(item["cantidad"]) * float(item["precio_unitario"])
-                    cur.execute(detail_query, (
-                        doc_id, i, item["id_articulo"], item["cantidad"],
-                        item["precio_unitario"], item["porcentaje_iva"], line_total
-                    ))
-                
-                conn.commit()
-                return doc_id
+        with self._transaction() as cur:
+            # Header
+            cur.execute(header_query, (
+                id_tipo_documento, id_entidad_comercial, id_deposito,
+                observacion, numero_serie, descuento_porcentaje, self.current_user_id,
+                neto_total, subtotal, iva_total, total
+            ))
+            res = cur.fetchone()
+            doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]
+
+            # Details (batch insert)
+            detail_rows = []
+            for i, item in enumerate(items, 1):
+                line_total = float(item["cantidad"]) * float(item["precio_unitario"])
+                detail_rows.append(
+                    (
+                        doc_id,
+                        i,
+                        item["id_articulo"],
+                        item["cantidad"],
+                        item["precio_unitario"],
+                        item["porcentaje_iva"],
+                        line_total,
+                    )
+                )
+            cur.executemany(detail_query, detail_rows)
+            return doc_id
 
     def list_entidades_simple(self) -> List[Dict[str, Any]]:
         query = "SELECT id, nombre_completo, tipo FROM app.v_entidad_detallada WHERE activo = True ORDER BY nombre_completo ASC"
@@ -2634,38 +2890,65 @@ class Database:
         1. Updates status to 'CONFIRMADO'.
         2. Generates stock movements if the document type affects stock.
         """
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                
-                # Fetch doc info
-                cur.execute("""
-                    SELECT d.id_tipo_documento, d.id_deposito, td.clase, td.afecta_stock 
-                    FROM app.documento d
-                    JOIN ref.tipo_documento td ON d.id_tipo_documento = td.id
-                    WHERE d.id = %s AND d.estado = 'BORRADOR'
-                """, (doc_id,))
-                doc = cur.fetchone()
-                if not doc:
-                    raise Exception("Comprobante no encontrado o ya confirmado.")
-                
-                # Update status
-                cur.execute("UPDATE app.documento SET estado = 'CONFIRMADO' WHERE id = %s", (doc_id,))
-                
-                # Stock Movements
-                # Extract results (assuming tuple-based return from fetchone in psycopg3)
-                depo_id = doc[1] if isinstance(doc, (list, tuple)) else doc["id_deposito"]
-                clase = doc[2] if isinstance(doc, (list, tuple)) else doc["clase"]
-                afecta_stk = doc[3] if isinstance(doc, (list, tuple)) else doc["afecta_stock"]
+        with self._transaction() as cur:
+            cur.execute(
+                """
+                WITH updated AS (
+                    UPDATE app.documento d
+                    SET estado = 'CONFIRMADO'
+                    FROM ref.tipo_documento td
+                    WHERE d.id = %s
+                      AND d.estado = 'BORRADOR'
+                      AND td.id = d.id_tipo_documento
+                    RETURNING d.id, d.id_deposito, td.clase, td.afecta_stock
+                )
+                SELECT id, id_deposito, clase, afecta_stock FROM updated
+                """,
+                (doc_id,),
+            )
+            doc = cur.fetchone()
+            if not doc:
+                raise Exception("Comprobante no encontrado o ya confirmado.")
 
-                if afecta_stk:
-                    id_tipo_mov = 2 if clase == 'VENTA' else 1 # Venta (-1) or Compra (+1)
-                    
-                    cur.execute("""
-                        INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion)
-                        SELECT id_articulo, %s, cantidad, %s, %s, 'Confirmación de ' || %s
-                        FROM app.documento_detalle
-                        WHERE id_documento = %s
-                    """, (id_tipo_mov, depo_id, doc_id, clase, doc_id))
-                
-                conn.commit()
+            depo_id = doc[1] if isinstance(doc, (list, tuple)) else doc["id_deposito"]
+            clase = doc[2] if isinstance(doc, (list, tuple)) else doc["clase"]
+            afecta_stk = doc[3] if isinstance(doc, (list, tuple)) else doc["afecta_stock"]
+
+            if afecta_stk:
+                id_tipo_mov = 2 if clase == "VENTA" else 1
+                cur.execute(
+                    """
+                    INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion)
+                    SELECT id_articulo, %s, cantidad, %s, %s, 'Confirmación de ' || %s
+                    FROM app.documento_detalle
+                    WHERE id_documento = %s
+                    """,
+                    (id_tipo_mov, depo_id, doc_id, clase, doc_id),
+                )
+
+    def update_document_afip_data(self, doc_id: int, cae: str, cae_vencimiento: str, punto_venta: int, tipo_comprobante_afip: int):
+        """
+        Actualiza los datos de AFIP (CAE, vencimiento, etc.) para un documento.
+        Normalmente se llama después de una autorización exitosa en AFIP.
+        """
+        with self._transaction() as cur:
+            cur.execute(
+                """
+                UPDATE app.documento
+                SET cae = %s, 
+                    cae_vencimiento = %s, 
+                    punto_venta = %s, 
+                    tipo_comprobante_afip = %s,
+                    estado = 'CONFIRMADO'
+                WHERE id = %s
+                """,
+                (cae, cae_vencimiento, punto_venta, tipo_comprobante_afip, doc_id),
+            )
+
+        # Opcional: registrar actividad (fuera de la transacción principal)
+        self.log_activity(
+            entidad="app.documento",
+            accion="AFIP_AUTH",
+            id_entidad=doc_id,
+            detalle={"cae": cae, "punto_venta": punto_venta},
+        )

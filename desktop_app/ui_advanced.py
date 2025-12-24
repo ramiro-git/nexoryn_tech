@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import atexit
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,6 +19,11 @@ except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
     from components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig  # type: ignore
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from desktop_app.services.backup_service import BackupService
+from desktop_app.components.backup_view import BackupView
 
 
 def _format_money(value: Any) -> str:
@@ -73,7 +79,55 @@ def _build_stock_alert_tile(alert: Dict[str, Any]) -> ft.Control:
 
 def main(page: ft.Page) -> None:
     config = load_config()
-    db = Database(config.database_url)
+    db = Database(
+        config.database_url,
+        pool_min_size=config.db_pool_min,
+        pool_max_size=config.db_pool_max,
+    )
+    is_closing = False
+    
+    # Initialize Backup Service & Scheduler
+    backup_service = BackupService()
+    scheduler = BackgroundScheduler()
+    
+    # Schedule automated backups
+    # Adjust times as needed. Here: Daily @ 23:00, Weekly (Sun) @ 23:30, Monthly (1st) @ 00:00
+    scheduler.add_job(
+        lambda: backup_service.create_backup("daily"), 
+        CronTrigger(hour=23, minute=0),
+        id="backup_daily"
+    )
+    scheduler.add_job(
+        lambda: backup_service.create_backup("weekly"), 
+        CronTrigger(day_of_week="sun", hour=23, minute=30),
+        id="backup_weekly"
+    )
+    scheduler.add_job(
+        lambda: backup_service.create_backup("monthly"), 
+        CronTrigger(day=1, hour=0, minute=0),
+        id="backup_monthly"
+    )
+    # Prune old backups daily at 01:00
+    scheduler.add_job(
+        lambda: backup_service.prune_backups(), 
+        CronTrigger(hour=1, minute=0),
+        id="backup_prune"
+    )
+    
+    scheduler.start()
+
+    def _shutdown(reason: str = "shutdown") -> None:
+        nonlocal is_closing
+        if is_closing:
+            return
+        is_closing = True
+        try:
+            scheduler.shutdown()
+            db.close()
+        except Exception:
+            pass
+
+    atexit.register(lambda: _shutdown("atexit"))
 
     page.title = "Nexoryn Tech - Control de operaciones"
     page.window_width = 1200
@@ -197,18 +251,26 @@ def main(page: ft.Page) -> None:
             is_dropdown = "dropdown" in name
             is_textfield = "textfield" in name
 
-            _maybe_set(control, "border_color", COLOR_BORDER)
+            # HIGH VISIBILITY STYLE - "Round & Contrast"
+            _maybe_set(control, "border_color", "#475569") # Slate 600 (Darker)
             _maybe_set(control, "focused_border_color", COLOR_PRIMARY)
-            _maybe_set(control, "border_radius", 10)
-            _maybe_set(control, "text_size", 12)
-            _maybe_set(control, "dense", True)
+            _maybe_set(control, "border_radius", 12) # More rounded
+            _maybe_set(control, "text_size", 14)
+            _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD)) # Darker label
+            
             if is_dropdown:
+                _maybe_set(control, "bgcolor", "#F8FAFC") # Slight grey background
+                _maybe_set(control, "filled", True)
+                _maybe_set(control, "border_width", 2) # Thicker border
                 return
 
             _maybe_set(control, "filled", True)
-            _maybe_set(control, "bgcolor", COLOR_CARD)
+            _maybe_set(control, "bgcolor", "#F8FAFC")
+            _maybe_set(control, "border_width", 1)
+            
             if is_textfield and not is_dropdown:
-                _maybe_set(control, "height", 42)
+                _maybe_set(control, "height", 50) # Taller
+                _maybe_set(control, "dense", False)
 
         def _open_dialog(dialog: ft.Control) -> None:
             if hasattr(page, "open"):
@@ -648,6 +710,7 @@ def main(page: ft.Page) -> None:
                         icon=ft.Icons.ADD,
                         bgcolor=COLOR_PRIMARY,
                         color=ft.Colors.WHITE,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
                         on_click=create_entity,
                     ),
                 ],
@@ -735,6 +798,7 @@ def main(page: ft.Page) -> None:
                         icon=ft.Icons.ADD,
                         bgcolor=COLOR_PRIMARY,
                         color=ft.Colors.WHITE,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
                         on_click=create_article,
                     ),
                 ],
@@ -850,16 +914,22 @@ def main(page: ft.Page) -> None:
                 current_title.value = "Artículos"
                 page.update()
                 refresh_articles()
-            else:
+            elif key == "stock":
                 content_holder.content = stock_view
                 current_title.value = "Stock"
                 page.update()
                 refresh_stock()
+            elif key == "backups":
+                content_holder.content = backup_view_control
+                current_title.value = "Backups"
+                page.update()
+                backup_view_component.load_data()
 
         ICON_ENTIDADES = getattr(ft.Icons, "GROUP", ft.Icons.DASHBOARD)
         ICON_ARTICULOS = getattr(ft.Icons, "CATEGORY", ft.Icons.DASHBOARD)
         ICON_STOCK = getattr(ft.Icons, "SHOW_CHART", ft.Icons.DASHBOARD)
-        view_keys = ["entidades", "articulos", "stock"]
+        ICON_BACKUP = getattr(ft.Icons, "BACKUP", ft.Icons.DASHBOARD)
+        view_keys = ["entidades", "articulos", "stock", "backups"]
 
         navigation = ft.NavigationRail(
             selected_index=0,
@@ -868,6 +938,7 @@ def main(page: ft.Page) -> None:
                 ft.NavigationRailDestination(icon=ICON_ENTIDADES, label="Entidades"),
                 ft.NavigationRailDestination(icon=ICON_ARTICULOS, label="Artículos"),
                 ft.NavigationRailDestination(icon=ICON_STOCK, label="Stock"),
+                ft.NavigationRailDestination(icon=ICON_BACKUP, label="Backups"),
             ],
             on_change=lambda e: set_view(view_keys[e.control.selected_index]),
         )
@@ -877,8 +948,10 @@ def main(page: ft.Page) -> None:
                 refresh_entities()
             elif current_view["key"] == "articulos":
                 refresh_articles()
-            else:
+            elif current_view["key"] == "stock":
                 refresh_stock()
+            elif current_view["key"] == "backups":
+                backup_view_component.load_data()
 
         page.appbar = ft.AppBar(
             title=ft.Row(
@@ -937,13 +1010,11 @@ def main(page: ft.Page) -> None:
         # First paint, then load.
         set_view("entidades")
         refresh_stock_metrics()
-        page.on_close = lambda e: db.close()
+        page.on_close = None
+        page.on_window_event = None
     except Exception as exc:
         show_fatal_error(exc)
-        try:
-            db.close()
-        except Exception:
-            pass
+        _shutdown("fatal_exception")
 
 
 if __name__ == "__main__":
