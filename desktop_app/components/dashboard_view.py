@@ -10,7 +10,9 @@ class DashboardView(ft.Container):
         super().__init__()
         self.db = database
         self.role = user_role.upper()
+        self.role = user_role.upper()
         self.stats: Dict[str, Any] = {}
+        self.on_navigate = None
         self.is_loading = True
         
         # Colors & Theme
@@ -69,18 +71,27 @@ class DashboardView(ft.Container):
         self._refresh_thread.start()
 
     def load_data(self):
+        # 1. Show Loader immediately
         self.is_loading = True
+        self.content = ft.Container(
+            content=ft.ProgressRing(),
+            alignment=ft.alignment.center,
+            expand=True
+        )
         try:
             if self.page: self.update()
         except: pass
         
+        # 2. Fetch Data (in main thread for simplicity, or bg thread if refactored)
         try:
             # Fetch 100+ stats in one batch filtered by role
             self.stats = self.db.get_full_dashboard_stats(self.role)
             self.last_updated_text.value = f"Última actualización: {datetime.datetime.now().strftime('%H:%M:%S')}"
         except Exception as e:
             print(f"Error loading dashboard stats: {e}")
+            self.stats = {} # Fallback
             
+        # 3. Show Content
         self.is_loading = False
         self._build_dashboard_content()
         self.content = self._get_main_content()
@@ -137,29 +148,29 @@ class DashboardView(ft.Container):
         
         # Ventas Section
         self.sections_column.controls.append(
-            self._section_container("VENTAS", ft.Icons.SHOPPING_CART_ROUNDED, self._build_ventas_section())
+            self._section_container("VENTAS", ft.Icons.SHOPPING_CART_ROUNDED, self._build_ventas_section(), "documentos")
         )
         
         # Stock Section
         self.sections_column.controls.append(
-            self._section_container("STOCK e INVENTARIO", ft.Icons.INVENTORY_ROUNDED, self._build_stock_section())
+            self._section_container("STOCK e INVENTARIO", ft.Icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
         )
         
         # Entidades Section
         self.sections_column.controls.append(
-            self._section_container("CLIENTES y PROVEEDORES", ft.Icons.PEOPLE_ROUNDED, self._build_entidades_section())
+            self._section_container("CLIENTES y PROVEEDORES", ft.Icons.PEOPLE_ROUNDED, self._build_entidades_section(), "entidades")
         )
         
         # Financial Section (Gerente/Admin)
         if self.role in ("ADMIN", "GERENTE") and "finanzas" in self.stats:
             self.sections_column.controls.append(
-                self._section_container("FINANZAS Y CAJA", ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, self._build_finanzas_section())
+                self._section_container("FINANZAS Y CAJA", ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, self._build_finanzas_section(), "pagos")
             )
             
         # System Section (Admin only)
         if self.role == "ADMIN" and "sistema" in self.stats:
             self.sections_column.controls.append(
-                self._section_container("SISTEMA y SEGURIDAD", ft.Icons.SECURITY_ROUNDED, self._build_sistema_section())
+                self._section_container("SISTEMA y SEGURIDAD", ft.Icons.SECURITY_ROUNDED, self._build_sistema_section(), "config")
             )
 
     def _kpi_card(self, title: str, value: str, icon: str, color: str, subtitle: str) -> ft.Container:
@@ -180,14 +191,20 @@ class DashboardView(ft.Container):
             shadow=ft.BoxShadow(blur_radius=10, color="#0000000D", offset=ft.Offset(0, 4))
         )
 
-    def _section_container(self, title: str, icon: str, content: ft.Control) -> ft.Container:
+    def _section_container(self, title: str, icon: str, content: ft.Control, view_key: str = None) -> ft.Container:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
                     ft.Icon(icon, color=self.COLOR_PRIMARY, size=20),
                     ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
                     ft.Container(expand=True),
-                    ft.Text("Ver detalles", size=12, color=self.COLOR_PRIMARY, weight=ft.FontWeight.W_600),
+                    ft.TextButton(
+                        "Ver detalles",
+                        icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                        icon_color=self.COLOR_PRIMARY,
+                        style=ft.ButtonStyle(color=self.COLOR_PRIMARY),
+                        on_click=lambda e: self.on_navigate(view_key) if self.on_navigate and view_key else None
+                    )
                 ], alignment=ft.MainAxisAlignment.START, spacing=10),
                 ft.Divider(height=1, color=self.COLOR_BORDER),
                 ft.Container(content=content, padding=ft.padding.only(top=10))
@@ -239,7 +256,7 @@ class DashboardView(ft.Container):
             self._stat_item("Activos", s.get("activos", 0), self.COLOR_SUCCESS),
             self._stat_item("Bajo Stock", s.get("bajo_stock", 0), self.COLOR_WARNING),
             self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR),
-            self._stat_item("Valor Inventario", f"${s.get('valor_costo', 0)}", self.COLOR_INFO),
+            self._stat_item("Stock Unidades", f"{s.get('stock_unidades', 0):,}", self.COLOR_INFO),
             self._stat_item("Ingresos Mes", s.get("entradas_mes", 0)),
             self._stat_item("Salidas Mes", s.get("salidas_mes", 0)),
         ], wrap=True, spacing=40)

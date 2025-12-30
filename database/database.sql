@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS ref.condicion_iva (
 CREATE TABLE IF NOT EXISTS ref.tipo_iva (
   id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   codigo      INTEGER NOT NULL UNIQUE,
-  porcentaje  DECIMAL(6,2) NOT NULL,
+  porcentaje  DECIMAL(6,2) NOT NULL UNIQUE,
   descripcion VARCHAR(50),
   CONSTRAINT ck_tipo_iva_porcentaje CHECK (porcentaje >= 0 AND porcentaje <= 100)
 );
@@ -220,6 +220,12 @@ CREATE TABLE IF NOT EXISTS app.articulo (
   CONSTRAINT ck_art_desc_base CHECK (descuento_base >= 0 AND descuento_base <= 100)
 );
 
+CREATE TABLE IF NOT EXISTS app.articulo_stock_resumen (
+  id_articulo          BIGINT PRIMARY KEY REFERENCES app.articulo(id) ON DELETE CASCADE,
+  stock_total          NUMERIC(14,4) NOT NULL DEFAULT 0,
+  ultima_actualizacion TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS app.articulo_precio (
   id_articulo          BIGINT NOT NULL REFERENCES app.articulo(id) ON UPDATE CASCADE ON DELETE CASCADE,
   id_lista_precio      BIGINT NOT NULL REFERENCES ref.lista_precio(id) ON UPDATE CASCADE ON DELETE CASCADE,
@@ -367,11 +373,9 @@ SELECT
   a.id AS id_articulo,
   a.nombre AS articulo,
   a.stock_minimo,
-  COALESCE(SUM(ma.cantidad * tma.signo_stock), 0) AS stock_total
+  COALESCE(sr.stock_total, 0) AS stock_total
 FROM app.articulo a
-LEFT JOIN app.movimiento_articulo ma ON a.id = ma.id_articulo
-LEFT JOIN ref.tipo_movimiento_articulo tma ON tma.id = ma.id_tipo_movimiento
-GROUP BY a.id, a.nombre, a.stock_minimo;
+LEFT JOIN app.articulo_stock_resumen sr ON a.id = sr.id_articulo;
 
 CREATE OR REPLACE VIEW app.v_movimientos_full AS
 SELECT 
@@ -538,6 +542,41 @@ BEGIN
 END;
 $$;
 
+-- Function to keep stock summary synchronized
+CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_signo INTEGER;
+BEGIN
+  -- Get the sign from the movement type
+  SELECT signo_stock INTO v_signo 
+  FROM ref.tipo_movimiento_articulo 
+  WHERE id = COALESCE(NEW.id_tipo_movimiento, OLD.id_tipo_movimiento);
+
+  IF (TG_OP = 'INSERT') THEN
+    INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
+    VALUES (NEW.id_articulo, NEW.cantidad * v_signo)
+    ON CONFLICT (id_articulo) DO UPDATE 
+    SET stock_total = app.articulo_stock_resumen.stock_total + (NEW.cantidad * v_signo),
+        ultima_actualizacion = now();
+            
+  ELSIF (TG_OP = 'UPDATE') THEN
+    UPDATE app.articulo_stock_resumen 
+    SET stock_total = stock_total - (OLD.cantidad * v_signo) + (NEW.cantidad * v_signo),
+        ultima_actualizacion = now()
+    WHERE id_articulo = NEW.id_articulo;
+        
+  ELSIF (TG_OP = 'DELETE') THEN
+    UPDATE app.articulo_stock_resumen 
+    SET stock_total = stock_total - (OLD.cantidad * v_signo),
+        ultima_actualizacion = now()
+    WHERE id_articulo = OLD.id_articulo;
+  END IF;
+    
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
 -- ============================================================================
 -- TRIGGERS
 -- ============================================================================
@@ -576,6 +615,20 @@ DROP TRIGGER IF EXISTS tr_audit_entidad ON app.entidad_comercial;
 CREATE TRIGGER tr_audit_entidad
 AFTER INSERT OR UPDATE OR DELETE ON app.entidad_comercial
 FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
+
+-- Trigger for stock summary synchronization
+DROP TRIGGER IF EXISTS trg_sync_stock_resumen ON app.movimiento_articulo;
+CREATE TRIGGER trg_sync_stock_resumen
+AFTER INSERT OR UPDATE OR DELETE ON app.movimiento_articulo
+FOR EACH ROW EXECUTE FUNCTION app.fn_sync_stock_resumen();
+
+-- Initialize the summary table with current totals (Ensures consistency if data exists)
+INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
+SELECT id_articulo, stock_total 
+FROM app.v_stock_total
+ON CONFLICT (id_articulo) DO UPDATE 
+SET stock_total = EXCLUDED.stock_total, 
+    ultima_actualizacion = now();
 
 -- ============================================================================
 -- INDEXES
@@ -633,6 +686,7 @@ CREATE INDEX IF NOT EXISTS idx_mov_deposito ON app.movimiento_articulo(id_deposi
 CREATE INDEX IF NOT EXISTS idx_mov_deposito_fecha ON app.movimiento_articulo(id_deposito, fecha);
 CREATE INDEX IF NOT EXISTS idx_mov_documento ON app.movimiento_articulo(id_documento);
 CREATE INDEX IF NOT EXISTS idx_mov_tipo ON app.movimiento_articulo(id_tipo_movimiento);
+CREATE INDEX IF NOT EXISTS idx_mov_fecha_desc ON app.movimiento_articulo(fecha DESC);
 
 -- Payment indexes
 CREATE INDEX IF NOT EXISTS idx_pago_documento ON app.pago(id_documento);
@@ -653,7 +707,7 @@ CREATE INDEX IF NOT EXISTS idx_remito_numero ON app.remito(numero);
 CREATE INDEX IF NOT EXISTS idx_log_usuario_fecha ON seguridad.log_actividad(id_usuario, fecha_hora);
 CREATE INDEX IF NOT EXISTS idx_log_tipo_fecha ON seguridad.log_actividad(id_tipo_evento_log, fecha_hora);
 CREATE INDEX IF NOT EXISTS idx_log_entidad ON seguridad.log_actividad(entidad);
-CREATE INDEX IF NOT EXISTS idx_log_fecha ON seguridad.log_actividad(fecha_hora);
+CREATE INDEX IF NOT EXISTS idx_log_fecha_desc ON seguridad.log_actividad(fecha_hora DESC);
 
 -- ============================================================================
 -- SEED DATA (Universal)

@@ -274,7 +274,8 @@ class Database:
                 (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= 0) as sin_stock,
                 (SELECT COALESCE(SUM(costo * stock_actual), 0) FROM app.v_articulo_detallado) as valor_costo,
                 (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad > 0) as entradas_mes,
-                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad < 0) as salidas_mes
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad < 0) as salidas_mes,
+                (SELECT COALESCE(SUM(stock_actual), 0) FROM app.v_articulo_detallado) as stock_total_unidades
         """)
         row = cur.fetchone()
         
@@ -287,7 +288,8 @@ class Database:
             "sin_stock": row[3] or 0,
             "valor_costo": float(row[4] or 0) if show_values else "—",
             "entradas_mes": row[5] or 0,
-            "salidas_mes": row[6] or 0
+            "salidas_mes": row[6] or 0,
+            "stock_unidades": row[7] or 0
         }
 
     def _get_stats_entidades_extended(self, cur, role) -> Dict[str, Any]:
@@ -1214,6 +1216,8 @@ class Database:
         tipo: Optional[str] = None,
         activo: bool = True,
         notas: Optional[str] = None,
+        id_localidad: Optional[int] = None,
+        id_condicion_iva: Optional[int] = None,
     ) -> int:
         def clean(value: Any) -> Optional[str]:
             if value is None:
@@ -1247,9 +1251,14 @@ class Database:
                 domicilio,
                 tipo,
                 activo,
-                notas
+                ativo,
+                notas,
+                id_localidad,
+                id_condicion_iva,
+                fecha_creacion,
+                fecha_actualizacion
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
             RETURNING id
         """
         with self.pool.connection() as conn:
@@ -1268,6 +1277,8 @@ class Database:
                         tipo_clean,
                         bool(activo),
                         clean(notas),
+                        id_localidad,
+                        id_condicion_iva,
                     ),
                 )
                 res = cur.fetchone()
@@ -1298,7 +1309,7 @@ class Database:
 
 
     def update_entity_fields(self, entity_id: int, updates: Dict[str, Any]) -> None:
-        allowed = {"nombre", "apellido", "razon_social", "cuit", "domicilio", "telefono", "email", "activo", "tipo"}
+        allowed = {"nombre", "apellido", "razon_social", "cuit", "domicilio", "telefono", "email", "activo", "tipo", "notas", "id_localidad", "id_condicion_iva"}
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
             return
@@ -1706,6 +1717,13 @@ class Database:
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
+                return _rows_to_dicts(cur)
+
+    def fetch_localidades_by_provincia(self, id_provincia: int) -> List[Dict[str, Any]]:
+        query = "SELECT id, nombre, id_provincia FROM ref.localidad WHERE id_provincia = %s ORDER BY nombre"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (id_provincia,))
                 return _rows_to_dicts(cur)
 
     def count_localidades(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
@@ -2810,10 +2828,101 @@ class Database:
             with conn.cursor() as cur:
                 cur.execute(query, (documento_id,))
                 return _rows_to_dicts(cur)
+    
+    def create_stock_movement(
+        self,
+        *,
+        id_articulo: int,
+        id_tipo_movimiento: int,
+        cantidad: float,
+        id_deposito: int = 1,
+        observacion: Optional[str] = None,
+        id_documento: Optional[int] = None,
+        id_usuario: Optional[int] = None
+    ) -> int:
+        query = """
+            INSERT INTO app.movimiento_articulo (
+                id_articulo,
+                id_tipo_movimiento,
+                cantidad,
+                id_deposito,
+                observacion,
+                id_documento,
+                id_usuario
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """
+        # If id_usuario not passed, try to use session user if available, or current_user_id
+        if id_usuario is None and hasattr(self, 'current_user_id'):
+            id_usuario = self.current_user_id
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                self._setup_session(cur) # Sets app.user_id for audit
+                cur.execute(
+                    query,
+                    (
+                        id_articulo,
+                        id_tipo_movimiento,
+                        cantidad,
+                        id_deposito,
+                        observacion,
+                        id_documento,
+                        id_usuario
+                    )
+                )
+                res = cur.fetchone()
+                conn.commit()
+                return res.get("id") if isinstance(res, dict) else res[0]
+
+    def create_payment(
+        self,
+        *,
+        id_documento: int,
+        id_forma_pago: int,
+        monto: float,
+        fecha: Optional[str] = None,
+        referencia: Optional[str] = None,
+        observacion: Optional[str] = None
+    ) -> int:
+        query = """
+            INSERT INTO app.pago (
+                id_documento,
+                id_forma_pago,
+                monto,
+                fecha,
+                referencia,
+                observacion
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """
+        final_fecha = fecha if fecha else datetime.now()
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                self._setup_session(cur)
+                cur.execute(
+                    query,
+                    (
+                        id_documento,
+                        id_forma_pago,
+                        monto,
+                        final_fecha,
+                        referencia,
+                        observacion
+                    )
+                )
+                res = cur.fetchone()
+                conn.commit()
+                return res.get("id") if isinstance(res, dict) else res[0]
 
     def create_document(self, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
-                        numero_serie: Optional[str] = None, descuento_porcentaje: float = 0) -> int:
+                        numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
+                        fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
+                        id_lista_precio: Optional[int] = None) -> int:
         """
         items: list of {id_articulo, cantidad, precio_unitario, porcentaje_iva}
         """
@@ -2821,8 +2930,8 @@ class Database:
             INSERT INTO app.documento (
                 id_tipo_documento, id_entidad_comercial, id_deposito, 
                 observacion, numero_serie, descuento_porcentaje, id_usuario,
-                neto, subtotal, iva_total, total, fecha
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                neto, subtotal, iva_total, total, fecha, fecha_vencimiento, id_lista_precio
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
 
@@ -2848,13 +2957,25 @@ class Database:
         subtotal = neto_total
         desc_val = subtotal * (float(descuento_porcentaje) / 100.0)
         total = (subtotal - desc_val) + iva_total
+        
+        # Default dates if not provided
+        if not fecha:
+            # Use SQL 'now()' if None, but we need to pass a value or change query.
+            # Easier to let Python handle "now" or SQL handle it.
+            # Since query expects %s, we should pass datetime.now() if None, OR generic 'now()'.
+            # Let's pass datetime object or None if we change query. 
+            # Current query has `VALUES (..., %s)` for fecha. 
+            pass # We will handle in params
+            
+        final_fecha = fecha if fecha else datetime.now()
 
         with self._transaction() as cur:
             # Header
             cur.execute(header_query, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_serie, descuento_porcentaje, self.current_user_id,
-                neto_total, subtotal, iva_total, total
+                neto_total, subtotal, iva_total, total, 
+                final_fecha, fecha_vencimiento, id_lista_precio
             ))
             res = cur.fetchone()
             doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]

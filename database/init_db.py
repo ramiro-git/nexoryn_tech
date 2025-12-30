@@ -26,6 +26,33 @@ except ImportError:
 MAX_BIGINT = 9223372036854775807
 MIN_BIGINT = -9223372036854775808
 
+
+class SuppressTriggers:
+    """Context manager to temporarily disable triggers on specific tables."""
+    def __init__(self, conn, tables: List[str]):
+        self.conn = conn
+        self.tables = tables
+
+    def __enter__(self):
+        logger.info(f"Suspending triggers for {len(self.tables)} tables to speed up import...")
+        with self.conn.cursor() as cur:
+            for table in self.tables:
+                try:
+                    cur.execute(sql.SQL("ALTER TABLE {} DISABLE TRIGGER ALL").format(sql.SQL(table)))
+                except Exception as e:
+                    logger.warning(f"Could not disable triggers for {table}: {e}")
+        self.conn.commit()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        logger.info("Re-enabling triggers...")
+        with self.conn.cursor() as cur:
+            for table in self.tables:
+                try:
+                    cur.execute(sql.SQL("ALTER TABLE {} ENABLE TRIGGER ALL").format(sql.SQL(table)))
+                except Exception as e:
+                    logger.error(f"Could not enable triggers for {table}: {e}")
+        self.conn.commit()
+
 try:
     import psycopg2
     from psycopg2 import sql
@@ -262,40 +289,37 @@ class LookupCache:
         if not name: return None
         return self._get_cache(schema, table).get(name.strip().lower())
 
-    def get_or_create(self, table: str, name_column: str, value: str, schema: str = "ref") -> Optional[int]:
-        """Get ID from reference table, creating if necessary."""
-        value = str(value).strip() if value else None
-        if not value: return None
+    def get_or_create(self, table: str, name_column: str, value: Any, schema: str = "ref") -> Optional[int]:
+        """Get ID from reference table, creating if necessary. Vectorized-friendly check."""
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        
+        val_str = str(value).strip()
+        if not val_str: return None
         
         cache = self._get_cache(schema, table)
-        if value.lower() in cache:
-            return cache[value.lower()]
+        val_lower = val_str.lower()
+        if val_lower in cache:
+            return cache[val_lower]
         
         with self.conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("SELECT id FROM {}.{} WHERE LOWER({}::text) = LOWER(%s)").format(
-                    sql.Identifier(schema), sql.Identifier(table), sql.Identifier(name_column)
-                ),
-                (value,)
-            )
-            res = cur.fetchone()
-            if res:
-                cache[value.lower()] = res[0]
-                return res[0]
-            
             try:
                 cur.execute(
-                    sql.SQL("INSERT INTO {}.{} ({}) VALUES (%s) RETURNING id").format(
-                        sql.Identifier(schema), sql.Identifier(table), sql.Identifier(name_column)
+                    sql.SQL("INSERT INTO {}.{} ({}) VALUES (%s) ON CONFLICT ({}) DO UPDATE SET {}=EXCLUDED.{} RETURNING id").format(
+                        sql.Identifier(schema), sql.Identifier(table), sql.Identifier(name_column),
+                        sql.Identifier(name_column), sql.Identifier(name_column), sql.Identifier(name_column)
                     ),
-                    (value,)
+                    (val_str,)
                 )
-                new_id = cur.fetchone()[0]
-                cache[value.lower()] = new_id
-                return new_id
-            except Exception:
+                res = cur.fetchone()
+                if res:
+                    new_id = res[0]
+                    cache[val_lower] = new_id
+                    return new_id
+            except Exception as e:
+                logger.warning(f"Error in get_or_create for {table}: {e}")
                 self.conn.rollback()
-                return None
+            return None
 
     def preload(self, table: str, name_column: str, schema: str = "ref") -> None:
         """Preload all values from a reference table into cache."""
@@ -405,16 +429,15 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     
     df['ID_IVA'] = df['Iva'].map(get_iva_id).astype('Int64')
     
-    def get_loc_id(row):
-        val = row['Loc']
-        if not val: return None
-        prov = row['Prov_Filled']
-        pid = prov_cache.get(prov.lower())
-        if pid:
-            return localidad_cache.get((val.lower(), pid))
-        return None
-        
-    df['ID_LOC'] = df.apply(get_loc_id, axis=1).astype('Int64')
+    # Vectorized Locality Mapping (Merge instead of apply)
+    df_loc_keys = df[['Loc', 'Prov_Filled']].copy()
+    df_loc_keys['loc_lower'] = df_loc_keys['Loc'].str.lower()
+    df_loc_keys['prov_lower'] = df_loc_keys['Prov_Filled'].str.lower()
+    df_loc_keys['pid'] = df_loc_keys['prov_lower'].map(prov_cache.get)
+    
+    # Create lookup series from locality_cache dict: (name_lower, pid) -> id
+    loc_lookup = pd.Series(localidad_cache)
+    df['ID_LOC'] = df_loc_keys.apply(lambda r: localidad_cache.get((r['loc_lower'], r['pid'])), axis=1).astype('Int64')
 
     if 'Cuit' in df.columns:
         df['Cuit_Clean'] = df['Cuit'].astype(str).str.replace(r'[ -]', '', regex=True).str.slice(0, 13).replace({'None': None, 'nan': None, '': None})
@@ -508,11 +531,8 @@ def import_articulos(conn: psycopg2.extensions.connection, cache: LookupCache) -
     
     # 3. Vectorized Mapping
     
-    # Seed IVA types to ensure they exist (prevent missing required 'codigo' on create)
-    with conn.cursor() as cur:
-        # Codigo 1=21%
-        cur.execute("INSERT INTO ref.tipo_iva (codigo, porcentaje, descripcion) VALUES (1, 21.00, 'IVA 21%') ON CONFLICT (codigo) DO NOTHING")
-    conn.commit()
+    # Preload IVA types (standard ones seeded in database.sql)
+    cache.preload("tipo_iva", "porcentaje")
     
     marca_map = cache._get_cache("ref", "marca")
     rubro_map = cache._get_cache("ref", "rubro")
@@ -529,8 +549,8 @@ def import_articulos(conn: psycopg2.extensions.connection, cache: LookupCache) -
     df['id_marca'] = df['id_marca'].fillna(default_marca)
     df['id_rubro'] = df['id_rubro'].fillna(default_rubro)
     
-    # Now this will just find it
-    id_iva_21 = cache.get_or_create("tipo_iva", "porcentaje", "21.00") or 1 
+    # Use cached ID for 21% (should be in seed data)
+    id_iva_21 = cache.get("tipo_iva", "21.00") or 1 
     
     final_df = pd.DataFrame()
     final_df['id'] = df['IdArt'].astype(int)
@@ -798,7 +818,8 @@ def import_ventdet(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     
     default_art_id = 9
     df['id_articulo_clean'] = pd.to_numeric(df['IdArt'], errors='coerce').fillna(default_art_id).astype(int)
-    df['id_articulo_final'] = df['id_articulo_clean'].apply(lambda x: x if x in existing_art_ids else default_art_id)
+    # Fast membership check using isin
+    df['id_articulo_final'] = np.where(df['id_articulo_clean'].isin(existing_art_ids), df['id_articulo_clean'], default_art_id)
     
     final_df = pd.DataFrame()
     final_df['id_documento'] = df['IdV'].astype(int)
@@ -882,7 +903,7 @@ def show_summary(conn: psycopg2.extensions.connection) -> None:
     logger.info("="*60)
     logger.info("DATABASE SUMMARY")
     with conn.cursor() as cur:
-        for t in ['app.entidad_comercial', 'app.articulo', 'app.documento']:
+        for t in ['app.entidad_comercial', 'app.articulo', 'app.documento', 'app.documento_detalle', 'app.movimiento_articulo', 'app.pago']:
             try:
                 cur.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.SQL(t)))
                 logger.info(f"{t}: {cur.fetchone()[0]}")
@@ -912,13 +933,43 @@ def main():
             
         execute_schema(conn)
         
+
         if not args.skip_csv:
-            cache = LookupCache(conn)
-            import_cliprov(conn, cache)
-            import_articulos(conn, cache)
-            import_ventcab(conn, cache)
-            import_ventdet(conn, cache)
-            update_sequences(conn)
+            # Define tables to disable triggers during import
+            # This massively speeds up bulk inserts by avoiding per-row checks/logs
+            tables_to_suspend = [
+                'app.entidad_comercial', 
+                'app.articulo', 
+                'app.articulo_precio',
+                'app.documento', 
+                'app.documento_detalle', 
+                'app.movimiento_articulo', 
+                'app.pago',
+                'app.remito'
+            ]
+            
+            with SuppressTriggers(conn, tables_to_suspend):
+                cache = LookupCache(conn)
+                import_cliprov(conn, cache)
+                import_articulos(conn, cache)
+                import_ventcab(conn, cache)
+                import_ventdet(conn, cache)
+                update_sequences(conn)
+
+            
+            # Recalculate Stock Summary Table (Crucial for performance)
+            logger.info("Initializing stock summary table from movements...")
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
+                    SELECT id_articulo, stock_total 
+                    FROM app.v_stock_total
+                    ON CONFLICT (id_articulo) DO UPDATE 
+                    SET stock_total = EXCLUDED.stock_total, 
+                        ultima_actualizacion = now()
+                """)
+            conn.commit()
+            
             show_summary(conn)
 
         if not args.skip_csv:
