@@ -27,6 +27,7 @@ try:
         SimpleFilterConfig,
     )
     from desktop_app.components.toast import ToastManager
+    from desktop_app.components.mass_update_view import MassUpdateView
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -41,6 +42,7 @@ except ImportError:
         GenericTable,
         SimpleFilterConfig,
     )
+    from components.mass_update_view import MassUpdateView # type: ignore
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -3585,6 +3587,14 @@ def main(page: ft.Page) -> None:
             dashboard_view_component.on_navigate = lambda x: set_view(x)
         return dashboard_view_component
 
+    masivos_view = None
+
+    def ensure_masivos_view():
+        nonlocal masivos_view
+        if not masivos_view and db:
+             masivos_view = MassUpdateView(db, show_toast)
+        return masivos_view
+
     # content_holder starts with dashboard_view if possible
     content_holder = ft.Container(
         expand=True, 
@@ -4011,6 +4021,10 @@ def main(page: ft.Page) -> None:
              show_toast("Acceso restringido", kind="error")
              return
 
+        if key == "masivos" and CURRENT_USER_ROLE not in ["ADMIN", "GERENTE"]:
+             show_toast("Acceso restringido a Gerencias", kind="error")
+             return
+
         current_view["key"] = key
         
         # Log View Action
@@ -4044,6 +4058,11 @@ def main(page: ft.Page) -> None:
             content_holder.content = movimientos_view
         elif key == "pagos":
             content_holder.content = pagos_view
+        elif key == "masivos":
+            content_holder.content = ensure_masivos_view()
+            try:
+                content_holder.content.load_catalogs()
+            except: pass
         else:
             content_holder.content = articulos_view
         update_nav()
@@ -4142,6 +4161,8 @@ def main(page: ft.Page) -> None:
                 item.visible = (CURRENT_USER_ROLE == "ADMIN")
             elif key == "config":
                 item.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
+            elif key == "masivos":
+                item.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
             
             # Header visibility
             header_sistema.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
@@ -4195,6 +4216,7 @@ def main(page: ft.Page) -> None:
                         nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
                         nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
                         nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
+                        nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
                         
                         ft.Container(height=15),
                         header_sistema := ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
