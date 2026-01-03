@@ -13,6 +13,15 @@ def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
     ]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+def _to_id(val: Any) -> Optional[int]:
+    """Safely convert a filter value to an integer ID."""
+    if val in (None, "", "Todas", "Todos", "---"):
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
 
 class Database:
     def __init__(self, dsn: str, *, pool_min_size: int = 1, pool_max_size: int = 4):
@@ -37,6 +46,13 @@ class Database:
     def set_context(self, user_id: Optional[int], ip: Optional[str] = None) -> None:
         self.current_user_id = user_id
         self.current_ip = ip
+
+    def fetch_depositos(self, limit: int = 100) -> List[Dict[str, Any]]:
+        query = "SELECT id, nombre, ubicacion FROM ref.deposito WHERE activo = TRUE ORDER BY nombre LIMIT %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
 
     def _setup_session(self, cur: Any) -> None:
         if self.current_user_id:
@@ -161,6 +177,22 @@ class Database:
                 rows = cur.fetchall()
                 result = [row[0] if isinstance(row, (list, tuple)) else row.get("nombre", "") for row in rows]
                 self._catalog_cache[cache_key] = (now, result)
+                return result
+
+    def _get_cached_catalog_raw(self, cache_key: str, query: str) -> List[Dict[str, Any]]:
+        """Get raw catalog (dicts) from cache or fetch from DB if expired."""
+        import time
+        now = time.time()
+        if cache_key in self._catalog_cache:
+            cached_time, cached_data = self._catalog_cache[cache_key]
+            if now - cached_time < self._CACHE_TTL:
+                return cached_data # type: ignore
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                result = _rows_to_dicts(cur)
+                self._catalog_cache[cache_key] = (now, result) # type: ignore
                 return result
 
     def invalidate_catalog_cache(self, cache_key: Optional[str] = None) -> None:
@@ -589,6 +621,15 @@ class Database:
                 cur.execute(query, (limit,))
                 return _rows_to_dicts(cur)
 
+    def get_max_cost(self) -> float:
+        query = "SELECT MAX(costo) FROM app.articulo"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                res = cur.fetchone()
+                val = res.get("max") if isinstance(res, dict) else (res[0] if res else None)
+                return float(val) if val is not None else 1000.0
+
     def close(self) -> None:
         """Gracefully close the connection pool and join worker threads."""
         self.is_closing = True
@@ -642,8 +683,10 @@ class Database:
 
         if tipo:
             tipo_upper = tipo.upper()
-            if tipo_upper == "AMBOS":
-                filters.append("tipo IN ('CLIENTE', 'PROVEEDOR', 'AMBOS')")
+            if tipo_upper == "CLIENTE":
+                filters.append("tipo IN ('CLIENTE', 'AMBOS')")
+            elif tipo_upper == "PROVEEDOR":
+                filters.append("tipo IN ('PROVEEDOR', 'AMBOS')")
             else:
                 filters.append("tipo = %s")
                 params.append(tipo_upper)
@@ -683,6 +726,36 @@ class Database:
             filters.append("activo = %s")
             params.append(bool(activo))
 
+        # Date range filters
+        desde = advanced.get("desde")
+        if isinstance(desde, str) and desde.strip():
+            filters.append("fecha_creacion::date >= %s::date")
+            params.append(desde.strip())
+
+        hasta = advanced.get("hasta")
+        if isinstance(hasta, str) and hasta.strip():
+            filters.append("fecha_creacion::date <= %s::date")
+            params.append(hasta.strip())
+
+        # Additional text filters
+        text_fields = {
+            "apellido": "apellido",
+            "nombre": "nombre",
+            "razon_social": "razon_social",
+            "domicilio": "domicilio",
+            "email": "email",
+            "telefono": "telefono",
+            "notas": "notas",
+            "localidad": "localidad",
+            "provincia": "provincia",
+            "condicion_iva": "condicion_iva"
+        }
+        for key, col in text_fields.items():
+            val = advanced.get(key)
+            if isinstance(val, str) and val.strip():
+                filters.append(f"lower({col}) LIKE %s")
+                params.append(f"%{val.strip().lower()}%")
+
         return " AND ".join(filters), params
 
     def fetch_entities(
@@ -701,13 +774,18 @@ class Database:
             "id": "id",
             "tipo": "tipo",
             "nombre_completo": "nombre_completo",
+            "apellido": "apellido",
+            "nombre": "nombre",
             "razon_social": "razon_social",
             "cuit": "cuit",
+            "domicilio": "domicilio",
             "localidad": "localidad",
             "provincia": "provincia",
+            "condicion_iva": "condicion_iva",
             "lista_precio": "lista_precio",
             "descuento": "descuento",
             "saldo_cuenta": "saldo_cuenta",
+            "fecha_creacion": "fecha_creacion",
             "activo": "activo",
         }
         order_by = self._build_order_by(sorts, sort_columns, default="nombre_completo ASC", tiebreaker="id ASC")
@@ -717,10 +795,18 @@ class Database:
                 id,
                 tipo,
                 nombre_completo,
+                apellido,
+                nombre,
                 razon_social,
                 cuit,
+                domicilio,
                 localidad,
                 provincia,
+                condicion_iva,
+                telefono,
+                email,
+                notas,
+                fecha_creacion,
                 lista_precio,
                 descuento,
                 saldo_cuenta,
@@ -804,10 +890,22 @@ class Database:
                 params.append(f"%{value.strip().lower()}%")
 
         add_like("nombre", advanced.get("nombre"))
-        add_like("marca", advanced.get("marca"))
-        add_like("rubro", advanced.get("rubro"))
+        
+        marca_id = _to_id(advanced.get("id_marca"))
+        if marca_id is not None:
+            filters.append("id_marca = %s")
+            params.append(marca_id)
+        else:
+            add_like("marca", advanced.get("marca")) # Keep text search as fallback or secondary
+
+        rubro_id = _to_id(advanced.get("id_rubro"))
+        if rubro_id is not None:
+            filters.append("id_rubro = %s")
+            params.append(rubro_id)
+        else:
+            add_like("rubro", advanced.get("rubro"))
+
         add_like("proveedor", advanced.get("proveedor"))
-        add_like("ubicacion", advanced.get("ubicacion"))
 
         costo_min = advanced.get("costo_min")
         costo_max = advanced.get("costo_max")
@@ -830,10 +928,36 @@ class Database:
 
         # List price filter (if provided, we might want to filter only articles with that list price)
         # But usually we just want to see the value. Let's assume filter means "must have price"
-        lp_id = advanced.get("id_lista_precio")
-        if lp_id not in (None, ""):
+        lp_id = _to_id(advanced.get("id_lista_precio"))
+        if lp_id is not None:
             filters.append("id IN (SELECT id_articulo FROM app.articulo_precio WHERE id_lista_precio = %s)")
-            params.append(int(lp_id))
+            params.append(lp_id)
+
+        iva_id = _to_id(advanced.get("id_tipo_iva"))
+        if iva_id is not None:
+            filters.append("id_tipo_iva = %s")
+            params.append(iva_id)
+
+        unidad_id = _to_id(advanced.get("id_unidad_medida"))
+        if unidad_id is not None:
+            filters.append("id_unidad_medida = %s")
+            params.append(unidad_id)
+
+        prov_id = _to_id(advanced.get("id_proveedor"))
+        if prov_id is not None:
+            filters.append("id_proveedor = %s")
+            params.append(prov_id)
+
+        ubicacion = advanced.get("ubicacion_exacta")
+        if ubicacion not in (None, ""):
+            filters.append("ubicacion = %s")
+            params.append(str(ubicacion))
+
+        redon = advanced.get("redondeo")
+        if redon == "SI":
+            filters.append("redondeo = TRUE")
+        elif redon == "NO":
+            filters.append("redondeo = FALSE")
 
         return " AND ".join(filters), params
 
@@ -864,17 +988,17 @@ class Database:
         }
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC")
 
-        lp_id = (advanced or {}).get("id_lista_precio")
-        if lp_id not in (None, ""):
+        lp_id = _to_id((advanced or {}).get("id_lista_precio"))
+        if lp_id is not None:
             query = f"""
                 SELECT ad.*, ap.precio as precio_lista
                 FROM app.v_articulo_detallado ad
                 LEFT JOIN app.articulo_precio ap ON ad.id = ap.id_articulo AND ap.id_lista_precio = %s
             """
-            params.insert(0, int(lp_id))
+            params.insert(0, lp_id)
         else:
             query = f"""
-                SELECT ad.*, NULL::numeric as precio_lista
+                SELECT ad.*
                 FROM app.v_articulo_detallado ad
             """
 
@@ -990,6 +1114,12 @@ class Database:
 
     def list_rubros(self) -> List[str]:
         return self._get_cached_catalog("rubros", "SELECT nombre FROM ref.rubro ORDER BY nombre")
+
+    def list_marcas_full(self) -> List[Dict[str, Any]]:
+        return self._get_cached_catalog_raw("marcas_full", "SELECT id, nombre FROM ref.marca ORDER BY nombre")
+
+    def list_rubros_full(self) -> List[Dict[str, Any]]:
+        return self._get_cached_catalog_raw("rubros_full", "SELECT id, nombre FROM ref.rubro ORDER BY nombre")
 
     def list_proveedores(self) -> List[Dict[str, Any]]:
         """Special case: list providers for dropdowns (id + name)."""
@@ -1203,7 +1333,7 @@ class Database:
                 result = cur.fetchone()
                 return result.get("total", 0) if isinstance(result, dict) else result[0]
 
-    def create_entity(
+    def create_entity_full(
         self,
         *,
         nombre: Optional[str] = None,
@@ -1218,98 +1348,117 @@ class Database:
         notas: Optional[str] = None,
         id_localidad: Optional[int] = None,
         id_condicion_iva: Optional[int] = None,
+        # Pricing info
+        id_lista_precio: Optional[int] = None,
+        descuento: float = 0,
+        limite_credito: float = 0,
     ) -> int:
-        def clean(value: Any) -> Optional[str]:
-            if value is None:
-                return None
-            if isinstance(value, str):
-                trimmed = value.strip()
+        """Atomic operation to create an entity and its associated pricing info."""
+        with self._transaction() as cur:
+            # 1. Create Entity
+            def clean(value: Any) -> Optional[str]:
+                if value is None: return None
+                if isinstance(value, str):
+                    trimmed = value.strip()
+                    return trimmed if trimmed else None
+                trimmed = str(value).strip()
                 return trimmed if trimmed else None
-            trimmed = str(value).strip()
-            return trimmed if trimmed else None
 
-        nombre_clean = clean(nombre)
-        apellido_clean = clean(apellido)
-        razon_social_clean = clean(razon_social)
-        if not any([nombre_clean, apellido_clean, razon_social_clean]):
-            raise ValueError("Completá al menos nombre/apellido o razón social.")
+            nombre_clean = clean(nombre)
+            apellido_clean = clean(apellido)
+            razon_social_clean = clean(razon_social)
+            
+            if not any([nombre_clean, apellido_clean, razon_social_clean]):
+                raise ValueError("Completá al menos nombre/apellido o razón social.")
 
-        tipo_clean = clean(tipo)
-        if tipo_clean is not None:
-            tipo_clean = tipo_clean.upper()
-            if tipo_clean not in {"CLIENTE", "PROVEEDOR", "AMBOS"}:
-                raise ValueError("Tipo inválido (usa CLIENTE/PROVEEDOR/AMBOS).")
+            tipo_clean = clean(tipo)
+            if tipo_clean is not None:
+                tipo_clean = tipo_clean.upper()
+                if tipo_clean not in {"CLIENTE", "PROVEEDOR", "AMBOS"}:
+                    raise ValueError("Tipo inválido (usa CLIENTE/PROVEEDOR/AMBOS).")
 
-        query = """
-            INSERT INTO app.entidad_comercial (
-                nombre,
-                apellido,
-                razon_social,
-                cuit,
-                telefono,
-                email,
-                domicilio,
-                tipo,
-                activo,
-                ativo,
-                notas,
-                id_localidad,
-                id_condicion_iva,
-                fecha_creacion,
-                fecha_actualizacion
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
-            RETURNING id
-        """
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(
-                    query,
-                    (
-                        nombre_clean,
-                        apellido_clean,
-                        razon_social_clean,
-                        clean(cuit),
-                        clean(telefono),
-                        clean(email),
-                        clean(domicilio),
-                        tipo_clean,
-                        bool(activo),
-                        clean(notas),
-                        id_localidad,
-                        id_condicion_iva,
-                    ),
+            q_ent = """
+                INSERT INTO app.entidad_comercial (
+                    nombre, apellido, razon_social, cuit, telefono, email, 
+                    domicilio, tipo, activo, notas, id_localidad, id_condicion_iva, 
+                    fecha_creacion, fecha_actualizacion
                 )
-                res = cur.fetchone()
-                conn.commit()
-                self.invalidate_catalog_cache("proveedores")
-                return res.get("id") if isinstance(res, dict) else res[0]
-
-    def update_client_list_data(self, entity_id: int, list_id: Optional[int], discount: float = 0, credit_limit: float = 0) -> None:
-        if list_id is None or list_id == "" or str(list_id) == "":
-            query = "DELETE FROM app.lista_cliente WHERE id_entidad_comercial = %s"
-            params = (entity_id,)
-        else:
-            query = """
-                INSERT INTO app.lista_cliente (id_entidad_comercial, id_lista_precio, descuento, limite_credito)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (id_entidad_comercial) DO UPDATE SET
-                    id_lista_precio = EXCLUDED.id_lista_precio,
-                    descuento = EXCLUDED.descuento,
-                    limite_credito = EXCLUDED.limite_credito
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                RETURNING id
             """
-            params = (entity_id, int(list_id), discount, credit_limit)
-        
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, params)
-                conn.commit()
+            cur.execute(q_ent, (
+                nombre_clean, apellido_clean, razon_social_clean, clean(cuit),
+                clean(telefono), clean(email), clean(domicilio), tipo_clean,
+                bool(activo), clean(notas), id_localidad, id_condicion_iva
+            ))
+            entity_id = cur.fetchone()[0]
 
+            # 2. Assign Pricing List if provided
+            if id_lista_precio and str(id_lista_precio).strip():
+                q_list = """
+                    INSERT INTO app.lista_cliente (id_entidad_comercial, id_lista_precio, descuento, limite_credito)
+                    VALUES (%s, %s, %s, %s)
+                """
+                cur.execute(q_list, (entity_id, int(id_lista_precio), descuento, limite_credito))
+            
+            self.invalidate_catalog_cache("proveedores")
+            return entity_id
+
+    def update_entity_full(
+        self,
+        entity_id: int,
+        *,
+        updates: Dict[str, Any],
+        # Pricing info
+        id_lista_precio: Optional[Any] = None,
+        descuento: float = 0,
+        limite_credito: float = 0,
+    ) -> None:
+        """Atomic operation to update entity fields and its associated pricing info."""
+        with self._transaction() as cur:
+            # 1. Update Entity fields if any
+            if updates:
+                # Ensure date is updated
+                updates['fecha_actualizacion'] = datetime.now()
+                
+                # Check tipo
+                if 'tipo' in updates and updates['tipo']:
+                    updates['tipo'] = updates['tipo'].upper()
+                    if updates['tipo'] not in {"CLIENTE", "PROVEEDOR", "AMBOS"}:
+                        raise ValueError("Tipo inválido.")
+
+                cols = []
+                vals = []
+                for k, v in updates.items():
+                    cols.append(f"{k} = %s")
+                    vals.append(v)
+                vals.append(entity_id)
+                
+                q_upd = f"UPDATE app.entidad_comercial SET {', '.join(cols)} WHERE id = %s"
+                cur.execute(q_upd, vals)
+
+            # 2. Update Pricing List
+            if id_lista_precio is None or str(id_lista_precio).strip() == "":
+                cur.execute("DELETE FROM app.lista_cliente WHERE id_entidad_comercial = %s", (entity_id,))
+            else:
+                q_list = """
+                    INSERT INTO app.lista_cliente (id_entidad_comercial, id_lista_precio, descuento, limite_credito)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (id_entidad_comercial) DO UPDATE SET
+                        id_lista_precio = EXCLUDED.id_lista_precio,
+                        descuento = EXCLUDED.descuento,
+                        limite_credito = EXCLUDED.limite_credito
+                """
+                cur.execute(q_list, (entity_id, int(id_lista_precio), descuento, limite_credito))
+            
+            self.invalidate_catalog_cache("proveedores")
+
+    def create_entity(self, **kwargs) -> int:
+        """Legacy wrapper for create_entity_full"""
+        return self.create_entity_full(**kwargs)
 
     def update_entity_fields(self, entity_id: int, updates: Dict[str, Any]) -> None:
-        allowed = {"nombre", "apellido", "razon_social", "cuit", "domicilio", "telefono", "email", "activo", "tipo", "notas", "id_localidad", "id_condicion_iva"}
+        allowed = {"nombre", "apellido", "razon_social", "cuit", "domicilio", "telefono", "email", "activo", "tipo", "notas", "id_localidad", "id_condicion_iva", "condicion_iva", "lista_precio", "id_lista_precio"}
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
             return
@@ -1322,7 +1471,35 @@ class Database:
                 filtered["activo"] = False
             else:
                 raise ValueError("Valor inválido para activo (usa true/false).")
+
+        if "condicion_iva" in filtered:
+            iva_nombre = filtered.pop("condicion_iva")
+            if iva_nombre:
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id FROM ref.condicion_iva WHERE nombre = %s", (iva_nombre,))
+                        res = cur.fetchone()
+                        iva_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                if iva_id:
+                    filtered["id_condicion_iva"] = iva_id
+                else:
+                    raise ValueError(f"Condición de IVA inválida: {iva_nombre}")
+
+        if "lista_precio" in filtered:
+            lista_nombre = filtered.pop("lista_precio")
+            if lista_nombre:
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id FROM ref.lista_precio WHERE nombre = %s", (lista_nombre,))
+                        res = cur.fetchone()
+                        lista_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                if lista_id:
+                    filtered["id_lista_precio"] = lista_id
+                else:
+                    raise ValueError(f"Lista de Precio inválida: {lista_nombre}")
+
         assignments = ", ".join(f"{col} = %s" for col in filtered)
+
         params = [filtered[col] for col in filtered]
         params.append(entity_id)
         query = f"UPDATE app.entidad_comercial SET {assignments} WHERE id = %s"
@@ -1364,6 +1541,7 @@ class Database:
         observacion: Optional[str] = None,
         descuento_base: Any = 0,
         redondeo: bool = False,
+        porcentaje_ganancia_2: Any = None,
     ) -> int:
         def clean(value: Any) -> Optional[str]:
             if value is None:
@@ -1423,6 +1601,7 @@ class Database:
                 costo_value = coerce_non_negative_number(costo, "costo")
                 stock_minimo_value = coerce_non_negative_number(stock_minimo, "stock mínimo")
                 descuento_base_value = coerce_non_negative_number(descuento_base, "descuento base")
+                pgan2_value = coerce_non_negative_number(porcentaje_ganancia_2, "ganancia 2") if porcentaje_ganancia_2 is not None else None
 
                 query = """
                     INSERT INTO app.articulo (
@@ -1438,9 +1617,10 @@ class Database:
                         id_proveedor,
                         observacion,
                         descuento_base,
-                        redondeo
+                        redondeo,
+                        porcentaje_ganancia_2
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """
                 cur.execute(
@@ -1458,7 +1638,8 @@ class Database:
                         id_proveedor,
                         clean(observacion),
                         descuento_base_value,
-                        bool(redondeo)
+                        bool(redondeo),
+                        pgan2_value
                     ),
                 )
                 res = cur.fetchone()
@@ -1470,7 +1651,7 @@ class Database:
             "nombre", "costo", "stock_minimo", "activo", 
             "marca", "rubro", "ubicacion", "observacion",
             "id_tipo_iva", "id_unidad_medida", "id_proveedor",
-            "descuento_base", "redondeo"
+            "descuento_base", "redondeo", "porcentaje_ganancia_2"
         }
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
@@ -1497,6 +1678,8 @@ class Database:
             filtered["stock_minimo"] = coerce_float(filtered["stock_minimo"], "stock_minimo")
         if "descuento_base" in filtered:
             filtered["descuento_base"] = coerce_float(filtered["descuento_base"], "descuento_base")
+        if "porcentaje_ganancia_2" in filtered:
+            filtered["porcentaje_ganancia_2"] = coerce_float(filtered["porcentaje_ganancia_2"], "porcentaje_ganancia_2")
         if "activo" in filtered and isinstance(filtered["activo"], str):
             raw = filtered["activo"].strip().lower()
             if raw in {"1", "true", "si", "sí", "activo", "yes"}:
@@ -1560,10 +1743,12 @@ class Database:
                 a.id_rubro, r.nombre as rubro_nombre,
                 a.costo, a.stock_minimo, a.ubicacion, a.activo, a.observacion,
                 a.id_tipo_iva, a.id_unidad_medida, a.id_proveedor,
-                a.descuento_base, a.redondeo
+                a.descuento_base, a.redondeo, a.porcentaje_ganancia_2,
+                COALESCE(sr.stock_total, 0) as stock_actual
             FROM app.articulo a
             LEFT JOIN ref.marca m ON a.id_marca = m.id
             LEFT JOIN ref.rubro r ON a.id_rubro = r.id
+            LEFT JOIN app.articulo_stock_resumen sr ON a.id = sr.id_articulo
             WHERE a.id = %s
         """
         with self.pool.connection() as conn:
@@ -2473,7 +2658,7 @@ class Database:
                 return res if isinstance(res, dict) else (dict(zip([d[0] for d in cur.description], res)) if res else {})
 
     def update_backup_config(self, updates: Dict[str, Any]) -> None:
-        allowed = {"frecuencia", "hora", "destino_local", "retencion_dias"}
+        allowed = {"frecuencia", "hora", "destino_local", "retencion_dias", "ultimo_daily", "ultimo_weekly", "ultimo_monthly"}
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered: return
         set_clause = ", ".join([f"{k} = %s" for k in filtered.keys()])

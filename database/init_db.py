@@ -360,45 +360,132 @@ class LookupCache:
 # Import Functions
 # ============================================================================
 
+import difflib
+
+def normalize_provincia_name(name: Any) -> Optional[str]:
+    """
+    Normalize province names using aggressive matching.
+    """
+    if not name or not isinstance(name, str):
+        return None
+    
+    raw = name.strip()
+    if not raw:
+        return None
+        
+    lower = raw.lower()
+    
+    # Aggressive Buenos Aires mapping
+    # Covers: Bs As, Ba As, Bs, Bsas, Bs.As, Pcia Bs As, Buenos Aries, etc.
+    if any(x in lower for x in ['bs', 'ba as', 'buenos', 'bueno', 'b.a', 'pcia']):
+        # Distinguish CABA/Capital
+        if any(c in lower for c in ['caba', 'capital', 'ciudad', 'cap', 'autonoma']):
+             return "Ciudad Autónoma de Buenos Aires"
+        return "Buenos Aires"
+        
+    # CABA / Capital Federal
+    if any(x in lower for x in ['caba', 'capital', 'cap. fed', 'c.a.b.a', 'federal', 'barracas']):
+        return "Ciudad Autónoma de Buenos Aires"
+        
+    # Common mistakes/abbreviations
+    if 'cord' in lower: return "Córdoba"
+    if 'fe' in lower and 'santa' in lower: return "Santa Fe"
+    if 'rios' in lower or 'ríos' in lower: return "Entre Ríos"
+    if 'tuc' in lower: return "Tucumán"
+    if 'mendoza' in lower: return "Mendoza"
+    if 'san juan' in lower: return "San Juan"
+    if 'san luis' in lower: return "San Luis"
+    if 'neuq' in lower: return "Neuquén"
+    if 'rio neg' in lower: return "Río Negro"
+    if 'chubut' in lower: return "Chubut"
+    if 'misiones' in lower or 'mision' in lower: return "Misiones"
+    if 'corrientes' in lower: return "Corrientes"
+    if 'formosa' in lower: return "Formosa"
+    if 'santiago' in lower: return "Santiago del Estero"
+    if 'catamarca' in lower: return "Catamarca"
+    if 'jujuy' in lower: return "Jujuy"
+    if 'salta' in lower: return "Salta"
+    if 'rioja' in lower: return "La Rioja"
+    if 'pampa' in lower: return "La Pampa"
+    if 'cruz' in lower: return "Santa Cruz"
+    if 'tierra' in lower: return "Tierra del Fuego"
+
+    # Canonical list of provinces for final fuzzy check
+    PROVINCIAS = [
+        "Buenos Aires", "Ciudad Autónoma de Buenos Aires", "Catamarca", "Chaco", "Chubut",
+        "Córdoba", "Corrientes", "Entre Ríos", "Formosa", "Jujuy", "La Pampa", "La Rioja",
+        "Mendoza", "Misiones", "Neuquén", "Río Negro", "Salta", "San Juan", "San Luis",
+        "Santa Cruz", "Santa Fe", "Santiago del Estero", "Tierra del Fuego", "Tucumán"
+    ]
+
+    # Fuzzy match with lower cutoff
+    matches = difflib.get_close_matches(raw, PROVINCIAS, n=1, cutoff=0.5)
+    if matches:
+        return matches[0]
+        
+    return raw.title()
+
 def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> int:
-    """Import CLIPROV.csv using Pandas + COPY Protocol."""
-    rows = read_csv_safe(CSV_FILES["cliprov"])
+    """Import CLIPROV.csv (Clients and Suppliers)"""
+    rows = read_csv_safe(CSV_FILES["cliprov"], encoding="utf-8-sig")
     if rows.empty: return 0
     
-    # 1. Clean Data using Vectorized Operations
-    rows['Id'] = pd.to_numeric(rows['Id'], errors='coerce')
-    df = rows.dropna(subset=['Id']).copy()
-    df = df[(df['Id'] <= MAX_BIGINT) & (df['Id'] >= MIN_BIGINT)].copy()
+    # Standardize column names to lowercase
+    df = rows.copy()
+    df.columns = [c.lower() for c in df.columns]
+
+    # Required cleaning
+    df['id'] = pd.to_numeric(df['id'], errors='coerce')
+    df = df.dropna(subset=['id']).copy()
+    df = df[(df['id'] <= MAX_BIGINT) & (df['id'] >= MIN_BIGINT)].copy()
     
     if df.empty: return 0
         
-    string_cols = ['Apell', 'Nomb', 'Dom', 'Otros', 'Loc', 'Provincia', 'Ref', 'Telefono', 'Iva']
+    string_cols = ['apell', 'nomb', 'dom', 'otros', 'loc', 'provincia', 'ref', 'telefono', 'iva', 'fchalta']
     for col in string_cols:
          if col in df.columns:
-            df[col] = df[col].astype(str).str.strip().replace({'nan': None, 'None': None, '': None})
+            if col == 'telefono':
+                df[col] = df[col].astype(str).str.replace(r'[\r\n\t]+', ' ', regex=True).str.strip()
+            else:
+                df[col] = df[col].astype(str).str.strip()
             
-    df['tipo'] = np.where(df['Ref'].astype(str).str.upper() == 'P', 'PROVEEDOR', 'CLIENTE')
+            df[col] = df[col].replace({'nan': None, 'None': None, '': None})
+    
+    # Normalize Province Names
+    if 'provincia' in df.columns:
+        df['provincia'] = df['provincia'].apply(normalize_provincia_name)
+            
+    df['tipo_entidad'] = np.where(df['ref'].astype(str).str.upper() == 'P', 'PROVEEDOR', 'CLIENTE')
 
     # 2. Bulk Create References
-    ivas = df['Iva'].dropna().unique()
-    provincias = df['Provincia'].dropna().unique()
+    ivas = df['iva'].dropna().unique()
+    provincias = df['provincia'].dropna().unique()
     
-    iva_map_code = { "RI": "Responsable Inscripto", "M": "Monotributista", "CF": "Consumidor Final", "EX": "Exento" }
+    iva_map_code = { 
+        "RI": "Responsable Inscripto", 
+        "M": "Monotributista", 
+        "CF": "Consumidor Final", 
+        "EX": "Exento",
+        "0": "Consumidor Final",
+        "1": "Responsable Inscripto"
+    }
     
     cache.preload("condicion_iva", "nombre")
     real_iva_names = set()
     for c in ivas:
-        val = str(c).strip()
-        if not val.isdigit() and val:
-            real_iva_names.add(iva_map_code.get(val.upper(), val))
+        val = str(c).strip().upper()
+        if val in iva_map_code:
+            real_iva_names.add(iva_map_code[val])
+        elif not val.isdigit() and val:
+            real_iva_names.add(val)
 
     cache.bulk_create("condicion_iva", "nombre", real_iva_names)
 
     cache.preload("provincia", "nombre")
     cache.bulk_create("provincia", "nombre", set(provincias))
     prov_cache = cache._get_cache("ref", "provincia")
-    df['Prov_Filled'] = df['Provincia'].fillna("Buenos Aires")
-    unique_locs = df[['Loc', 'Prov_Filled']].dropna(subset=['Loc']).drop_duplicates()
+    df['prov_filled'] = df['provincia'].fillna("Buenos Aires")
+    unique_locs = df[['loc', 'prov_filled']].dropna(subset=['loc']).drop_duplicates()
     
     with conn.cursor() as cur:
         cur.execute("SELECT id, lower(nombre), id_provincia FROM ref.localidad")
@@ -406,8 +493,8 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
             
         new_localities = []
         for row in unique_locs.itertuples(index=False):
-            loc_name = row.Loc
-            prov_name = row.Prov_Filled
+            loc_name = row.loc
+            prov_name = row.prov_filled
             pid = prov_cache.get(prov_name.lower())
             if pid:
                 key = (loc_name.lower(), pid)
@@ -427,63 +514,60 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
         if not val: return None
         return iva_cache.get(iva_map_code.get(val.upper(), val).lower())
     
-    df['ID_IVA'] = df['Iva'].map(get_iva_id).astype('Int64')
+    df['id_iva'] = df['iva'].map(get_iva_id).astype('Int64')
     
-    # Vectorized Locality Mapping (Merge instead of apply)
-    df_loc_keys = df[['Loc', 'Prov_Filled']].copy()
-    df_loc_keys['loc_lower'] = df_loc_keys['Loc'].str.lower()
-    df_loc_keys['prov_lower'] = df_loc_keys['Prov_Filled'].str.lower()
-    df_loc_keys['pid'] = df_loc_keys['prov_lower'].map(prov_cache.get)
+    # Locality Mapping
+    def get_loc_id(r):
+        pid = prov_cache.get(str(r['prov_filled']).lower())
+        return localidad_cache.get((str(r['loc']).lower(), pid))
     
-    # Create lookup series from locality_cache dict: (name_lower, pid) -> id
-    loc_lookup = pd.Series(localidad_cache)
-    df['ID_LOC'] = df_loc_keys.apply(lambda r: localidad_cache.get((r['loc_lower'], r['pid'])), axis=1).astype('Int64')
+    df['id_loc'] = df.apply(get_loc_id, axis=1).astype('Int64')
 
-    if 'Cuit' in df.columns:
-        df['Cuit_Clean'] = df['Cuit'].astype(str).str.replace(r'[ -]', '', regex=True).str.slice(0, 13).replace({'None': None, 'nan': None, '': None})
+    if 'cuit' in df.columns:
+        df['cuit_clean'] = df['cuit'].astype(str).str.replace(r'[ -]', '', regex=True).str.slice(0, 13).replace({'None': None, 'nan': None, '': None})
     else:
-        df['Cuit_Clean'] = None
+        df['cuit_clean'] = None
 
-    df['FchAlta'] = pd.to_datetime(df['FchAlta'], errors='coerce').fillna(datetime.now())
+    df['fchalta_dt'] = pd.to_datetime(df['fchalta'], errors='coerce').fillna(datetime.now())
     
     final_df = pd.DataFrame()
-    final_df['id'] = df['Id'].astype(int)
-    final_df['apellido'] = df['Apell'].str.slice(0, 100)
-    final_df['nombre'] = df['Nomb'].str.slice(0, 100)
-    final_df['domicilio'] = df['Dom'].str.slice(0, 100)
-    final_df['id_localidad'] = df['ID_LOC']
-    final_df['cuit'] = df['Cuit_Clean']
-    final_df['id_condicion_iva'] = df['ID_IVA']
-    final_df['notas'] = df['Otros'].str.slice(0, 255)
-    final_df['fecha_creacion'] = df['FchAlta']
-    # Keep original strings for phone to avoid data loss, but respect DB limit (30)
-    final_df['telefono'] = df['Telefono'].astype(str).replace({'nan': None, 'None': None, '': None}).str.slice(0, 30)
+    final_df['id'] = df['id'].astype(int)
+    final_df['apellido'] = df['apell'].str.slice(0, 100)
+    final_df['nombre'] = df['nomb'].str.slice(0, 100)
+    final_df['razon_social'] = df['apell'].str.slice(0, 200) # Often used as company name if Nomb is empty
+    final_df['domicilio'] = df['dom'].str.slice(0, 255)
+    final_df['id_localidad'] = df['id_loc']
+    final_df['cuit'] = df['cuit_clean']
+    final_df['id_condicion_iva'] = df['id_iva']
+    final_df['notas'] = df['otros'].str.slice(0, 500)
+    final_df['fecha_creacion'] = df['fchalta_dt']
+    final_df['telefono'] = df['telefono'].str.slice(0, 100)
     
-    # Extract email from 'Otros' if it looks like one
     def extract_email(text):
-        if not text or not isinstance(text, str): return None
+        if not text: return None
         import re
-        match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+        match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', str(text))
         return match.group(0) if match else None
     
-    final_df['email'] = df['Otros'].apply(extract_email).str.slice(0, 150)
-    final_df['tipo'] = df['tipo']
+    final_df['email'] = df['otros'].apply(extract_email).str.slice(0, 150)
+    final_df['tipo'] = df['tipo_entidad']
 
     # COPY 
-    columns = ['id', 'apellido', 'nombre', 'domicilio', 'id_localidad', 'cuit', 'id_condicion_iva', 'notas', 'fecha_creacion', 'telefono', 'email', 'tipo']
+    columns = ['id', 'apellido', 'nombre', 'razon_social', 'domicilio', 'id_localidad', 'cuit', 'id_condicion_iva', 'notas', 'fecha_creacion', 'telefono', 'email', 'tipo']
     
     imported = 0
     with conn.cursor() as cur:
         cur.execute("CREATE TEMP TABLE tmp_entidad_comercial (LIKE app.entidad_comercial INCLUDING DEFAULTS) ON COMMIT DROP")
         fast_bulk_insert(cur, final_df[columns], "tmp_entidad_comercial", columns)
         cur.execute("""
-            INSERT INTO app.entidad_comercial (id, apellido, nombre, domicilio, id_localidad, cuit, id_condicion_iva, notas, fecha_creacion, telefono, email, tipo)
+            INSERT INTO app.entidad_comercial (id, apellido, nombre, razon_social, domicilio, id_localidad, cuit, id_condicion_iva, notas, fecha_creacion, telefono, email, tipo)
             OVERRIDING SYSTEM VALUE
-            SELECT id, apellido, nombre, domicilio, id_localidad, cuit, id_condicion_iva, notas, fecha_creacion, telefono, email, tipo
+            SELECT id, apellido, nombre, razon_social, domicilio, id_localidad, cuit, id_condicion_iva, notas, fecha_creacion, telefono, email, tipo
             FROM tmp_entidad_comercial
             ON CONFLICT (id) DO UPDATE SET
                 apellido = EXCLUDED.apellido, 
                 nombre = EXCLUDED.nombre,
+                razon_social = EXCLUDED.razon_social,
                 domicilio = EXCLUDED.domicilio,
                 id_localidad = EXCLUDED.id_localidad,
                 cuit = EXCLUDED.cuit,
@@ -496,6 +580,55 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
         """)
         imported = cur.rowcount
 
+    # 4. Map Price Lists and Discounts (NEW)
+    if 'lista' in df.columns:
+        cache.preload("lista_precio", "nombre")
+        lp_cache = cache._get_cache("ref", "lista_precio")
+        
+        # Determine a safe default ID
+        default_lp_id = lp_cache.get('lista 1')
+        if not default_lp_id and lp_cache:
+            default_lp_id = next(iter(lp_cache.values()))
+            
+        def get_lp_id(val):
+            if not val: return default_lp_id
+            v_str = str(val).strip().lower()
+            if v_str == 'g': return lp_cache.get('lista gremio') or default_lp_id
+            if v_str.isdigit():
+                return lp_cache.get(f"lista {v_str}") or default_lp_id
+            return default_lp_id
+
+        df['id_lp'] = df['lista'].map(get_lp_id).astype('Int64')
+        
+        # If any remained null (e.g. empty cache), fallback to first ID
+        if df['id_lp'].isnull().any():
+            logger.warning("CLIPROV: Some entities have no valid price list mapping; using default ID 1.")
+            df['id_lp'] = df['id_lp'].fillna(default_lp_id or 1)
+
+        df['perc_desc'] = pd.to_numeric(df['desc'], errors='coerce').fillna(0)
+        
+        lista_cliente_df = pd.DataFrame()
+        lista_cliente_df['id_entidad_comercial'] = df['id'].astype(int)
+        lista_cliente_df['id_lista_precio'] = df['id_lp'].astype(int)
+        lista_cliente_df['descuento'] = df['perc_desc']
+        
+        lista_cliente_df['limite_credito'] = 0
+        lista_cliente_df['saldo_cuenta'] = 0
+        
+        lc_cols = ['id_entidad_comercial', 'id_lista_precio', 'descuento', 'limite_credito', 'saldo_cuenta']
+        
+        with conn.cursor() as cur:
+             cur.execute("CREATE TEMP TABLE tmp_lista_cliente (id_entidad_comercial BIGINT, id_lista_precio BIGINT, descuento NUMERIC, limite_credito NUMERIC, saldo_cuenta NUMERIC) ON COMMIT DROP")
+             fast_bulk_insert(cur, lista_cliente_df[lc_cols], "tmp_lista_cliente", lc_cols)
+             cur.execute("""
+                 INSERT INTO app.lista_cliente (id_entidad_comercial, id_lista_precio, descuento, limite_credito, saldo_cuenta)
+                 SELECT id_entidad_comercial, id_lista_precio, descuento, limite_credito, saldo_cuenta FROM tmp_lista_cliente
+                 ON CONFLICT (id_entidad_comercial) DO UPDATE SET
+                     id_lista_precio = EXCLUDED.id_lista_precio,
+                     descuento = EXCLUDED.descuento
+             """)
+             logger.info(f"CLIPROV: Assigned price lists to {cur.rowcount} entities.")
+
     conn.commit()
     logger.info(f"CLIPROV: Imported {imported}")
     return imported
@@ -505,83 +638,209 @@ def import_articulos(conn: psycopg2.extensions.connection, cache: LookupCache) -
     """Import ARTICULOS.csv using Pandas + COPY Protocol."""
     rows = read_csv_safe(CSV_FILES["articulos"], encoding="utf-8-sig")
     if rows.empty: return 0
+
+    # Standardize column names to lowercase early
+    rows.columns = [c.strip().lower() for c in rows.columns]
+
+    # Normalize legacy variants for stock columns if needed
+    col_renames = {}
+    for src, dst in {
+        "stock_minimo": "stkmin",
+        "stockmin": "stkmin",
+        "stock_actual": "stk",
+        "stock": "stk",
+    }.items():
+        if src in rows.columns and dst not in rows.columns:
+            col_renames[src] = dst
+    if col_renames:
+        rows = rows.rename(columns=col_renames)
     
-    rows['IdArt'] = pd.to_numeric(rows['IdArt'], errors='coerce')
-    df = rows.dropna(subset=['IdArt']).copy()
-    df = df[(df['IdArt'] <= MAX_BIGINT) & (df['IdArt'] >= MIN_BIGINT)].copy()
+    # 2025-12-31: Map Legacy Placeholders to Generic (User Request)
+    # Marca 25 -> Genérica
+    # Rubro 23 -> Genérico
+    if 'idmar' in rows.columns:
+        rows['idmar'] = rows['idmar'].astype(str).replace({'25': 'LEGACY_INTERNAL_25', '25.0': 'LEGACY_INTERNAL_25'})
+    if 'idrub' in rows.columns:
+        rows['idrub'] = rows['idrub'].astype(str).replace({'23': 'LEGACY_INTERNAL_23', '23.0': 'LEGACY_INTERNAL_23'})
+    
+    # Required filtering by Id
+    rows['idart'] = pd.to_numeric(rows['idart'], errors='coerce')
+    df = rows.dropna(subset=['idart']).copy()
+    df = df[(df['idart'] <= MAX_BIGINT) & (df['idart'] >= MIN_BIGINT)].copy()
     if df.empty: return 0
-    
-    for col in ['Art', 'IdMar', 'IdRub', 'Unidad']:
+
+    # Required cleaning
+    for col in ['art', 'idmar', 'idrub', 'unidad', 'stk', 'stkmin', 'idprov', 'pgan', 'pgan2', 'pventa']:
         if col in df.columns:
+             # Strip .0 from numeric-like strings to handle float conversion artifacts
              df[col] = df[col].astype(str).str.strip().replace({'nan': None, 'None': None, '': None})
+             df[col] = df[col].apply(lambda x: str(x).split('.')[0] if x and str(x).replace('.','',1).isdigit() and '.' in str(x) and str(x).endswith('.0') else x)
+
+    stock_col = "stk" if "stk" in df.columns else None
+    stock_min_col = "stkmin" if "stkmin" in df.columns else None
+    if stock_min_col is None:
+        logger.warning("ARTICULOS: Missing StkMin column; defaulting stock_minimo to 0.")
              
-    marcas = df['IdMar'].dropna().unique()
-    cache.preload("marca", "nombre")
-    real_marcas = set(m for m in marcas if not str(m).isdigit())
-    cache.bulk_create("marca", "nombre", real_marcas)
+    # Create Brands, Rubros, Units preserving IDs if numeric
+    def bulk_create_with_ids(table, values):
+        with conn.cursor() as cur:
+            # Separate numeric and non-numeric
+            to_insert = []
+            for v in values:
+                if not v: continue
+                v_str = str(v).strip()
+                if v_str.isdigit():
+                    to_insert.append((int(v_str), f"Marca {v_str}" if table=='marca' else (f"Rubro {v_str}" if table=='rubro' else v_str)))
+                else:
+                    to_insert.append((None, v_str))
+            
+            for cid, name in to_insert:
+                if cid:
+                    # ON CONFLICT DO NOTHING to avoid overwriting existing good names (like 'Unidad') with placeholders (like '1')
+                    cur.execute(f"INSERT INTO ref.{table} (id, nombre) OVERRIDING SYSTEM VALUE VALUES (%s, %s) ON CONFLICT (id) DO NOTHING", (cid, name))
+                else:
+                    cur.execute(f"INSERT INTO ref.{table} (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING", (name,))
+            conn.commit()
+
+    # Cleanup existing legacy markers if any (prevent them from sticking around)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM ref.marca WHERE nombre LIKE '%LEGACY_MAP%'")
+        cur.execute("DELETE FROM ref.rubro WHERE nombre LIKE '%LEGACY_MAP%'")
+        conn.commit()
+
+    marcas = [m for m in df['idmar'].dropna().unique() if 'LEGACY_INTERNAL' not in str(m)]
+    bulk_create_with_ids("marca", marcas)
+    # Ensure "Genérica" exists
+    bulk_create_with_ids("marca", ["Genérica"])
     
-    rubros = df['IdRub'].dropna().unique()
-    cache.preload("rubro", "nombre")
-    real_rubros = set(r for r in rubros if not str(r).isdigit())
-    cache.bulk_create("rubro", "nombre", real_rubros)
+    rubros = [r for r in df['idrub'].dropna().unique() if 'LEGACY_INTERNAL' not in str(r)]
+    bulk_create_with_ids("rubro", rubros)
+    # Ensure "Genérico" exists
+    bulk_create_with_ids("rubro", ["Genérico"])
     
-    unidades = df['Unidad'].dropna().unique()
-    cache.preload("unidad_medida", "nombre")
-    cache.bulk_create("unidad_medida", "nombre", set(unidades))
+    unidades = df['unidad'].dropna().unique()
+    bulk_create_with_ids("unidad_medida", unidades)
     
     # 3. Vectorized Mapping
     
     # Preload IVA types (standard ones seeded in database.sql)
     cache.preload("tipo_iva", "porcentaje")
     
-    marca_map = cache._get_cache("ref", "marca")
-    rubro_map = cache._get_cache("ref", "rubro")
+    marca_map_name = cache._get_cache("ref", "marca")
+    rubro_map_name = cache._get_cache("ref", "rubro")
     unidad_map = cache._get_cache("ref", "unidad_medida")
     
-    df['id_marca'] = df['IdMar'].str.lower().map(marca_map.get).astype('Int64')
-    df['id_rubro'] = df['IdRub'].str.lower().map(rubro_map.get).astype('Int64')
-    df['id_unidad'] = df['Unidad'].str.lower().map(unidad_map.get).astype('Int64')
+    # Also create ID-to-ID fallback maps
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM ref.marca")
+        marca_ids = {str(r[0]): r[0] for r in cur.fetchall()}
+        cur.execute("SELECT id FROM ref.rubro")
+        rubro_ids = {str(r[0]): r[0] for r in cur.fetchall()}
 
-    # Defaults for Rubro/Marca (first one found)
-    default_marca = next(iter(marca_map.values()), None) if marca_map else None
-    default_rubro = next(iter(rubro_map.values()), None) if rubro_map else None
+    def map_relation(val, name_map, id_map):
+        if val is None: return None
+        v_str = str(val).lower()
+        
+        # Legacy Mapping Hooks
+        if 'LEGACY_INTERNAL_25' in v_str:
+            generic_brand = cache.get("marca", "Genérica")
+            if generic_brand: return generic_brand
+        if 'LEGACY_INTERNAL_23' in v_str:
+            generic_rubro = cache.get("rubro", "Genérico")
+            if generic_rubro: return generic_rubro
+
+        # Try ID map first (since legacy IDs often clash with names)
+        res = id_map.get(str(val))
+        if res is not None: return res
+        # Try name map
+        return name_map.get(v_str)
+
+    df['id_marca'] = df['idmar'].apply(lambda x: map_relation(x, marca_map_name, marca_ids)).astype('Int64')
+    df['id_rubro'] = df['idrub'].apply(lambda x: map_relation(x, rubro_map_name, rubro_ids)).astype('Int64')
     
-    df['id_marca'] = df['id_marca'].fillna(default_marca)
-    df['id_rubro'] = df['id_rubro'].fillna(default_rubro)
+    # Also create ID-to-ID fallback maps for units
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM ref.unidad_medida")
+        unidad_ids = {str(r[0]): r[0] for r in cur.fetchall()}
+    
+    df['id_unidad'] = df['unidad'].apply(lambda x: map_relation(x, unidad_map, unidad_ids)).astype('Int64')
+
+    # Defaults for Rubro/Marca (Genérica / Genérico)
+    id_generica = cache.get_or_create("marca", "nombre", "Genérica")
+    id_generico = cache.get_or_create("rubro", "nombre", "Genérico")
+    
+    if id_generica is not None:
+        df['id_marca'] = df['id_marca'].fillna(id_generica)
+    if id_generico is not None:
+        df['id_rubro'] = df['id_rubro'].fillna(id_generico)
     
     # Use cached ID for 21% (should be in seed data)
     id_iva_21 = cache.get("tipo_iva", "21.00") or 1 
     
     final_df = pd.DataFrame()
-    final_df['id'] = df['IdArt'].astype(int)
-    final_df['nombre'] = df['Art'].fillna("Articulo Sin Nombre").str.slice(0, 200)
+    final_df['id'] = df['idart'].astype(int)
+    final_df['nombre'] = df['art'].fillna("Articulo Sin Nombre").str.slice(0, 200)
     final_df['id_marca'] = df['id_marca']
     final_df['id_rubro'] = df['id_rubro']
-    final_df['id_tipo_iva'] = id_iva_21 # Assuming not null here or fixed val
-    final_df['costo'] = pd.to_numeric(df['Costo'], errors='coerce').fillna(0)
-    final_df['stock_minimo'] = pd.to_numeric(df['StkMin'], errors='coerce').fillna(0)
+    final_df['id_tipo_iva'] = id_iva_21 
+    final_df['costo'] = pd.to_numeric(df['costo'], errors='coerce').fillna(0)
+    if stock_min_col:
+        final_df['stock_minimo'] = pd.to_numeric(df[stock_min_col], errors='coerce').fillna(0)
+    else:
+        final_df['stock_minimo'] = 0
     final_df['id_unidad_medida'] = df['id_unidad']
-    final_df['id_proveedor'] = pd.to_numeric(df['IdProv'], errors='coerce').fillna(0).astype('Int64').replace(0, None)
-    final_df['descuento_base'] = pd.to_numeric(df['Desc'], errors='coerce').fillna(0)
-    final_df['redondeo'] = df['Redo'].apply(lambda x: str(x).lower() in ['1', 'true', 's'] if pd.notnull(x) else False)
+    final_df['id_proveedor'] = pd.to_numeric(df['idprov'], errors='coerce').fillna(0).astype('Int64').replace(0, None)
+    final_df['descuento_base'] = pd.to_numeric(df['desc'], errors='coerce').fillna(0)
+    final_df['redondeo'] = df['redo'].apply(lambda x: str(x).lower() in ['1', 'true', 's'] if pd.notnull(x) else False)
+    final_df['porcentaje_ganancia_2'] = pd.to_numeric(df['pgan2'], errors='coerce') if 'pgan2' in df.columns else None
     final_df['activo'] = True
-    final_df['fecha_creacion'] = datetime.now()
+    # Move legacy "ubicacion" (which are stock update notes) to observation
+    obs_raw = df['obs'].fillna("").astype(str)
+    ubic_raw = df['ubic'].fillna("").astype(str)
+    final_df['observacion'] = (ubic_raw + ". " + obs_raw).str.strip(". ").str.slice(0, 500).replace('', None)
+
+    # Use default physical location from the first deposit
+    with conn.cursor() as cur:
+        cur.execute("SELECT nombre FROM ref.deposito ORDER BY id LIMIT 1")
+        default_loc_row = cur.fetchone()
+        default_loc = default_loc_row[0] if default_loc_row else "Depósito Central"
     
-    columns = ['id', 'nombre', 'id_marca', 'id_rubro', 'id_tipo_iva', 'costo', 'stock_minimo', 'id_unidad_medida', 'id_proveedor', 'descuento_base', 'redondeo', 'activo', 'fecha_creacion']
+    final_df['ubicacion'] = default_loc
+    final_df['fecha_creacion'] = datetime.now()
+
+    stock_df = pd.DataFrame()
+    if stock_col:
+        stock_df = df[df[stock_col].notnull()].copy()
+        stock_df['stk_val'] = pd.to_numeric(stock_df[stock_col], errors='coerce').fillna(0)
+        stock_df = stock_df[stock_df['stk_val'] != 0].copy()
+    else:
+        logger.warning("ARTICULOS: Missing STK column; skipping initial stock import.")
+    
+    columns = ['id', 'nombre', 'id_marca', 'id_rubro', 'id_tipo_iva', 'costo', 'stock_minimo', 'id_unidad_medida', 'id_proveedor', 'descuento_base', 'redondeo', 'porcentaje_ganancia_2', 'activo', 'observacion', 'ubicacion', 'fecha_creacion']
     
     imported = 0
     with conn.cursor() as cur:
         cur.execute("CREATE TEMP TABLE tmp_articulo (LIKE app.articulo INCLUDING DEFAULTS) ON COMMIT DROP")
         fast_bulk_insert(cur, final_df[columns], "tmp_articulo", columns)
         cur.execute("""
-            INSERT INTO app.articulo (id, nombre, id_marca, id_rubro, id_tipo_iva, costo, stock_minimo, id_unidad_medida, id_proveedor, descuento_base, redondeo, activo, fecha_creacion)
+            INSERT INTO app.articulo (id, nombre, id_marca, id_rubro, id_tipo_iva, costo, stock_minimo, id_unidad_medida, id_proveedor, descuento_base, redondeo, porcentaje_ganancia_2, activo, observacion, ubicacion, fecha_creacion)
             OVERRIDING SYSTEM VALUE
-            SELECT id, nombre, id_marca, id_rubro, id_tipo_iva, costo, stock_minimo, id_unidad_medida, id_proveedor, descuento_base, redondeo, activo, fecha_creacion
+            SELECT id, nombre, id_marca, id_rubro, id_tipo_iva, costo, stock_minimo, id_unidad_medida, id_proveedor, descuento_base, redondeo, porcentaje_ganancia_2, activo, observacion, ubicacion, fecha_creacion
             FROM tmp_articulo
             ON CONFLICT (id) DO UPDATE SET
                 nombre = EXCLUDED.nombre,
+                id_marca = EXCLUDED.id_marca,
+                id_rubro = EXCLUDED.id_rubro,
+                id_tipo_iva = EXCLUDED.id_tipo_iva,
                 costo = EXCLUDED.costo,
-                stock_minimo = EXCLUDED.stock_minimo
+                stock_minimo = EXCLUDED.stock_minimo,
+                id_unidad_medida = EXCLUDED.id_unidad_medida,
+                id_proveedor = EXCLUDED.id_proveedor,
+                descuento_base = EXCLUDED.descuento_base,
+                redondeo = EXCLUDED.redondeo,
+                porcentaje_ganancia_2 = EXCLUDED.porcentaje_ganancia_2,
+                observacion = EXCLUDED.observacion,
+                ubicacion = EXCLUDED.ubicacion
         """)
         imported = cur.rowcount
 
@@ -605,10 +864,10 @@ def import_articulos(conn: psycopg2.extensions.connection, cache: LookupCache) -
             l1_id = list_cache.get('lista 1')
             if l1_id:
                 l1_df = pd.DataFrame()
-                l1_df['id_articulo'] = df['IdArt'].astype(int)
+                l1_df['id_articulo'] = df['idart'].astype(int)
                 l1_df['id_lista_precio'] = l1_id
-                l1_df['precio'] = pd.to_numeric(df['PVenta'], errors='coerce').fillna(0)
-                l1_df['porcentaje'] = pd.to_numeric(df['Pgan'], errors='coerce').fillna(0)
+                l1_df['precio'] = pd.to_numeric(df['pventa'], errors='coerce').fillna(0)
+                l1_df['porcentaje'] = pd.to_numeric(df['pgan'], errors='coerce').fillna(0)
                 l1_df['id_tipo_porcentaje'] = id_margen
                 price_rows.append(l1_df)
 
@@ -616,21 +875,37 @@ def import_articulos(conn: psycopg2.extensions.connection, cache: LookupCache) -
             for i in range(2, 8):
                 lname = f"lista {i}"
                 lid = list_cache.get(lname)
-                col_l = f"L{i}"
-                col_pl = f"PL{i}"
+                col_l = f"l{i}"
+                col_pl = f"pl{i}"
                 
                 if lid and col_l in df.columns:
                     li_df = pd.DataFrame()
-                    li_df['id_articulo'] = df['IdArt'].astype(int)
+                    li_df['id_articulo'] = df['idart'].astype(int)
                     li_df['id_lista_precio'] = lid
                     li_df['precio'] = pd.to_numeric(df[col_l], errors='coerce').fillna(0)
-                    li_df['porcentaje'] = pd.to_numeric(df[col_pl], errors='coerce').fillna(0)
-                    li_df['id_tipo_porcentaje'] = id_descuento
+                    # Safety check for missing PL columns
+                    if col_pl in df.columns:
+                        li_df['porcentaje'] = pd.to_numeric(df[col_pl], errors='coerce').fillna(0)
+                    else:
+                        li_df['porcentaje'] = 0
+                    li_df['id_tipo_porcentaje'] = id_margen # Typically sale lists are markups
                     price_rows.append(li_df)
+            
+            # Lista Gremio (PVGremio column)
+            gremio_id = list_cache.get('lista gremio')
+            if gremio_id and 'pvgremio' in df.columns:
+                gremio_df = pd.DataFrame()
+                gremio_df['id_articulo'] = df['idart'].astype(int)
+                gremio_df['id_lista_precio'] = gremio_id
+                gremio_df['precio'] = pd.to_numeric(df['pvgremio'], errors='coerce').fillna(0)
+                gremio_df['porcentaje'] = 0  # No percentage for gremio, just fixed prices
+                gremio_df['id_tipo_porcentaje'] = id_descuento
+                price_rows.append(gremio_df)
             
             if price_rows:
                 all_prices = pd.concat(price_rows, ignore_index=True)
-                all_prices = all_prices[all_prices['precio'] > 0]
+                # Filter out entries where BOTH price and percentage are zero or null
+                all_prices = all_prices[(all_prices['precio'] != 0) | (all_prices['porcentaje'] != 0)].dropna(subset=['precio', 'porcentaje'], how='all')
                 
                 price_cols = ['id_articulo', 'id_lista_precio', 'precio', 'porcentaje', 'id_tipo_porcentaje']
                 
@@ -655,41 +930,40 @@ def import_articulos(conn: psycopg2.extensions.connection, cache: LookupCache) -
                 logger.info(f"Imported {cur.rowcount} price entries.")
 
         # NEW: Generate Initial Stock Movements
-        if imported > 0:
-            logger.info(f"Generating initial stock movements for {imported} articles...")
-            # Use the original df which has the STK column
-            stock_df = df[df['STK'].notnull()].copy()
-            stock_df['stk_val'] = pd.to_numeric(stock_df['STK'], errors='coerce').fillna(0)
-            stock_df = stock_df[stock_df['stk_val'] != 0].copy()
-            
-            if not stock_df.empty:
-                mov_df = pd.DataFrame()
-                mov_df['id_articulo'] = stock_df['IdArt'].astype(int)
-                mov_df['cantidad'] = stock_df['stk_val'].abs()  # Always absolute value
-                mov_df['id_tipo_movimiento'] = 5 # Default Ajuste Positivo
-                mov_df['id_deposito'] = 1 # Deposito Central
-                mov_df['observacion'] = "Stock Inicial (Legacy)"
-                
-                # Handle negative stock values from legacy if any
-                mask_neg = stock_df['stk_val'] < 0
-                mov_df.loc[mask_neg, 'id_tipo_movimiento'] = 6 # Ajuste Negativo
+        if not stock_df.empty:
+            logger.info(f"Generating initial stock movements from STK for {len(stock_df)} articles...")
+            cache.preload("tipo_movimiento_articulo", "nombre")
+            mov_type_cache = cache._get_cache("ref", "tipo_movimiento_articulo")
+            id_ajuste_pos = mov_type_cache.get("ajuste positivo") or 5
+            id_ajuste_neg = mov_type_cache.get("ajuste negativo") or 6
 
-                mov_cols = ['id_articulo', 'id_tipo_movimiento', 'cantidad', 'id_deposito', 'observacion']
-                cur.execute("""
-                    CREATE TEMP TABLE tmp_stk_mov (
-                        id_articulo BIGINT,
-                        id_tipo_movimiento BIGINT,
-                        cantidad NUMERIC,
-                        id_deposito BIGINT,
-                        observacion TEXT
-                    ) ON COMMIT DROP
-                """)
-                fast_bulk_insert(cur, mov_df[mov_cols], "tmp_stk_mov", mov_cols)
-                cur.execute("""
-                    INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, observacion)
-                    SELECT id_articulo, id_tipo_movimiento, cantidad, id_deposito, observacion FROM tmp_stk_mov
-                """)
-                logger.info(f"Generated {len(mov_df)} initial stock movements.")
+            mov_df = pd.DataFrame()
+            mov_df['id_articulo'] = stock_df['idart'].astype(int)
+            mov_df['cantidad'] = stock_df['stk_val'].abs()  # Always absolute value
+            mov_df['id_tipo_movimiento'] = id_ajuste_pos
+            mov_df['id_deposito'] = 1 # Deposito Central
+            mov_df['observacion'] = "Stock Inicial (Legacy)"
+
+            # Handle negative stock values from legacy if any
+            mask_neg = stock_df['stk_val'] < 0
+            mov_df.loc[mask_neg, 'id_tipo_movimiento'] = id_ajuste_neg
+
+            mov_cols = ['id_articulo', 'id_tipo_movimiento', 'cantidad', 'id_deposito', 'observacion']
+            cur.execute("""
+                CREATE TEMP TABLE tmp_stk_mov (
+                    id_articulo BIGINT,
+                    id_tipo_movimiento BIGINT,
+                    cantidad NUMERIC,
+                    id_deposito BIGINT,
+                    observacion TEXT
+                ) ON COMMIT DROP
+            """)
+            fast_bulk_insert(cur, mov_df[mov_cols], "tmp_stk_mov", mov_cols)
+            cur.execute("""
+                INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, observacion)
+                SELECT id_articulo, id_tipo_movimiento, cantidad, id_deposito, observacion FROM tmp_stk_mov
+            """)
+            logger.info(f"Generated {len(mov_df)} initial stock movements.")
 
     conn.commit()
     logger.info(f"ARTICULOS: Imported {imported}")
@@ -701,8 +975,12 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     rows = read_csv_safe(CSV_FILES["ventcab"])
     if rows.empty: return 0
     
-    rows['IdV'] = pd.to_numeric(rows['IdV'], errors='coerce')
-    df = rows.dropna(subset=['IdV']).copy()
+    # Standardize column names to lowercase
+    df = rows.copy()
+    df.columns = [c.lower() for c in df.columns]
+
+    df['idv'] = pd.to_numeric(df['idv'], errors='coerce')
+    df = df.dropna(subset=['idv']).copy()
     
     cache.preload("tipo_documento", "nombre")
     type_map = {
@@ -719,7 +997,7 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
         name = type_map.get(clean, 'PRESUPUESTO')
         return doc_type_cache.get(name.lower())
 
-    df['id_td'] = df['Tipo'].map(get_doc_id).fillna(doc_type_cache.get('presupuesto')).astype('Int64')
+    df['id_td'] = df['tipo'].map(get_doc_id).fillna(doc_type_cache.get('presupuesto')).astype('Int64')
     
     # Ensure all referenced entities exist (map missing to MOSTRADOR)
     with conn.cursor() as cur:
@@ -727,33 +1005,33 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
         existing_ids = set(row[0] for row in cur.fetchall())
     
     mostrador_id = 4
-    df['id_entidad_clean'] = pd.to_numeric(df['IdCli'], errors='coerce').fillna(mostrador_id).astype(int)
+    df['id_entidad_clean'] = pd.to_numeric(df['idcli'], errors='coerce').fillna(mostrador_id).astype(int)
     # If the ID provided doesn't exist in master, use mostrador
     df['id_entidad_comercial_final'] = df['id_entidad_clean'].apply(lambda x: x if x in existing_ids else mostrador_id)
         
     final_df = pd.DataFrame()
-    final_df['id'] = df['IdV'].astype(int)
+    final_df['id'] = df['idv'].astype(int)
     final_df['id_tipo_documento'] = df['id_td']
-    final_df['fecha'] = pd.to_datetime(df['Fch'], errors='coerce').fillna(datetime.now())
-    final_df['numero_serie'] = df['NFact'].astype(str).str.slice(0, 20).replace({'nan': None}, regex=True)
+    final_df['fecha'] = pd.to_datetime(df['fch'], errors='coerce').fillna(datetime.now())
+    final_df['numero_serie'] = df['nfact'].astype(str).str.slice(0, 20).replace({'nan': None}, regex=True)
     final_df['id_entidad_comercial'] = df['id_entidad_comercial_final']
 
     final_df['estado'] = 'CONFIRMADO'
-    final_df['total'] = pd.to_numeric(df['TVenta'], errors='coerce').fillna(0)
+    final_df['total'] = pd.to_numeric(df['tventa'], errors='coerce').fillna(0)
     
     # Use accurate CSV columns if available
-    if 'Neto' in df.columns:
-        final_df['neto'] = pd.to_numeric(df['Neto'], errors='coerce').fillna(0)
+    if 'neto' in df.columns:
+        final_df['neto'] = pd.to_numeric(df['neto'], errors='coerce').fillna(0)
     else:
         final_df['neto'] = final_df['total'] / 1.21
         
-    if 'SubT' in df.columns:
-        final_df['subtotal'] = pd.to_numeric(df['SubT'], errors='coerce').fillna(final_df['neto'])
+    if 'subt' in df.columns:
+        final_df['subtotal'] = pd.to_numeric(df['subt'], errors='coerce').fillna(final_df['neto'])
     else:
         final_df['subtotal'] = final_df['neto']
 
-    if 'TIVA' in df.columns:
-        final_df['iva_total'] = pd.to_numeric(df['TIVA'], errors='coerce').fillna(0)
+    if 'tiva' in df.columns:
+        final_df['iva_total'] = pd.to_numeric(df['tiva'], errors='coerce').fillna(0)
     else:
         final_df['iva_total'] = final_df['total'] - final_df['neto']
     
@@ -807,32 +1085,91 @@ def import_ventdet(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     rows = read_csv_safe(CSV_FILES["ventdet"])
     if rows.empty: return 0
     
-    rows['IdV'] = pd.to_numeric(rows['IdV'], errors='coerce')
-    rows['IdArt'] = pd.to_numeric(rows['IdArt'], errors='coerce')
-    df = rows.dropna(subset=['IdV', 'IdArt']).copy()
+    # Standardize column names to lowercase
+    df = rows.copy()
+    df.columns = [c.lower() for c in df.columns]
 
-    # Ensure all referenced articles exist (map missing to IdArt 9)
+    df['idv'] = pd.to_numeric(df['idv'], errors='coerce')
+    df['idart'] = pd.to_numeric(df['idart'], errors='coerce')
+    
+    initial_count = len(df)
+    df = df.dropna(subset=['idv', 'idart']).copy()
+    coord_dropped = initial_count - len(df)
+    if coord_dropped > 0:
+        logger.warning(f"VENTDET: Dropped {coord_dropped} rows with invalid idv or idart.")
+
+    # REQUIRED: Skip articles that don't exist instead of falling back to a dummy one
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM app.articulo")
         existing_art_ids = set(row[0] for row in cur.fetchall())
+        cur.execute("SELECT id FROM app.documento")
+        existing_doc_ids = set(row[0] for row in cur.fetchall())
     
-    default_art_id = 9
-    df['id_articulo_clean'] = pd.to_numeric(df['IdArt'], errors='coerce').fillna(default_art_id).astype(int)
-    # Fast membership check using isin
-    df['id_articulo_final'] = np.where(df['id_articulo_clean'].isin(existing_art_ids), df['id_articulo_clean'], default_art_id)
+    # Identify rows with missing articles
+    missing_mask = ~df['idart'].astype(int).isin(existing_art_ids)
+    missing_data = df[missing_mask][['idart', 'art']].copy()
+    missing_data['idart'] = missing_data['idart'].astype(int)
+    
+    # Drop duplicates to create unique placeholders
+    unique_missing = missing_data.drop_duplicates(subset=['idart'])
+    
+    if not unique_missing.empty:
+        logger.warning(f"VENTDET: Creating {len(unique_missing)} placeholder articles using names from CSV to avoid data loss.")
+        # Get generic brand and rubro
+        id_generica = cache.get_or_create("marca", "nombre", "Genérica")
+        id_generico = cache.get_or_create("rubro", "nombre", "Genérico")
+        id_iva_21 = cache.get("tipo_iva", "21.00") or 1
+        
+        placeholders = pd.DataFrame({
+            'id': unique_missing['idart'],
+            'nombre': unique_missing['art'].fillna("Artículo Histórico").str.slice(0, 200),
+            'id_marca': id_generica,
+            'id_rubro': id_generico,
+            'id_tipo_iva': id_iva_21,
+            'costo': 0,
+            'stock_minimo': 0,
+            'activo': True,
+            'fecha_creacion': datetime.now()
+        })
+        
+        with conn.cursor() as cur:
+            columns = ['id', 'nombre', 'id_marca', 'id_rubro', 'id_tipo_iva', 'costo', 'stock_minimo', 'activo', 'fecha_creacion']
+            fast_bulk_insert(cur, placeholders, "app.articulo", columns)
+            conn.commit()
+        
+        # Update existing ids set
+        existing_art_ids.update(unique_missing['idart'])
+
+    art_filtered_df = df[df['idart'].isin(existing_art_ids)].copy()
+    art_dropped = len(df) - len(art_filtered_df)
+    if art_dropped > 0:
+        logger.warning(f"VENTDET: Dropped {art_dropped} rows because article ID is invalid (NaN).")
+    
+    doc_filtered_df = art_filtered_df[art_filtered_df['idv'].isin(existing_doc_ids)].copy()
+    doc_dropped = len(art_filtered_df) - len(doc_filtered_df)
+    if doc_dropped > 0:
+        logger.warning(f"VENTDET: Dropped {doc_dropped} rows because document ID does not exist in app.documento.")
+        
+    df = doc_filtered_df
+    df['id_articulo_final'] = df['idart'].astype(int)
     
     final_df = pd.DataFrame()
-    final_df['id_documento'] = df['IdV'].astype(int)
-    final_df['nro_linea'] = df.groupby('IdV').cumcount() + 1
+    final_df['id_documento'] = df['idv'].astype(int)
+    final_df['nro_linea'] = df.groupby('idv').cumcount() + 1
     final_df['id_articulo'] = df['id_articulo_final']
-    final_df['cantidad'] = pd.to_numeric(df['Cant'], errors='coerce').fillna(1).abs()
-    final_df['precio_unitario'] = pd.to_numeric(df['PVta'], errors='coerce').fillna(0)
+    final_df['cantidad'] = pd.to_numeric(df['cant'], errors='coerce').fillna(1).abs()
+    final_df['precio_unitario'] = pd.to_numeric(df['pvta'], errors='coerce').fillna(0)
     
-    if 'PVxC' in df.columns:
-        final_df['total_linea'] = pd.to_numeric(df['PVxC'], errors='coerce').fillna(0)
+    if 'pvxc' in df.columns:
+        final_df['total_linea'] = pd.to_numeric(df['pvxc'], errors='coerce').fillna(0)
     else:
         final_df['total_linea'] = final_df['cantidad'] * final_df['precio_unitario']
-    final_df['descripcion_historica'] = "Importado"
+    
+    # Use 'Art' column for historical description if available
+    if 'art' in df.columns:
+        final_df['descripcion_historica'] = df['art'].fillna("Importado").str.slice(0, 255)
+    else:
+        final_df['descripcion_historica'] = "Importado"
     
     cols = ['id_documento', 'nro_linea', 'id_articulo', 'cantidad', 'precio_unitario', 'total_linea', 'descripcion_historica']
     
@@ -848,35 +1185,9 @@ def import_ventdet(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
         """)
         imported = cur.rowcount
 
-        # NEW: Generate Stock Movements
-        if imported > 0:
-            logger.info(f"Generating movements for {len(final_df)} lines...")
-            # We need the date from the header... or just use fixed/now. 
-            # Better to use actual session if we want it perfect, but let's keep it simple.
-            mov_df = pd.DataFrame()
-            mov_df['id_articulo'] = final_df['id_articulo']
-            mov_df['id_tipo_movimiento'] = 2 # Venta (-1)
-            mov_df['cantidad'] = final_df['cantidad'].abs()  # Always absolute value
-            mov_df['id_deposito'] = 1 # Deposito Central
-            mov_df['id_documento'] = final_df['id_documento']
-            mov_df['observacion'] = "Importacion Legacy"
-            
-            mov_cols = ['id_articulo', 'id_tipo_movimiento', 'cantidad', 'id_deposito', 'id_documento', 'observacion']
-            cur.execute("""
-                CREATE TEMP TABLE tmp_mov (
-                    id_articulo BIGINT,
-                    id_tipo_movimiento BIGINT,
-                    cantidad NUMERIC,
-                    id_deposito BIGINT,
-                    id_documento BIGINT,
-                    observacion TEXT
-                ) ON COMMIT DROP
-            """)
-            fast_bulk_insert(cur, mov_df[mov_cols], "tmp_mov", mov_cols)
-            cur.execute("""
-                INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion)
-                SELECT id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion FROM tmp_mov
-            """)
+        # NOTE: We DO NOT generate movements for historical sales import. 
+        # The stock snapshot from ARTICULOS.csv is treated as current and immutable.
+        pass
 
     conn.commit()
     logger.info(f"VENTDET: Imported {imported}")
@@ -962,8 +1273,8 @@ def main():
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
-                    SELECT id_articulo, stock_total 
-                    FROM app.v_stock_total
+                    SELECT id_articulo, stock_actual 
+                    FROM app.v_stock_actual
                     ON CONFLICT (id_articulo) DO UPDATE 
                     SET stock_total = EXCLUDED.stock_total, 
                         ultima_actualizacion = now()

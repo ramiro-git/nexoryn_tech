@@ -53,7 +53,7 @@ COLOR_ACCENT_HOVER = "#4F46E5" # Indigo 600
 COLOR_PANEL = "#0F172A"       # Deep Slate 900
 COLOR_SIDEBAR_TEXT = "#94A3B8"
 COLOR_SIDEBAR_ACTIVE = "#FFFFFF"
-COLOR_BG = "#F8FAFC"          # Slate 50
+COLOR_BG = "#F1F5F9"          # Slate 100
 COLOR_CARD = "#FFFFFF"
 COLOR_BORDER = "#E2E8F0"
 COLOR_TEXT = "#1E293B"        # Slate 800
@@ -141,12 +141,14 @@ def _number_field(label: str, *, width: int = 160) -> ft.TextField:
     return field
 
 
-def _dropdown(label: str, options: List[Tuple[Optional[str], str]], value: Optional[str] = None, width: Optional[int] = None) -> ft.Dropdown:
+def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, width: Optional[int] = None, on_change: Optional[Callable] = None) -> ft.Dropdown:
     dd = ft.Dropdown(
         label=label,
         value=value,
-        options=[ft.dropdown.Option(v, t) for v, t in options],
+        options=[ft.dropdown.Option(str(v) if v is not None else "", t) for v, t in options],
         width=width,
+        on_change=on_change,
+        enable_search=True,
     )
     _style_input(dd)
     return dd
@@ -228,9 +230,19 @@ def main(page: ft.Page) -> None:
         scheduler = BackgroundScheduler()
         
         # Schedule automated backups
-        scheduler.add_job(lambda: backup_service.create_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
-        scheduler.add_job(lambda: backup_service.create_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
-        scheduler.add_job(lambda: backup_service.create_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
+        def run_scheduled_backup(btype):
+            try:
+                # Run the actual backup
+                backup_service.create_backup(btype)
+                # Record it in the DB so detecting missed ones works
+                if db:
+                    backup_service.record_backup_execution(db, btype)
+            except Exception as e:
+                logger.error(f"Scheduled {btype} backup failed: {e}")
+
+        scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
+        scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
+        scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
         scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
         
         scheduler.start()
@@ -251,6 +263,8 @@ def main(page: ft.Page) -> None:
                 local_ip = s.getsockname()[0]
         except: pass
         db.current_ip = local_ip  # Set IP for login logging before auth
+        
+        page.bgcolor = COLOR_BG # Avoid white flashes on background
     except Exception as exc:
         db_error = str(exc)
 
@@ -358,28 +372,28 @@ def main(page: ft.Page) -> None:
         unidades_values = db.list_unidades_medida()
         proveedores_values = db.list_proveedores()
         tipos_porcentaje_values = db.fetch_tipos_porcentaje(limit=100)
+        
+        # Also refresh filter dropdowns if they exist
+        try: refresh_articles_catalogs()
+        except: pass
 
-    if db is not None and not db_error:
-        try:
-            reload_catalogs()
-        except Exception as exc:
-            show_toast(f"Error cargando catálogos: {exc}", kind="error")
+    # reload_catalogs() will be called at the end of main after all controls are defined
 
     def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "—") -> Any:
         def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
             values = list(values_provider() or [])
-            options: List[ft.dropdown.Option] = [ft.dropdown.Option("", empty_label)]
-            options.extend(ft.dropdown.Option(name, name) for name in values)
+            options: List[ft.dropdown.Option] = [ft.dropdown.Option(name, name) for name in values]
 
-            selected = ""
+            selected = None
             if isinstance(value, str) and value.strip() and value.strip() != "—":
                 selected = value.strip()
                 if selected not in values:
-                    options.insert(1, ft.dropdown.Option(selected, selected))
+                    options.insert(0, ft.dropdown.Option(selected, selected))
 
             dd = ft.Dropdown(
                 options=options,
                 value=selected,
+                hint_text=empty_label,
                 width=width,
                 on_change=lambda e: setter(e.control.value),
             )
@@ -467,17 +481,179 @@ def main(page: ft.Page) -> None:
             spacing=0,
         )
 
-    # ---- Entidades (GenericTable) ----
-    entidades_advanced_cuit = ft.TextField(label="CUIT contiene", width=220)
+    # ---- Artículos (GenericTable) ----
+    articulos_table = None  # Late-binding placeholder
+
+    def _art_live(e):
+        try:
+            if articulos_table:
+                articulos_table.trigger_refresh()
+        except:
+            pass
+
+    def _art_slider_change(e):
+        # Update label real-time
+        s = articulos_advanced_costo_slider
+        articulos_advanced_costo_label.value = f"Costo: Filas entre ${int(s.start_value):,} y ${int(s.end_value):,}"
+        try: articulos_advanced_costo_label.update()
+        except: pass
+
+    def _reset_cost_filter(ctrl, val):
+        s = articulos_advanced_costo_slider
+        s.start_value = s.min
+        s.end_value = s.max
+        articulos_advanced_costo_label.value = f"Costo: Filas entre ${int(s.min):,} y ${int(s.max):,}"
+        try: 
+            s.update()
+            articulos_advanced_costo_label.update()
+        except: pass
+
+    articulos_advanced_nombre = ft.TextField(label="Nombre contiene", width=220, on_change=_art_live)
+    _style_input(articulos_advanced_nombre)
+    articulos_advanced_marca = _dropdown("Filtrar Marca", [("", "Todas")], value="", width=200, on_change=_art_live)
+    articulos_advanced_rubro = _dropdown("Filtrar Rubro", [("", "Todos")], value="", width=200, on_change=_art_live)
+    articulos_advanced_proveedor = _dropdown("Filtrar Proveedor", [("", "Todos")], value="", width=200, on_change=_art_live)
+    articulos_advanced_ubicacion = _dropdown("Filtrar Ubicación", [("", "Todas")], value="", width=200, on_change=_art_live)
+    
+    articulos_advanced_costo_slider = ft.RangeSlider(
+        min=0,
+        max=10000,
+        start_value=0,
+        end_value=10000,
+        divisions=100,
+        width=300,
+        inactive_color="#E2E8F0",
+        active_color=COLOR_ACCENT,
+        label="{value}",
+        on_change=_art_slider_change,
+        on_change_end=_art_live,
+    )
+    
+    articulos_advanced_costo_label = ft.Text("Filtro de Costo ($)", size=12, weight=ft.FontWeight.BOLD)
+    articulos_advanced_costo_ctrl = ft.Column([
+        articulos_advanced_costo_label,
+        articulos_advanced_costo_slider
+    ], spacing=0, width=350)
+
+    articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo", value=False, on_change=_art_live)
+    
+    articulos_advanced_iva = _dropdown("Alicuota IVA", [("", "Todas")], value="", width=200, on_change=_art_live)
+    articulos_advanced_unidad = _dropdown("Unidad Medida", [("", "Todas")], value="", width=200, on_change=_art_live)
+    articulos_advanced_redondeo = _dropdown("Redondeo", [("", "Todos"), ("SI", "Sí"), ("NO", "No")], value="", width=150, on_change=_art_live)
+    
+    articulos_advanced_lista_precio = _dropdown("Precios de lista", [("", "Todas")], value="", width=200, on_change=_art_live)
+    
+    articulos_advanced_estado = _dropdown(
+        "Estado",
+        [("", "Todos"), ("ACTIVO", "Activos"), ("INACTIVO", "Inactivos")],
+        value="",
+        on_change=_art_live,
+        width=150
+    )
+
+    def refresh_articles_catalogs():
+        try:
+            if db: db.invalidate_catalog_cache()
+            lists = db.fetch_listas_precio()
+            articulos_advanced_lista_precio.options = [ft.dropdown.Option("", "Todas")] + [
+                ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in lists
+            ]
+            
+            ivas = db.fetch_tipos_iva()
+            articulos_advanced_iva.options = [ft.dropdown.Option("", "Todas")] + [
+                ft.dropdown.Option(str(i["id"]), f"{i['descripcion']} ({i['porcentaje']}%)") for i in ivas
+            ]
+            
+            unidades = db.fetch_unidades_medida()
+            articulos_advanced_unidad.options = [ft.dropdown.Option("", "Todas")] + [
+                ft.dropdown.Option(str(u["id"]), f"{u['nombre']} ({u['abreviatura']})") for u in unidades
+            ]
+            
+            provs = db.list_proveedores()
+            articulos_advanced_proveedor.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in provs
+            ]
+
+            marcas = db.list_marcas_full()
+            articulos_advanced_marca.options = [ft.dropdown.Option("", "Todas")] + [
+                ft.dropdown.Option(str(m["id"]), m["nombre"]) for m in marcas
+            ]
+
+            rubros = db.list_rubros_full()
+            articulos_advanced_rubro.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(str(r["id"]), r["nombre"]) for r in rubros
+            ]
+
+            depositos = db.fetch_depositos()
+            articulos_advanced_ubicacion.options = [ft.dropdown.Option("", "Todas")] + [
+                ft.dropdown.Option(d["nombre"], d["nombre"]) for d in depositos
+            ]
+
+            max_c = db.get_max_cost()
+            if max_c < 100: max_c = 100
+            articulos_advanced_costo_slider.max = max_c
+            articulos_advanced_costo_slider.end_value = max_c
+            articulos_advanced_costo_label.value = f"Costo: Filas entre $0 y ${int(max_c):,}"
+            
+            # Update all controls if they are already on the page
+            for ctrl in [
+                articulos_advanced_lista_precio, articulos_advanced_iva, articulos_advanced_unidad,
+                articulos_advanced_proveedor, articulos_advanced_marca, articulos_advanced_rubro,
+                articulos_advanced_ubicacion, articulos_advanced_costo_slider, articulos_advanced_costo_label
+            ]:
+                try: 
+                    if ctrl.page: ctrl.update()
+                except: pass
+            
+        except Exception as e: 
+            print(f"Error refreshing article filters: {e}")
+    def _ent_live(e):
+        try:
+            entidades_table.trigger_refresh()
+        except:
+            pass
+
+    entidades_advanced_cuit = ft.TextField(label="CUIT contiene", width=200, on_change=_ent_live)
     _style_input(entidades_advanced_cuit)
-    entidades_advanced_localidad = ft.TextField(label="Localidad contiene", width=220)
+    entidades_advanced_apellido = ft.TextField(label="Apellido", width=180, on_change=_ent_live)
+    _style_input(entidades_advanced_apellido)
+    entidades_advanced_nombre = ft.TextField(label="Nombre", width=180, on_change=_ent_live)
+    _style_input(entidades_advanced_nombre)
+    entidades_advanced_razon = ft.TextField(label="Razón Social", width=200, on_change=_ent_live)
+    _style_input(entidades_advanced_razon)
+    entidades_advanced_domicilio = ft.TextField(label="Domicilio", width=200, on_change=_ent_live)
+    _style_input(entidades_advanced_domicilio)
+    entidades_advanced_localidad = ft.TextField(label="Localidad", width=180, on_change=_ent_live)
     _style_input(entidades_advanced_localidad)
-    entidades_advanced_provincia = ft.TextField(label="Provincia contiene", width=220)
+    entidades_advanced_provincia = ft.TextField(label="Provincia", width=150, on_change=_ent_live)
     _style_input(entidades_advanced_provincia)
+    entidades_advanced_email = ft.TextField(label="Email", width=200, on_change=_ent_live)
+    _style_input(entidades_advanced_email)
+    entidades_advanced_telefono = ft.TextField(label="Teléfono", width=150, on_change=_ent_live)
+    _style_input(entidades_advanced_telefono)
+    entidades_advanced_notas = ft.TextField(label="Notas contiene", width=200, on_change=_ent_live)
+    _style_input(entidades_advanced_notas)
+
     entidades_advanced_activo = _dropdown(
         "Activo",
         [("", "Todos"), ("ACTIVO", "Activos"), ("INACTIVO", "Inactivos")],
         value="",
+        on_change=_ent_live
+    )
+    entidades_advanced_desde = _date_field(page, "Alta desde", width=150)
+    entidades_advanced_hasta = _date_field(page, "Alta hasta", width=150)
+    # Set on_submit for date fields to trigger refresh upon selection
+    entidades_advanced_desde.on_submit = _ent_live
+    entidades_advanced_hasta.on_submit = _ent_live
+
+    entidades_advanced_iva = _dropdown("Condición IVA", [("", "Todos")], on_change=_ent_live, width=200)
+
+    entidades_advanced_tipo = _dropdown(
+        "Tipo",
+        [("", "Todos"), ("CLIENTE", "Cliente"), ("PROVEEDOR", "Proveedor"), ("AMBOS", "Ambos")],
+        value="",
+        on_change=_ent_live,
+        width=150
     )
 
     def entidades_provider(
@@ -502,23 +678,72 @@ def main(page: ft.Page) -> None:
         total = db.count_entities(search=search, tipo=simple, advanced=advanced)
         return rows, total
 
-    def delete_entity(entity_id: int) -> None:
+    def deactivate_entity(entity_id: int) -> None:
         if db is None:
             raise provider_error()
-        db.delete_entities([int(entity_id)])
-        show_toast("Entidad eliminada", kind="success")
+        db.update_entity_fields(int(entity_id), {"activo": False})
+        show_toast("Entidad desactivada", kind="success")
         entidades_table.refresh()
 
     entidades_table = GenericTable(
         columns=[
-            ColumnConfig(key="nombre_completo", label="Entidad", width=200),
-            ColumnConfig(key="tipo", label="Tipo", formatter=lambda v, _: v or "—", width=90),
+            ColumnConfig(key="apellido", label="Apellido", width=120),
+            ColumnConfig(key="nombre", label="Nombre", width=120),
+            ColumnConfig(key="razon_social", label="Razón Social", width=180),
+            ColumnConfig(
+                key="tipo", 
+                label="Tipo", 
+                formatter=lambda v, _: v or "—", 
+                width=100,
+                editable=True,
+                inline_editor=dropdown_editor(lambda: ["CLIENTE", "PROVEEDOR", "AMBOS"], width=150, empty_label="Seleccionar...")
+            ),
             ColumnConfig(key="cuit", label="CUIT", width=110),
-            ColumnConfig(key="telefono", label="Teléfono", width=120),
-            ColumnConfig(key="email", label="Email", width=180),
-            ColumnConfig(key="localidad", label="Localidad", width=140),
-            ColumnConfig(key="provincia", label="Provincia", width=110),
-            ColumnConfig(key="lista_precio", label="Lista", width=70),
+            ColumnConfig(
+                key="condicion_iva", 
+                label="IVA", 
+                width=140,
+                editable=True,
+                inline_editor=dropdown_editor(
+                    lambda: [c["nombre"] for c in db.fetch_condiciones_iva(limit=100)], 
+                    width=200, 
+                    empty_label="Seleccionar..."
+                )
+            ),
+            ColumnConfig(
+                key="lista_precio",
+                label="Lista Precio",
+                width=140,
+                editable=True,
+                formatter=lambda v, _: v or "—",
+                inline_editor=dropdown_editor(
+                    lambda: [l["nombre"] for l in db.fetch_listas_precio(limit=100) if l["activa"]],
+                    width=200,
+                    empty_label="Seleccionar..."
+                )
+            ),
+            ColumnConfig(key="domicilio", label="Domicilio", width=180, editable=True),
+            ColumnConfig(key="telefono", label="Teléfono", width=120, editable=True),
+            ColumnConfig(key="email", label="Email", width=180, editable=True),
+            ColumnConfig(key="localidad", label="Localidad", width=140, editable=True),
+            ColumnConfig(key="provincia", label="Provincia", width=110, editable=True),
+            ColumnConfig(
+                key="notas",
+                label="Notas",
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.INFO_OUTLINE_ROUNDED,
+                    tooltip="Ver notas" if row.get("notas") else "Sin notas",
+                    icon_color=COLOR_INFO if row.get("notas") else ft.Colors.GREY_400,
+                    on_click=lambda _: open_form("Notas de Entidad", ft.Column([ft.Text(row.get("notas"), selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300), [ft.TextButton("Cerrar", on_click=close_form)]) if row.get("notas") else None,
+                ),
+                width=50,
+            ),
+            ColumnConfig(
+                key="fecha_creacion", 
+                label="Fecha Alta", 
+                formatter=lambda v, _: v.strftime("%d/%m/%Y") if isinstance(v, datetime) else (datetime.fromisoformat(str(v).split(".")[0].replace(" ", "T")).strftime("%d/%m/%Y") if v else "—"),
+                width=110
+            ),
             ColumnConfig(key="saldo_cuenta", label="Saldo", formatter=_format_money, width=100),
             ColumnConfig(
                 key="activo",
@@ -544,19 +769,23 @@ def main(page: ft.Page) -> None:
                 width=40,
             ),
             ColumnConfig(
-                key="_delete",
+                key="_toggle_active",
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
-                    tooltip="Eliminar entidad",
-                    icon_color="#DC2626",
-                    on_click=lambda e, rid=row.get("id"): (
+                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.Icons.DO_NOT_DISTURB_ON_ROUNDED,
+                    tooltip="Activar entidad" if not row.get("activo") else "Desactivar entidad",
+                    icon_color=COLOR_SUCCESS if not row.get("activo") else COLOR_WARNING,
+                    on_click=lambda e, rid=row.get("id"), is_act=row.get("activo"): (
                         ask_confirm(
-                            "Eliminar entidad",
-                            "¿Estás seguro que deseas eliminar la entidad seleccionada? Esta acción no se puede deshacer.",
-                            "Eliminar",
-                            lambda: delete_entity(int(rid)),
+                            "Activar entidad" if not is_act else "Desactivar entidad",
+                            "¿Deseas activar esta entidad?" if not is_act else "¿Deseas desactivar esta entidad? Podrás volver a activarla más tarde.",
+                            "Activar" if not is_act else "Desactivar",
+                            lambda: (
+                                db.update_entity_fields(int(rid), {"activo": not is_act}),
+                                show_toast(f"Entidad {'activada' if not is_act else 'desactivada'}", kind="success"),
+                                entidades_table.refresh()
+                            ) if db else None,
                         )
                         if rid is not None
                         else None
@@ -566,19 +795,26 @@ def main(page: ft.Page) -> None:
             ),
         ],
         data_provider=entidades_provider,
-        simple_filter=SimpleFilterConfig(
-            label="Tipo",
-            options=[(None, "Todos"), ("CLIENTE", "Cliente"), ("PROVEEDOR", "Proveedor"), ("AMBOS", "Ambos")],
-        ),
         advanced_filters=[
+            AdvancedFilterControl("tipo", entidades_advanced_tipo),
+            AdvancedFilterControl("apellido", entidades_advanced_apellido),
+            AdvancedFilterControl("nombre", entidades_advanced_nombre),
+            AdvancedFilterControl("razon_social", entidades_advanced_razon),
             AdvancedFilterControl("cuit", entidades_advanced_cuit),
+            AdvancedFilterControl("domicilio", entidades_advanced_domicilio),
             AdvancedFilterControl("localidad", entidades_advanced_localidad),
             AdvancedFilterControl("provincia", entidades_advanced_provincia),
+            AdvancedFilterControl("email", entidades_advanced_email),
+            AdvancedFilterControl("telefono", entidades_advanced_telefono),
+            AdvancedFilterControl("notas", entidades_advanced_notas),
             AdvancedFilterControl("activo", entidades_advanced_activo),
+            AdvancedFilterControl("desde", entidades_advanced_desde),
+            AdvancedFilterControl("hasta", entidades_advanced_hasta),
+            AdvancedFilterControl("condicion_iva", entidades_advanced_iva),
         ],
         inline_edit_callback=lambda row_id, changes: db.update_entity_fields(int(row_id), changes) if db else None,
         mass_edit_callback=lambda ids, updates: db.bulk_update_entities([int(i) for i in ids], updates) if db else None,
-        mass_delete_callback=lambda ids: db.delete_entities([int(i) for i in ids]) if db else None,
+        mass_delete_callback=lambda ids: db.bulk_update_entities([int(i) for i in ids], {"activo": False}) if db else None,
         show_inline_controls=True,
         show_mass_actions=True,
         show_selection=True,
@@ -613,29 +849,7 @@ def main(page: ft.Page) -> None:
         )
     ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
-    # ---- Artículos (GenericTable) ----
-    articulos_advanced_nombre = ft.TextField(label="Nombre contiene", width=220)
-    _style_input(articulos_advanced_nombre)
-    articulos_advanced_marca = ft.TextField(label="Marca contiene", width=200)
-    _style_input(articulos_advanced_marca)
-    articulos_advanced_rubro = ft.TextField(label="Rubro contiene", width=200)
-    _style_input(articulos_advanced_rubro)
-    articulos_advanced_proveedor = ft.TextField(label="Proveedor contiene", width=200)
-    _style_input(articulos_advanced_proveedor)
-    articulos_advanced_ubicacion = ft.TextField(label="Ubicación contiene", width=200)
-    _style_input(articulos_advanced_ubicacion)
-    articulos_advanced_costo_min = _number_field("Costo mín.", width=160)
-    articulos_advanced_costo_max = _number_field("Costo máx.", width=160)
-    articulos_advanced_stock_bajo = ft.Checkbox(label="Solo bajo mínimo", value=False)
-    articulos_advanced_lista_precio = _dropdown("Ver precios de lista", [("", "—")], width=200)
-
-    def refresh_articles_listas():
-        try:
-            lists = db.fetch_listas_precio()
-            articulos_advanced_lista_precio.options = [ft.dropdown.Option("", "—")] + [
-                ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in lists
-            ]
-        except Exception: pass
+    # Filters and catalogs defined above to avoid circular dependency
 
     def articulos_provider(
         offset: int,
@@ -648,12 +862,16 @@ def main(page: ft.Page) -> None:
         if db is None:
             raise provider_error()
         db.log_activity("ARTICULO", "SELECT", detalle={"search": search, "offset": offset})
-        if simple == "ACTIVO":
+        
+        # Read from advanced filters now
+        adv_status = advanced.get("activo")
+        if adv_status == "ACTIVO":
             activo = True
-        elif simple == "INACTIVO":
+        elif adv_status == "INACTIVO":
             activo = False
         else:
             activo = None
+            
         rows = db.fetch_articles(
             search=search,
             activo_only=activo,
@@ -665,16 +883,16 @@ def main(page: ft.Page) -> None:
         total = db.count_articles(search=search, activo_only=activo, advanced=advanced)
         return rows, total
 
-    def delete_article(article_id: int) -> None:
+    def deactivate_article(article_id: int) -> None:
         if db is None:
             raise provider_error()
-        db.delete_articles([int(article_id)])
-        show_toast("Artículo eliminado", kind="success")
+        db.update_article_fields(int(article_id), {"activo": False})
+        show_toast("Artículo desactivado", kind="success")
         articulos_table.refresh()
 
     articulos_table = GenericTable(
         columns=[
-            ColumnConfig(key="nombre", label="Artículo", width=240),
+            ColumnConfig(key="nombre", label="Nombre", width=240),
             ColumnConfig(
                 key="marca",
                 label="Marca",
@@ -763,19 +981,23 @@ def main(page: ft.Page) -> None:
                 width=40,
             ),
             ColumnConfig(
-                key="_delete",
+                key="_toggle_active",
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
-                    tooltip="Eliminar artículo",
-                    icon_color="#DC2626",
-                    on_click=lambda e, rid=row.get("id"): (
+                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.Icons.DO_NOT_DISTURB_ON_ROUNDED,
+                    tooltip="Activar artículo" if not row.get("activo") else "Desactivar artículo",
+                    icon_color=COLOR_SUCCESS if not row.get("activo") else COLOR_WARNING,
+                    on_click=lambda e, rid=row.get("id"), is_act=row.get("activo"): (
                         ask_confirm(
-                            "Eliminar artículo",
-                            "¿Estás seguro que deseas eliminar el artículo seleccionado? Esta acción no se puede deshacer.",
-                            "Eliminar",
-                            lambda: delete_article(int(rid)),
+                            "Activar artículo" if not is_act else "Desactivar artículo",
+                            "¿Deseas activar este artículo?" if not is_act else "¿Deseas desactivar este artículo? Podrás volver a activarlo más tarde.",
+                            "Activar" if not is_act else "Desactivar",
+                            lambda: (
+                                db.update_article_fields(int(rid), {"activo": not is_act}),
+                                show_toast(f"Artículo {'activado' if not is_act else 'desactivada'}", kind="success"),
+                                articulos_table.refresh()
+                            ) if db else None,
                         )
                         if rid is not None
                         else None
@@ -785,29 +1007,28 @@ def main(page: ft.Page) -> None:
             ),
         ],
         data_provider=articulos_provider,
-        simple_filter=SimpleFilterConfig(
-            label="Estado",
-            options=[(None, "Todos"), ("ACTIVO", "Activos"), ("INACTIVO", "Inactivos")],
-            default="ACTIVO",
-        ),
         advanced_filters=[
             AdvancedFilterControl("nombre", articulos_advanced_nombre),
-            AdvancedFilterControl("marca", articulos_advanced_marca),
-            AdvancedFilterControl("rubro", articulos_advanced_rubro),
-            AdvancedFilterControl("proveedor", articulos_advanced_proveedor),
-            AdvancedFilterControl("ubicacion", articulos_advanced_ubicacion),
-            AdvancedFilterControl("costo_min", articulos_advanced_costo_min),
-            AdvancedFilterControl("costo_max", articulos_advanced_costo_max),
+            AdvancedFilterControl("id_marca", articulos_advanced_marca),
+            AdvancedFilterControl("id_rubro", articulos_advanced_rubro),
+            AdvancedFilterControl("id_proveedor", articulos_advanced_proveedor),
+            AdvancedFilterControl("ubicacion_exacta", articulos_advanced_ubicacion),
+            AdvancedFilterControl("costo_min", articulos_advanced_costo_slider, getter=lambda s: s.start_value, setter=_reset_cost_filter),
+            AdvancedFilterControl("costo_max", ft.Container(), getter=lambda _: articulos_advanced_costo_slider.end_value),
             AdvancedFilterControl("stock_bajo_minimo", articulos_advanced_stock_bajo),
             AdvancedFilterControl("id_lista_precio", articulos_advanced_lista_precio),
+            AdvancedFilterControl("activo", articulos_advanced_estado),
+            AdvancedFilterControl("id_tipo_iva", articulos_advanced_iva),
+            AdvancedFilterControl("id_unidad_medida", articulos_advanced_unidad),
+            AdvancedFilterControl("redondeo", articulos_advanced_redondeo),
         ],
         inline_edit_callback=lambda row_id, changes: db.update_article_fields(int(row_id), changes) if db else None,
         mass_edit_callback=lambda ids, updates: db.bulk_update_articles([int(i) for i in ids], updates) if db else None,
-        mass_delete_callback=lambda ids: db.delete_articles([int(i) for i in ids]) if db else None,
+        mass_delete_callback=lambda ids: db.bulk_update_articles([int(i) for i in ids], {"activo": False}) if db else None,
         show_inline_controls=True,
         show_mass_actions=True,
         show_selection=True,
-        auto_load=False,
+        auto_load=True,
         page_size=12,
         page_size_options=(10, 25, 50),
         show_export_button=True,
@@ -862,37 +1083,38 @@ def main(page: ft.Page) -> None:
             form_dialog.open = True
             page.update()
 
-    nueva_entidad_nombre = ft.TextField(label="Nombre", width=250)
+    nueva_entidad_nombre = ft.TextField(label="Nombre *", width=250)
     _style_input(nueva_entidad_nombre)
-    nueva_entidad_apellido = ft.TextField(label="Apellido", width=250)
+    nueva_entidad_apellido = ft.TextField(label="Apellido *", width=250)
     _style_input(nueva_entidad_apellido)
-    nueva_entidad_razon_social = ft.TextField(label="Razón social", width=510)
+    nueva_entidad_razon_social = ft.TextField(label="Razón social *", width=510)
     _style_input(nueva_entidad_razon_social)
     nueva_entidad_tipo = _dropdown(
-        "Tipo",
+        "Tipo *",
         [("", "—"), ("CLIENTE", "Cliente"), ("PROVEEDOR", "Proveedor"), ("AMBOS", "Ambos")],
         value="",
+        width=250,
     )
-    nueva_entidad_cuit = ft.TextField(label="CUIT", width=250)
+    nueva_entidad_cuit = ft.TextField(label="CUIT *", width=250)
     _style_input(nueva_entidad_cuit)
-    nueva_entidad_telefono = ft.TextField(label="Teléfono", width=250)
+    nueva_entidad_telefono = ft.TextField(label="Teléfono *", width=250)
     _style_input(nueva_entidad_telefono)
     nueva_entidad_email = ft.TextField(label="Email", width=510)
     _style_input(nueva_entidad_email)
     nueva_entidad_domicilio = ft.TextField(label="Domicilio", width=510)
     _style_input(nueva_entidad_domicilio)
-    nueva_entidad_lista_precio = ft.Dropdown(label="Lista de Precios", width=250, options=[ft.dropdown.Option("", "—")], value="")
+    nueva_entidad_lista_precio = ft.Dropdown(label="Lista de Precios", width=250, options=[ft.dropdown.Option("", "—")], value="", enable_search=True)
     _style_input(nueva_entidad_lista_precio)
     nueva_entidad_descuento = _number_field("Desc. (%)", width=120)
     nueva_entidad_limite_credito = _number_field("Límite Crédito ($)", width=180)
     nueva_entidad_activo = ft.Switch(label="Activo", value=True)
     
     # New Fields for Entity
-    nueva_entidad_provincia = ft.Dropdown(label="Provincia", width=250, options=[])
+    nueva_entidad_provincia = ft.Dropdown(label="Provincia *", width=250, options=[], enable_search=True)
     _style_input(nueva_entidad_provincia)
-    nueva_entidad_localidad = ft.Dropdown(label="Localidad", width=250, options=[], disabled=True)
+    nueva_entidad_localidad = ft.Dropdown(label="Localidad *", width=250, options=[], disabled=True, enable_search=True)
     _style_input(nueva_entidad_localidad)
-    nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA", width=250, options=[])
+    nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA *", width=250, options=[], enable_search=True)
     _style_input(nueva_entidad_condicion_iva)
     nueva_entidad_notas = ft.TextField(label="Notas", width=510, multiline=True, min_lines=2, max_lines=4)
     _style_input(nueva_entidad_notas)
@@ -904,9 +1126,25 @@ def main(page: ft.Page) -> None:
         try:
             provincias = db.list_provincias()
             nueva_entidad_provincia.options = [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in provincias]
-            
+
             condiciones = db.fetch_condiciones_iva(limit=50)
             nueva_entidad_condicion_iva.options = [ft.dropdown.Option(str(c["id"]), c["nombre"]) for c in condiciones]
+            
+            # Load Price Lists
+            listas = db.fetch_listas_precio(limit=100)
+            nueva_entidad_lista_precio.options = [ft.dropdown.Option("", "—")] + [
+                ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas
+            ]
+
+            # Also update the advanced filter dropdown and trigger UI refresh
+            entidades_advanced_iva.options = [ft.dropdown.Option("", "Todos")] + [ft.dropdown.Option(c["nombre"], c["nombre"]) for c in condiciones]
+            
+            try:
+                nueva_entidad_condicion_iva.update()
+                nueva_entidad_lista_precio.update()
+                entidades_advanced_iva.update()
+            except:
+                pass
         except Exception as e:
             print(f"Error loading entity dropdowns: {e}")
 
@@ -932,8 +1170,30 @@ def main(page: ft.Page) -> None:
         db_conn = get_db_or_toast()
         if db_conn is None:
             return
+        
+        # Validation
+        has_name = bool((nueva_entidad_nombre.value or "").strip() and (nueva_entidad_apellido.value or "").strip())
+        has_razon = bool((nueva_entidad_razon_social.value or "").strip())
+        
+        # Extended validation
+        f_tipo = bool((nueva_entidad_tipo.value or "").strip())
+        f_cuit = bool((nueva_entidad_cuit.value or "").strip())
+        f_iva = bool((nueva_entidad_condicion_iva.value or "").strip())
+        f_tel = bool((nueva_entidad_telefono.value or "").strip())
+        f_prov = bool((nueva_entidad_provincia.value or "").strip())
+        f_loc = bool((nueva_entidad_localidad.value or "").strip())
+
+        if not (has_name or has_razon):
+            show_toast("Completá Nombre y Apellido O Razón Social.", kind="warning")
+            return
+        
+        if not all([f_tipo, f_cuit, f_iva, f_tel, f_prov, f_loc]):
+            show_toast("Faltan campos obligatorios (*).", kind="warning")
+            return
+
         try:
-            eid = db_conn.create_entity(
+            # Atomic creation
+            eid = db_conn.create_entity_full(
                 nombre=nueva_entidad_nombre.value,
                 apellido=nueva_entidad_apellido.value,
                 razon_social=nueva_entidad_razon_social.value,
@@ -945,21 +1205,17 @@ def main(page: ft.Page) -> None:
                 activo=bool(nueva_entidad_activo.value),
                 id_localidad=int(nueva_entidad_localidad.value) if nueva_entidad_localidad.value else None,
                 id_condicion_iva=int(nueva_entidad_condicion_iva.value) if nueva_entidad_condicion_iva.value else None,
-                notas=nueva_entidad_notas.value
+                notas=nueva_entidad_notas.value,
+                # Pricing
+                id_lista_precio=nueva_entidad_lista_precio.value,
+                descuento=float(nueva_entidad_descuento.value or 0),
+                limite_credito=float(nueva_entidad_limite_credito.value or 0)
             )
-            # Save list info
-            if eid:
-                db_conn.update_client_list_data(
-                    eid, 
-                    nueva_entidad_lista_precio.value,
-                    float(nueva_entidad_descuento.value or 0),
-                    float(nueva_entidad_limite_credito.value or 0)
-                )
             close_form()
             show_toast("Entidad creada", kind="success")
             entidades_table.refresh()
         except Exception as exc:
-            show_toast(f"Error: {exc}", kind="error")
+            show_toast(f"Error al crear: {exc}", kind="error")
 
     def open_nueva_entidad(_: Any = None) -> None:
         nonlocal editing_entity_id
@@ -1028,31 +1284,16 @@ def main(page: ft.Page) -> None:
             nueva_entidad_notas.value = ent.get("notas", "")
             nueva_entidad_condicion_iva.value = str(ent["id_condicion_iva"]) if ent.get("id_condicion_iva") else ""
             
-            # Handle Location (Need to know province to set it correctly)
+            # Handle Location
+            pid = ent.get("id_provincia")
             lid = ent.get("id_localidad")
-            if lid:
-                # We need to fetch the province for this locality to set the dropdown
-                # Or simplistic approach: Fetch entity detailed which has 'provincia_id'. 
-                # Assuming `fetch_entity_by_id` might eventually join this. 
-                # For now, let's try to reverse lookup or just load all localities? 
-                # Better: `fetch_entity_by_id` should return `id_provincia` if we joined locality.
-                # Let's check database.py later. For now, assume we can get it or load it blindly.
-                # Actually, logic: Load locality -> get its province -> set prov -> load locs -> set loc.
-                # Since we don't have that handy, let's just populate the Locality dropdown if we can,
-                # OR (dirty fix) load ALL localities if province is unknown? No, too many.
-                # Let's rely on `ent` having `id_provincia` if we update the SQL query.
-                pid = ent.get("id_provincia") # We will add this to the fetch query
-                if pid:
-                    nueva_entidad_provincia.value = str(pid)
-                    # Trigger manual load of localities
-                    locs = db_conn.fetch_localidades_by_provincia(int(pid))
-                    nueva_entidad_localidad.options = [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in locs]
-                    nueva_entidad_localidad.disabled = False
+            if pid:
+                nueva_entidad_provincia.value = str(pid)
+                # Manually trigger locality reload
+                _on_provincia_change(None)
+                if lid:
                     nueva_entidad_localidad.value = str(lid)
-                else:
-                    nueva_entidad_provincia.value = ""
-                    nueva_entidad_localidad.value = ""
-                    nueva_entidad_localidad.disabled = True
+                    nueva_entidad_localidad.disabled = False
             else:
                 nueva_entidad_provincia.value = ""
                 nueva_entidad_localidad.value = ""
@@ -1068,8 +1309,31 @@ def main(page: ft.Page) -> None:
 
     def guardar_edicion_entidad(_: Any = None) -> None:
         nonlocal editing_entity_id
+        if not editing_entity_id: return
+        
         db_conn = get_db_or_toast()
-        if db_conn is None or editing_entity_id is None: return
+        if db_conn is None: return
+
+        # Validation
+        has_name = bool((nueva_entidad_nombre.value or "").strip() and (nueva_entidad_apellido.value or "").strip())
+        has_razon = bool((nueva_entidad_razon_social.value or "").strip())
+        
+        # Extended validation
+        f_tipo = bool((nueva_entidad_tipo.value or "").strip())
+        f_cuit = bool((nueva_entidad_cuit.value or "").strip())
+        f_iva = bool((nueva_entidad_condicion_iva.value or "").strip())
+        f_tel = bool((nueva_entidad_telefono.value or "").strip())
+        f_prov = bool((nueva_entidad_provincia.value or "").strip())
+        f_loc = bool((nueva_entidad_localidad.value or "").strip())
+
+        if not (has_name or has_razon):
+            show_toast("Completá Nombre y Apellido O Razón Social.", kind="warning")
+            return
+        
+        if not all([f_tipo, f_cuit, f_iva, f_tel, f_prov, f_loc]):
+            show_toast("Faltan campos obligatorios (*).", kind="warning")
+            return
+
         try:
             updates = {
                 "nombre": nueva_entidad_nombre.value,
@@ -1083,25 +1347,23 @@ def main(page: ft.Page) -> None:
                 "activo": bool(nueva_entidad_activo.value),
                 "id_localidad": int(nueva_entidad_localidad.value) if nueva_entidad_localidad.value else None,
                 "id_condicion_iva": int(nueva_entidad_condicion_iva.value) if nueva_entidad_condicion_iva.value else None,
-                "notas": nueva_entidad_notas.value
+                "notas": nueva_entidad_notas.value,
             }
-            # Note: Database.update_entity_fields currently only allows a few fields.
-            # I'll update it or do a manual update here if needed, but let's assume it should handle these.
-            db_conn.update_entity_fields(editing_entity_id, updates)
             
-            # Update price list info
-            db_conn.update_client_list_data(
+            # Atomic update
+            db_conn.update_entity_full(
                 editing_entity_id,
-                nueva_entidad_lista_precio.value,
-                float(nueva_entidad_descuento.value or 0),
-                float(nueva_entidad_limite_credito.value or 0)
+                updates=updates,
+                id_lista_precio=nueva_entidad_lista_precio.value,
+                descuento=float(nueva_entidad_descuento.value or 0),
+                limite_credito=float(nueva_entidad_limite_credito.value or 0)
             )
             
             close_form()
             show_toast("Entidad actualizada", kind="success")
             entidades_table.refresh()
         except Exception as exc:
-            show_toast(f"Error: {exc}", kind="error")
+            show_toast(f"Error al actualizar: {exc}", kind="error")
 
         if not db: return
         lists = db.fetch_listas_precio(limit=100)
@@ -1130,8 +1392,8 @@ def main(page: ft.Page) -> None:
                     section_title("Información de la Entidad"),
                     ft.Row([nueva_entidad_nombre, nueva_entidad_apellido], spacing=10),
                     ft.Row([nueva_entidad_razon_social], spacing=10),
-                    ft.Row([nueva_entidad_razon_social], spacing=10),
-                    ft.Row([nueva_entidad_tipo, nueva_entidad_condicion_iva, nueva_entidad_cuit], spacing=10),
+                    ft.Row([nueva_entidad_tipo, nueva_entidad_condicion_iva], spacing=10),
+                    ft.Row([nueva_entidad_cuit], spacing=10),
                     
                     ft.Container(height=10),
                     section_title("Contacto y Domicilio"),
@@ -1141,16 +1403,14 @@ def main(page: ft.Page) -> None:
                     ft.Row([nueva_entidad_domicilio], spacing=10),
                     
                     ft.Container(height=10),
-                    section_title("Notas"),
-                    ft.Row([nueva_entidad_notas], spacing=10),
-                    
-                    ft.Container(height=10),
-                    section_title("Configuración de Venta"),
+                    section_title("Configuración Comercial"),
                     ft.Row([nueva_entidad_lista_precio], spacing=10),
                     ft.Row([nueva_entidad_descuento, nueva_entidad_limite_credito], spacing=10),
-                    
-                    ft.Container(height=10),
                     ft.Row([nueva_entidad_activo], spacing=10),
+
+                    ft.Container(height=10),
+                    section_title("Notas"),
+                    ft.Row([nueva_entidad_notas], spacing=10),
                 ],
                 spacing=10,
                 tight=True,
@@ -1162,28 +1422,26 @@ def main(page: ft.Page) -> None:
     # State for editing
     editing_article_id: Optional[int] = None
 
-    nuevo_articulo_nombre = ft.TextField(label="Nombre", width=560)
+    nuevo_articulo_nombre = ft.TextField(label="Nombre *", width=560)
     _style_input(nuevo_articulo_nombre)
-    nuevo_articulo_marca = ft.Dropdown(label="Marca", width=275, options=[ft.dropdown.Option("", "(Sin marca)")], value="")
+    nuevo_articulo_marca = ft.Dropdown(label="Marca *", width=275, options=[], value="")
     _style_input(nuevo_articulo_marca)
-    nuevo_articulo_rubro = ft.Dropdown(label="Rubro", width=275, options=[ft.dropdown.Option("", "(Sin rubro)")], value="")
+    nuevo_articulo_rubro = ft.Dropdown(label="Rubro *", width=275, options=[], value="")
     _style_input(nuevo_articulo_rubro)
-    nuevo_articulo_tipo_iva = ft.Dropdown(label="Alicuota IVA", width=275, options=[ft.dropdown.Option("", "—")], value="")
+    nuevo_articulo_tipo_iva = ft.Dropdown(label="Alicuota IVA *", width=275, options=[], value="")
     _style_input(nuevo_articulo_tipo_iva)
-    nuevo_articulo_unidad = ft.Dropdown(label="Unidad Medida", width=275, options=[ft.dropdown.Option("", "—")], value="")
+    nuevo_articulo_unidad = ft.Dropdown(label="Unidad Medida *", width=275, options=[], value="")
     _style_input(nuevo_articulo_unidad)
     nuevo_articulo_proveedor = ft.Dropdown(label="Proveedor Habitual", width=560, options=[ft.dropdown.Option("", "—")], value="")
     _style_input(nuevo_articulo_proveedor)
     
-    nuevo_articulo_costo = _number_field("Costo", width=275)
-    nuevo_articulo_stock_minimo = _number_field("Stock mínimo", width=275)
-    nuevo_articulo_costo = _number_field("Costo", width=275)
-    nuevo_articulo_stock_minimo = _number_field("Stock mínimo", width=275)
-    nuevo_articulo_stock_actual = _number_field("Stock", width=275) # Renamed from Stock Inicial
-    nuevo_articulo_ubicacion = ft.TextField(label="Ubicación", width=560)
-    nuevo_articulo_ubicacion = ft.TextField(label="Ubicación", width=560)
+    nuevo_articulo_costo = _number_field("Costo *", width=275)
+    nuevo_articulo_stock_minimo = _number_field("Stock mínimo *", width=275)
+    nuevo_articulo_stock_actual = _number_field("Stock *", width=275)
+    nuevo_articulo_ubicacion = ft.Dropdown(label="Ubicación *", width=560, options=[], value="")
     _style_input(nuevo_articulo_ubicacion)
     nuevo_articulo_descuento_base = _number_field("Descuento Base (%)", width=180)
+    nuevo_articulo_ganancia_2 = _number_field("Ganancia 2 (%)", width=180)
     nuevo_articulo_redondeo = ft.Switch(label="Redondeo", value=False)
     nuevo_articulo_observacion = ft.TextField(label="Observaciones", width=560, multiline=True, min_lines=2, max_lines=4)
     _style_input(nuevo_articulo_observacion)
@@ -1195,25 +1453,36 @@ def main(page: ft.Page) -> None:
         if db_conn is None:
             return
         try:
+            if not nuevo_articulo_marca.value or not nuevo_articulo_rubro.value or not nuevo_articulo_nombre.value:
+                show_toast("Campos obligatorios marcados con * son requeridos", kind="warning")
+                return
+
+            costo_val = float(nuevo_articulo_costo.value or 0)
+            if costo_val <= 0:
+                show_toast("El costo debe ser mayor a 0", kind="warning")
+                return
+
             art_id = db_conn.create_article(
                 nombre=nuevo_articulo_nombre.value or "",
-                marca=nuevo_articulo_marca.value or None,
-                rubro=nuevo_articulo_rubro.value or None,
-                costo=nuevo_articulo_costo.value,
-                stock_minimo=nuevo_articulo_stock_minimo.value,
+                marca=nuevo_articulo_marca.value,
+                rubro=nuevo_articulo_rubro.value,
+                costo=costo_val,
+                stock_minimo=float(nuevo_articulo_stock_minimo.value or 0),
                 ubicacion=nuevo_articulo_ubicacion.value,
                 activo=bool(nuevo_articulo_activo.value),
                 id_tipo_iva=int(nuevo_articulo_tipo_iva.value) if nuevo_articulo_tipo_iva.value else None,
                 id_unidad_medida=int(nuevo_articulo_unidad.value) if nuevo_articulo_unidad.value else None,
                 id_proveedor=int(nuevo_articulo_proveedor.value) if nuevo_articulo_proveedor.value else None,
                 observacion=nuevo_articulo_observacion.value,
-                descuento_base=nuevo_articulo_descuento_base.value,
-                redondeo=bool(nuevo_articulo_redondeo.value)
+                descuento_base=float(nuevo_articulo_descuento_base.value or 0),
+                redondeo=bool(nuevo_articulo_redondeo.value),
+                porcentaje_ganancia_2=float(nuevo_articulo_ganancia_2.value or 0)
             )
 
             # Save prices
             if art_id:
                 price_updates = []
+                any_price = False
                 for ctrl in articulo_precios_container.controls:
                     if isinstance(ctrl, ft.Container) and hasattr(ctrl, "price_data"):
                         lp_id = ctrl.price_data["lp_id"]
@@ -1222,13 +1491,20 @@ def main(page: ft.Page) -> None:
                         tf_porc = row.controls[2]
                         dd_tipo = row.controls[3]
                         try:
+                            price_val = float(tf_precio.value or 0) if tf_precio.value else None
+                            if price_val and price_val > 0:
+                                any_price = True
                             price_updates.append({
                                 "id_lista_precio": lp_id,
-                                "precio": float(tf_precio.value or 0) if tf_precio.value else None,
+                                "precio": price_val,
                                 "porcentaje": float(tf_porc.value or 0) if tf_porc.value else None,
                                 "id_tipo_porcentaje": int(dd_tipo.value) if dd_tipo.value else None
                             })
                         except: pass
+                
+                if not any_price:
+                    show_toast("Al menos una lista de precio debe tener un valor mayor a 0", kind="warning")
+                    return
                 
                 db_conn.update_article_prices(art_id, price_updates)
             
@@ -1271,10 +1547,18 @@ def main(page: ft.Page) -> None:
         if db_conn is None or editing_article_id is None:
             return
         try:
+            if not nuevo_articulo_marca.value or not nuevo_articulo_rubro.value or not nuevo_articulo_nombre.value:
+                show_toast("Campos obligatorios marcados con * son requeridos", kind="warning")
+                return
+
+            if float(nuevo_articulo_costo.value or 0) <= 0:
+                show_toast("El costo debe ser mayor a 0", kind="warning")
+                return
+
             updates = {
                 "nombre": nuevo_articulo_nombre.value or "",
-                "marca": nuevo_articulo_marca.value or None,
-                "rubro": nuevo_articulo_rubro.value or None,
+                "marca": nuevo_articulo_marca.value,
+                "rubro": nuevo_articulo_rubro.value,
                 "costo": nuevo_articulo_costo.value,
                 "stock_minimo": nuevo_articulo_stock_minimo.value,
                 "ubicacion": nuevo_articulo_ubicacion.value,
@@ -1284,30 +1568,37 @@ def main(page: ft.Page) -> None:
                 "id_proveedor": int(nuevo_articulo_proveedor.value) if nuevo_articulo_proveedor.value else None,
                 "observacion": nuevo_articulo_observacion.value,
                 "descuento_base": nuevo_articulo_descuento_base.value,
-                "redondeo": bool(nuevo_articulo_redondeo.value)
+                "redondeo": bool(nuevo_articulo_redondeo.value),
+                "porcentaje_ganancia_2": nuevo_articulo_ganancia_2.value
             }
             db_conn.update_article_fields(editing_article_id, updates)
             
             # Update complex prices
             price_updates = []
+            any_price = False
             for ctrl in articulo_precios_container.controls:
                 if isinstance(ctrl, ft.Container) and hasattr(ctrl, "price_data"):
-                    # ctrl is the row container
                     lp_id = ctrl.price_data["lp_id"]
-                    # find controls in row
                     row = ctrl.content
                     tf_precio = row.controls[1]
                     tf_porc = row.controls[2]
                     dd_tipo = row.controls[3]
                     try:
+                        price_val = float(tf_precio.value or 0) if tf_precio.value else None
+                        if price_val and price_val > 0:
+                            any_price = True
                         price_updates.append({
                             "id_lista_precio": lp_id,
-                            "precio": float(tf_precio.value or 0) if tf_precio.value else None,
+                            "precio": price_val,
                             "porcentaje": float(tf_porc.value or 0) if tf_porc.value else None,
                             "id_tipo_porcentaje": int(dd_tipo.value) if dd_tipo.value else None
                         })
                     except: pass
             
+            if not any_price:
+                show_toast("Al menos una lista de precio debe tener un valor mayor a 0", kind="warning")
+                return
+
             # Prices
             if price_updates:
                 db_conn.update_article_prices(editing_article_id, price_updates)
@@ -1390,7 +1681,7 @@ def main(page: ft.Page) -> None:
                     section_title("Costos y Stock"),
                     ft.Row([nuevo_articulo_costo, nuevo_articulo_stock_minimo], spacing=10),
                     ft.Row([nuevo_articulo_stock_actual], spacing=10),
-                    ft.Row([nuevo_articulo_descuento_base, nuevo_articulo_redondeo], spacing=20, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Row([nuevo_articulo_descuento_base, nuevo_articulo_ganancia_2, nuevo_articulo_redondeo], spacing=20, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     
                     ft.Container(height=10),
                     section_title("Logística y Notas"),
@@ -1416,11 +1707,15 @@ def main(page: ft.Page) -> None:
         )
 
     def _populate_dropdowns():
-        nuevo_articulo_marca.options = [ft.dropdown.Option("", "(Sin marca)")] + [ft.dropdown.Option(m, m) for m in marcas_values]
-        nuevo_articulo_rubro.options = [ft.dropdown.Option("", "(Sin rubro)")] + [ft.dropdown.Option(r, r) for r in rubros_values]
-        nuevo_articulo_tipo_iva.options = [ft.dropdown.Option("", "—")] + [ft.dropdown.Option(str(t["id"]), f"{t['descripcion']} ({t['porcentaje']}%)") for t in tipos_iva_values]
-        nuevo_articulo_unidad.options = [ft.dropdown.Option("", "—")] + [ft.dropdown.Option(str(u["id"]), f"{u['nombre']} ({u['abreviatura']})") for u in unidades_values]
+        depositos = db.fetch_depositos()
+        nuevo_articulo_marca.options = [ft.dropdown.Option(m, m) for m in marcas_values]
+        nuevo_articulo_rubro.options = [ft.dropdown.Option(r, r) for r in rubros_values]
+        nuevo_articulo_tipo_iva.options = [ft.dropdown.Option(str(t["id"]), f"{t['descripcion']} ({t['porcentaje']}%)") for t in tipos_iva_values]
+        nuevo_articulo_unidad.options = [ft.dropdown.Option(str(u["id"]), f"{u['nombre']} ({u['abreviatura']})") for u in unidades_values]
         nuevo_articulo_proveedor.options = [ft.dropdown.Option("", "—")] + [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in proveedores_values]
+        nuevo_articulo_ubicacion.options = [ft.dropdown.Option(d["nombre"], d["nombre"]) for d in depositos]
+        if depositos:
+            nuevo_articulo_ubicacion.value = depositos[0]["nombre"]
 
     def open_nuevo_articulo(_: Any = None) -> None:
         nonlocal editing_article_id
@@ -1435,14 +1730,21 @@ def main(page: ft.Page) -> None:
         nuevo_articulo_nombre.value = ""
         nuevo_articulo_marca.value = ""
         nuevo_articulo_rubro.value = ""
-        nuevo_articulo_tipo_iva.value = ""
-        nuevo_articulo_unidad.value = ""
+        # Default IVA to 21% if found
+        def_iva = next((str(t["id"]) for t in tipos_iva_values if "21" in str(t["porcentaje"])), "")
+        nuevo_articulo_tipo_iva.value = def_iva
+        
+        # Default Unidad to 'Unidad' if found
+        def_un = next((str(u["id"]) for u in unidades_values if "unidad" in u["nombre"].lower()), "")
+        nuevo_articulo_unidad.value = def_un
+        
         nuevo_articulo_proveedor.value = ""
         nuevo_articulo_costo.value = "0"
         nuevo_articulo_stock_minimo.value = "0"
         nuevo_articulo_stock_actual.value = "0"
         nuevo_articulo_stock_actual.read_only = False # Enabled for creation
         nuevo_articulo_descuento_base.value = "0"
+        nuevo_articulo_ganancia_2.value = "0"
         nuevo_articulo_redondeo.value = False
         nuevo_articulo_ubicacion.value = ""
         nuevo_articulo_observacion.value = ""
@@ -1473,10 +1775,11 @@ def main(page: ft.Page) -> None:
                 dd_tp = ft.Dropdown(
                     label="Tipo de Calculo",
                     width=180,
-                    options=[ft.dropdown.Option("", "—")] + [
+                    options=[
                         ft.dropdown.Option(str(t["id"]), t["tipo"]) for t in tipos_porcentaje_values
                     ],
-                    value="",
+                    value=next((str(t["id"]) for t in tipos_porcentaje_values if "mar" in t["tipo"].lower()), 
+                          (str(tipos_porcentaje_values[0]["id"]) if tipos_porcentaje_values else "")),
                 )
                 _style_input(dd_tp)
                 
@@ -1578,18 +1881,20 @@ def main(page: ft.Page) -> None:
                     content=ft.Column([
                         ft.Text("Información General", size=16, weight=ft.FontWeight.BOLD),
                         ft.Divider(height=1, color=COLOR_BORDER),
-                        ft.Row([
-                            ft.Column([
-                                info_row("Marca", art.get('marca_nombre'), ft.Icons.LABEL_ROUNDED),
-                                info_row("Rubro", art.get('rubro_nombre'), ft.Icons.CATEGORY_ROUNDED),
-                                info_row("Proveedor", art.get('proveedor_nombre'), ft.Icons.BUSINESS_ROUNDED),
-                            ], expand=True),
-                            ft.Column([
-                                info_row("Costo", _format_money(art.get('costo')), ft.Icons.MONEY_ROUNDED),
-                                info_row("Stock Actual", f"{float(art.get('stock_actual', 0)):.2f} {art.get('unidad_abreviatura', '')}", ft.Icons.INVENTORY_ROUNDED),
-                                info_row("Ubicación", art.get('ubicacion'), ft.Icons.LOCATION_ON_ROUNDED),
-                            ], expand=True),
-                        ], spacing=40),
+                                ft.Row([
+                                    ft.Column([
+                                        info_row("Marca", art.get('marca'), ft.Icons.LABEL_ROUNDED),
+                                        info_row("Rubro", art.get('rubro'), ft.Icons.CATEGORY_ROUNDED),
+                                        info_row("Proveedor", art.get('proveedor'), ft.Icons.BUSINESS_ROUNDED),
+                                        info_row("PGan 2", f"{float(art.get('porcentaje_ganancia_2', 0)):.2f}%" if art.get('porcentaje_ganancia_2') is not None else "—", ft.Icons.PERCENT_ROUNDED),
+                                        info_row("Notas", art.get('observacion'), ft.Icons.NOTE_ROUNDED),
+                                    ], expand=True),
+                                    ft.Column([
+                                        info_row("Costo", _format_money(art.get('costo')), ft.Icons.MONEY_ROUNDED),
+                                        info_row("Stock Actual", f"{float(art.get('stock_actual', 0)):.2f} {art.get('unidad_abreviatura') or ''}", ft.Icons.INVENTORY_ROUNDED),
+                                        info_row("Ubicación", art.get('ubicacion'), ft.Icons.LOCATION_ON_ROUNDED),
+                                    ], expand=True),
+                                ], spacing=40),
                     ], spacing=15),
                     padding=20,
                     bgcolor="#F1F5F9",
@@ -1639,6 +1944,7 @@ def main(page: ft.Page) -> None:
             nuevo_articulo_stock_actual.value = str(art.get("stock_actual", 0))
             nuevo_articulo_stock_actual.read_only = False # Enabled to allow adjustments
             nuevo_articulo_descuento_base.value = str(art.get("descuento_base", 0))
+            nuevo_articulo_ganancia_2.value = str(art.get("porcentaje_ganancia_2") or 0)
             nuevo_articulo_redondeo.value = bool(art.get("redondeo", False))
             nuevo_articulo_ubicacion.value = art.get("ubicacion") or ""
             nuevo_articulo_observacion.value = art.get("observacion") or ""
@@ -1666,7 +1972,7 @@ def main(page: ft.Page) -> None:
                 dd_tp = ft.Dropdown(
                     label="Tipo de Calculo",
                     width=180,
-                    options=[ft.dropdown.Option("", "—")] + [
+                    options=[
                         ft.dropdown.Option(str(t["id"]), t["tipo"]) for t in tipos_porcentaje_values
                     ],
                     value=str(p["id_tipo_porcentaje"]) if p.get("id_tipo_porcentaje") else "",
@@ -3183,8 +3489,6 @@ def main(page: ft.Page) -> None:
             articulos_advanced_rubro,
             articulos_advanced_proveedor,
             articulos_advanced_ubicacion,
-            articulos_advanced_costo_min,
-            articulos_advanced_costo_max,
             articulos_advanced_stock_bajo,
         ],
     )
@@ -3223,7 +3527,11 @@ def main(page: ft.Page) -> None:
         return dashboard_view_component
 
     # content_holder starts with dashboard_view if possible
-    content_holder = ft.Container(expand=1, content=ft.ProgressRing())
+    content_holder = ft.Container(
+        expand=True, 
+        content=ft.ProgressRing(color=COLOR_ACCENT, width=40, height=40, stroke_width=3), 
+        alignment=ft.alignment.center
+    )
     current_view = {"key": "dashboard"}
 
     def refresh_all_stats():
@@ -3321,6 +3629,119 @@ def main(page: ft.Page) -> None:
     
     main_app_container = ft.Container(visible=False, expand=True)
     login_container = ft.Container(visible=True, expand=True)
+    
+    # Backup Blocking Overlay
+    backup_status_title = ft.Text("Verificando Respaldos...", size=24, weight=ft.FontWeight.BOLD, color=COLOR_TEXT)
+    backup_status_detail = ft.Text("Esto puede tardar unos segundos...", size=14, color=COLOR_TEXT_MUTED)
+    backup_progress_bar = ft.ProgressBar(width=400, color=COLOR_ACCENT, bgcolor="#E2E8F0", value=0)
+    backup_type_badge = ft.Container(
+        content=ft.Text("", size=11, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+        bgcolor=COLOR_ACCENT,
+        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+        border_radius=8,
+        visible=False
+    )
+    
+    backup_overlay = ft.Container(
+        content=ft.Column(
+            [
+                ft.Container(
+                    content=ft.Icon(ft.Icons.CLOUD_SYNC_ROUNDED, size=64, color=COLOR_ACCENT),
+                    bgcolor=f"{COLOR_ACCENT}15",
+                    padding=25,
+                    border_radius=30,
+                    margin=ft.margin.only(bottom=20)
+                ),
+                backup_status_title,
+                ft.Container(height=10),
+                backup_status_detail,
+                ft.Container(height=30),
+                backup_type_badge,
+                ft.Container(height=20),
+                backup_progress_bar,
+                ft.Container(height=10),
+                ft.Text(
+                    "CONSERVANDO TU INFORMACIÓN SEGURA", 
+                    style=ft.TextStyle(
+                        size=10, 
+                        weight=ft.FontWeight.BOLD, 
+                        color=COLOR_TEXT_MUTED, 
+                        letter_spacing=1.5
+                    )
+                ),
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.CENTER,
+        ),
+        visible=False,
+        expand=True,
+        bgcolor="#F1F5F9E6", # Slate 100 with high opacity for glass effect
+        padding=40,
+        alignment=ft.alignment.center,
+    )
+
+    def handle_missed_backups():
+        """Checks and executes missed backups before showing the main app."""
+        if not db: return
+        
+        # 1. Show overlay
+        backup_overlay.visible = True
+        login_container.disabled = True
+        main_app_container.visible = False
+        page.update()
+        
+        try:
+            # 2. Check for missed backups
+            missed = backup_service.check_missed_backups(db)
+            
+            if not missed:
+                # Nothing missed, just a quick hide and continue
+                backup_overlay.visible = False
+                login_container.disabled = False
+                login_container.visible = False
+                main_app_container.visible = True
+                page.update()
+                return
+
+            # 3. Inform user we found missed backups
+            backup_status_title.value = "Ejecutando Respaldos Pendientes"
+            backup_status_detail.value = f"Se detectaron {len(missed)} respaldos que no se pudieron realizar."
+            backup_type_badge.visible = True
+            page.update()
+            
+            # 4. Progress callback for UI updates
+            def update_progress(btype, status, current, total):
+                label_map = {"daily": "DIARIO", "weekly": "SEMANAL", "monthly": "MENSUAL"}
+                backup_type_badge.content.value = label_map.get(btype, btype.upper())
+                
+                if status == "running":
+                    backup_status_detail.value = f"Realizando respaldo {current} de {total}..."
+                    backup_progress_bar.value = (current - 1) / total + 0.1 / total
+                elif status == "completed":
+                    backup_progress_bar.value = current / total
+                
+                page.update()
+
+            # 5. Execute missed backups
+            import time
+            time.sleep(1) # Give user a second to see what's happening
+            
+            results = backup_service.execute_missed_backups(db, missed, progress_callback=update_progress)
+            
+            successful = sum(1 for r in results.values() if r)
+            if successful > 0:
+                show_toast(f"Se completaron {successful} respaldos pendientes exitosamente.", kind="success")
+            
+        except Exception as e:
+            logger.error(f"Error in handle_missed_backups: {e}")
+            show_toast("Error al procesar respaldos pendientes.", kind="error")
+        finally:
+            # 6. Finalize and show app
+            backup_overlay.visible = False
+            login_container.disabled = False
+            login_container.visible = False
+            main_app_container.visible = True
+            page.update()
 
     def do_login(_=None):
         nonlocal CURRENT_USER_ROLE, current_user, logout_logged
@@ -3375,9 +3796,8 @@ def main(page: ft.Page) -> None:
         except Exception:
             pass
         
-        # Switch to main app
-        login_container.visible = False
-        main_app_container.visible = True
+        # Switch to missed backup check (which eventually shows main app)
+        handle_missed_backups()
         
         # Force rebuild of navigation to respect role
         update_nav()
@@ -3510,6 +3930,7 @@ def main(page: ft.Page) -> None:
             content_holder.content = ensure_dashboard()
         elif key == "entidades":
             content_holder.content = entidades_view
+            _reload_entity_dropdowns()
         elif key == "config":
             content_holder.content = config_view
             refresh_loc_provs()
@@ -3524,7 +3945,7 @@ def main(page: ft.Page) -> None:
             # load_backup_data() is now handled by backup_view_component.load_data() or auto_load
         elif key == "articulos":
             content_holder.content = articulos_view
-            refresh_articles_listas()
+            refresh_articles_catalogs()
         elif key == "documentos":
             content_holder.content = documentos_view
         elif key == "movimientos":
@@ -3748,6 +4169,7 @@ def main(page: ft.Page) -> None:
             [
                 main_app_container,
                 login_container,
+                backup_overlay,
             ],
             expand=True,
         )
@@ -3948,6 +4370,14 @@ def main(page: ft.Page) -> None:
     
     # Ensure window settings are applied before shutdown hooks.
     page.window_prevent_close = False
+    
+    # Initial catalog load after all UI is ready
+    if db is not None and not db_error:
+        try:
+            reload_catalogs()
+        except Exception as exc:
+            print(f"Error initial reload: {exc}")
+
     page.update()
 
     def _shutdown(reason: str) -> None:

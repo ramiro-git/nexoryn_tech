@@ -58,6 +58,14 @@ def _scroll_auto():
     return "auto"
 
 _ALL_VALUE = "__ALL__"
+_FILTER_RESET_UNSET = object()
+
+
+def _dropdown_option_key(option: Any) -> Any:
+    key = getattr(option, "key", None)
+    if key is None:
+        return getattr(option, "text", None)
+    return key
 
 
 class SafeDataTable(ft.DataTable):
@@ -109,6 +117,7 @@ def _style_input(control: Any) -> None:
         _maybe_set(control, "bgcolor", "#F8FAFC")
         _maybe_set(control, "filled", True)
         _maybe_set(control, "border_width", 2)
+        _maybe_set(control, "enable_search", True)
         return
 
     _maybe_set(control, "filled", True)
@@ -162,6 +171,28 @@ class AdvancedFilterControl:
     getter: Callable[[ft.Control], Any] = field(
         default_factory=lambda: lambda ctrl: getattr(ctrl, "value", None)
     )
+    setter: Optional[Callable[[ft.Control, Any], None]] = None
+    initial_value: Any = field(default=_FILTER_RESET_UNSET, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.initial_value is _FILTER_RESET_UNSET and hasattr(self.control, "value"):
+            self.initial_value = getattr(self.control, "value")
+        if isinstance(self.control, ft.TextField) and self.initial_value is None:
+            self.initial_value = ""
+        if isinstance(self.control, ft.Dropdown):
+            options = getattr(self.control, "options", [])
+            option_keys = [_dropdown_option_key(opt) for opt in options]
+            if option_keys:
+                if self.initial_value is None:
+                    self.initial_value = option_keys[0]
+                else:
+                    if self.initial_value not in option_keys:
+                        try:
+                            candidate = str(self.initial_value)
+                        except Exception:
+                            candidate = None
+                        if candidate is None or candidate not in option_keys:
+                            self.initial_value = option_keys[0]
 
 
 class GenericTable:
@@ -210,13 +241,25 @@ class GenericTable:
         self.current_rows: List[Dict[str, Any]] = []
         self.total_rows = 0
         self.total_pages = 1
-        self._is_loading = False
         self._last_error: Optional[str] = None
         self._search_timer: Optional[threading.Timer] = None
+        self.select_all_global = False
+        
+        self.selection_bar_text = ft.Text("", size=12, color=ft.Colors.BLUE_700)
+        self.selection_bar_btn = ft.TextButton("Seleccionar todo", on_click=lambda _: self._toggle_global_selection(True))
+        self.selection_bar = ft.Container(
+            content=ft.Row([self.selection_bar_text, self.selection_bar_btn], alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor=ft.Colors.BLUE_50,
+            padding=5,
+            border_radius=4,
+            visible=False,
+            margin=ft.margin.only(bottom=10)
+        )
+
         self.search_field = ft.TextField(
             expand=1,
             hint_text="Buscar...",
-            on_change=lambda e: self._on_search_change(),
+            on_change=lambda e: self.trigger_refresh(),
         )
         _style_input(self.search_field)
         self.simple_filter_dropdown = (
@@ -246,7 +289,7 @@ class GenericTable:
         )
         self.reset_button = ft.IconButton(
             icon=ft.Icons.REPLAY,
-            tooltip="Reiniciar filtros",
+            tooltip="Reiniciar filtros (DEBUG)",
             on_click=lambda e: self._reset_filters(),
         )
         self.refresh_button = ft.IconButton(
@@ -254,15 +297,16 @@ class GenericTable:
             tooltip="Actualizar",
             on_click=lambda e: self.refresh(),
         )
+        self.advanced_filters_row = ft.Row(
+            [flt.control for flt in self.advanced_filters],
+            wrap=True,
+            spacing=12,
+            run_spacing=12,
+        )
         self.advanced_expander = (
             _expander(
                 label="Filtros avanzados",
-                content=ft.Row(
-                    [flt.control for flt in self.advanced_filters],
-                    wrap=True,
-                    spacing=12,
-                    run_spacing=12,
-                ),
+                content=self.advanced_filters_row,
             )
             if self.advanced_filters
             else None
@@ -571,14 +615,17 @@ class GenericTable:
             for row in rows:
                 clean_row = {}
                 for col in self.columns:
+                    # Skip internal/action columns
+                    if col.key.startswith("_") or not col.label.strip():
+                        continue
+                        
                     val = row.get(col.key)
                     if col.formatter:
                         try: val = col.formatter(val, row)
                         except: pass
-                    else:
-                        if isinstance(val, (int, float)):
-                            val = str(val).replace('.', ',')
-                    clean_row[col.label] = str(val) if val is not None else ""
+                    
+                    # Store as is, ExportService._format_value will handle the final string representation
+                    clean_row[col.label] = val
                 export_data.append(clean_row)
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -625,7 +672,6 @@ class GenericTable:
 
         row_controls = [
             self.search_field,
-            ft.IconButton(icon=ft.Icons.SEARCH_ROUNDED, tooltip="Buscar", on_click=lambda e: self.refresh()),
             ft.IconButton(icon=ft.Icons.CLEAR_ROUNDED, tooltip="Limpiar", on_click=lambda e: self._clear_search()),
             self.reset_button,
             self.refresh_button,
@@ -640,6 +686,9 @@ class GenericTable:
         ]
         if self.advanced_expander:
             controls.append(self.advanced_expander)
+        
+        controls.append(self.selection_bar)
+
         info_row_controls: List[ft.Control] = [self.results_label, self.range_label]
         controls.append(ft.Row(info_row_controls, spacing=12))
         controls.append(ft.Row([self.sort_label, self.clear_sort_button], spacing=8))
@@ -696,7 +745,7 @@ class GenericTable:
         self._refresh_data()
         self._loaded_once = True
 
-    def _on_search_change(self) -> None:
+    def trigger_refresh(self) -> None:
         if self._search_timer:
             self._search_timer.cancel()
         self._search_timer = threading.Timer(0.4, self.refresh)
@@ -762,35 +811,114 @@ class GenericTable:
         self.page = 1
         self._refresh_data()
 
-    def _reset_filter_control(self, control: Any) -> None:
+    def _reset_filter_control(
+        self,
+        control: Any,
+        setter: Optional[Callable[[ft.Control, Any], None]] = None,
+        reset_value: Any = _FILTER_RESET_UNSET,
+    ) -> None:
+        has_reset_value = reset_value is not _FILTER_RESET_UNSET
+        
+        # 1. Use setter if provided
+        if setter:
+            try:
+                setter(control, reset_value if has_reset_value else None)
+            except:
+                pass
+            return
+
+        # 2. Handle RangeSlider
+        if isinstance(control, ft.RangeSlider):
+            try:
+                control.start_value = control.min
+                control.end_value = control.max
+            except:
+                pass
+            return
+
         if not hasattr(control, "value"):
             return
-        try:
-            current = control.value
-        except Exception:
-            return
-        if isinstance(current, bool):
-            control.value = False
+
+        # 3. Determine target reset value
+        target_val = reset_value if has_reset_value else ""
+        
+        if not has_reset_value:
+            if isinstance(control, ft.Checkbox):
+                target_val = False
+            elif isinstance(control, ft.Dropdown):
+                options = getattr(control, "options", [])
+                option_keys = [_dropdown_option_key(opt) for opt in options]
+                if "" in option_keys:
+                    target_val = ""
+                elif option_keys:
+                    target_val = option_keys[0]
+                else:
+                    target_val = None
+
+        # 4. Apply value change
+        if isinstance(control, ft.Dropdown):
+            options = getattr(control, "options", [])
+            option_keys = [_dropdown_option_key(opt) for opt in options]
+            
+            final_val = target_val
+            if final_val is not None and not isinstance(final_val, str):
+                final_val = str(final_val)
+            
+            if final_val not in option_keys:
+                if "" in option_keys:
+                    final_val = ""
+                elif option_keys:
+                    final_val = option_keys[0]
+                else:
+                    final_val = None
+
+            control.value = final_val
         else:
-            control.value = ""
+            control.value = target_val
 
     def _reset_filters(self) -> None:
         if self._search_timer:
             self._search_timer.cancel()
+        
+        # 1. VISUAL RELOAD: Detach whole section to force Flet to "forget" stuck state
+        if self.advanced_expander:
+            self.advanced_expander.content = ft.Row([ft.ProgressRing(scale=0.5), ft.Text("Reiniciando filtros...", size=12)], alignment=ft.MainAxisAlignment.CENTER)
+            try: self.advanced_expander.update()
+            except: pass
+
+        # 2. Reset internal values
         self.search_field.value = ""
-        if self.simple_filter_dropdown and self._simple_default_value is not None:
+        if self.simple_filter_dropdown:
             self.simple_filter_dropdown.value = self._simple_default_value
+
         for flt in self.advanced_filters:
-            self._reset_filter_control(flt.control)
+            self._reset_filter_control(flt.control, flt.setter, flt.initial_value)
+        
+        # Clear other state
         self.sorts.clear()
         self._last_sort_idx = None
         self._sync_sort_indicator()
         self._update_sort_label()
+        
         self.selected_ids.clear()
+        self.select_all_global = False
+        self.selection_bar.visible = False
         self._update_selected_label()
+        
         self.page = 1
         self._set_status("")
+        
+        # 3. Restore section
+        if self.advanced_expander:
+            # Rebuild the row to be sure
+            self.advanced_filters_row.controls = [flt.control for flt in self.advanced_filters]
+            self.advanced_expander.content = self.advanced_filters_row
+            try: self.advanced_expander.update()
+            except: pass
+
+        # 4. Final refresh
         self._refresh_data()
+        
         if not self._last_error:
             self._notify("Filtros reiniciados", kind="success")
 
@@ -926,6 +1054,11 @@ class GenericTable:
         self._set_loading(True)
         if update_ui:
             self.update()
+        
+        # Hide selection bar on refresh if no longer needed
+        if not self.select_all_global:
+            self.selection_bar.visible = False
+
         try:
             rows, total = self.data_provider(
                 offset,
@@ -962,7 +1095,7 @@ class GenericTable:
             self.current_rows = rows
             self.total_rows = total
         self._current_page_ids = [row.get(self.id_field) for row in rows if row.get(self.id_field) is not None]
-        self.selected_ids &= set(self._current_page_ids)
+        # self.selected_ids &= set(self._current_page_ids)  # Persist selection across pages
         self._update_selected_label()
         self.current_rows_by_id = {
             row.get(self.id_field): row for row in rows if row.get(self.id_field) is not None
@@ -1085,6 +1218,11 @@ class GenericTable:
             self.selected_ids.add(row_id)
         else:
             self.selected_ids.discard(row_id)
+            # If we uncheck anything, we are no longer in "global" mode
+            if self.select_all_global:
+                self.select_all_global = False
+                self.selection_bar.visible = False
+
         self._update_selected_label()
         self._set_status("")
         self._sync_select_all_checkbox()
@@ -1118,14 +1256,60 @@ class GenericTable:
             return
         if checked:
             self.selected_ids.update(self._current_page_ids)
+            # Show the global selection bar if we have more results than this page
+            if (self.total_rows > self.page_size) and not self.select_all_global:
+                self.selection_bar_text.value = f"Has seleccionado los {len(self._current_page_ids)} elementos de esta página."
+                self.selection_bar_btn.text = f"Seleccionar los {self.total_rows} resultados"
+                self.selection_bar_btn.on_click = lambda _: self._toggle_global_selection(True)
+                self.selection_bar.visible = True
         else:
             for rid in self._current_page_ids:
                 self.selected_ids.discard(rid)
+            self.select_all_global = False
+            self.selection_bar.visible = False
+            
         for rid, cb in self._row_selection_controls.items():
-            cb.value = rid in self.selected_ids
+            cb.value = rid in self.selected_ids or self.select_all_global
         self._update_selected_label()
         self._set_status("")
         self._sync_select_all_checkbox()
+        self.update()
+
+    def _toggle_global_selection(self, value: bool) -> None:
+        if value:
+            self._set_status("Seleccionando todos los resultados...", kind="info")
+            try:
+                # Reuse data provider to fetch all IDs
+                # Note: this might be slow for massive datasets, but for typical ERP views it's fine.
+                search = self.search_field.value.strip() if self.search_field.value else None
+                simple_value = self.simple_filter_dropdown.value if self.simple_filter_dropdown else None
+                if simple_value == _ALL_VALUE: simple_value = None
+                advanced_payload = {flt.name: flt.getter(flt.control) for flt in self.advanced_filters}
+                
+                rows, total = self.data_provider(0, self.total_rows, search, simple_value, advanced_payload, self.sorts)
+                all_ids = [r.get(self.id_field) for r in rows if r.get(self.id_field) is not None]
+                self.selected_ids.update(all_ids)
+                
+                self.select_all_global = True
+                self.selection_bar_text.value = f"¡Todos los {self.total_rows} resultados están seleccionados!"
+                self.selection_bar_btn.text = "Deshacer selección total"
+                self.selection_bar_btn.on_click = lambda _: self._toggle_global_selection(False)
+                self._set_status("")
+            except Exception as e:
+                self._set_status(f"Error al seleccionar todo: {e}", kind="error")
+                self.select_all_global = False
+                self.selection_bar.visible = False
+        else:
+            self.selected_ids.clear()
+            self.select_all_global = False
+            self.selection_bar.visible = False
+            self._set_status("Selección reiniciada", kind="info")
+        
+        self._sync_select_all_checkbox()
+        for rid, cb in self._row_selection_controls.items():
+            cb.value = rid in self.selected_ids
+            
+        self._update_selected_label()
         self.update()
 
     def _rebuild_from_current(self) -> None:
@@ -1159,7 +1343,6 @@ class GenericTable:
                 label="Valor",
                 width=220,
                 options=[
-                    ft.dropdown.Option("", "—"),
                     ft.dropdown.Option("true", "Activar"),
                     ft.dropdown.Option("false", "Desactivar"),
                 ],
@@ -1244,15 +1427,23 @@ class GenericTable:
     def _open_dialog(self) -> None:
         if not self.root or getattr(self.root, "page", None) is None:
             return
-        self._confirm_dialog.open = True
-        self.root.page.dialog = self._confirm_dialog
-        self.root.page.update()
+        
+        if hasattr(self.root.page, "open"):
+            self.root.page.open(self._confirm_dialog)
+        else:
+            self._confirm_dialog.open = True
+            self.root.page.dialog = self._confirm_dialog
+            self.root.page.update()
 
     def _close_dialog(self) -> None:
         if not self.root or getattr(self.root, "page", None) is None:
             return
-        self._confirm_dialog.open = False
-        self.root.page.update()
+            
+        if hasattr(self.root.page, "close"):
+            self.root.page.close(self._confirm_dialog)
+        else:
+            self._confirm_dialog.open = False
+            self.root.page.update()
 
     def _mass_delete(self) -> None:
         targets = [rid for rid in self.selected_ids]
@@ -1317,8 +1508,11 @@ class GenericTable:
                 self._notify(f"Error: {ex}", kind="error")
 
         def close(e):
-            self._edit_dialog.open = False
-            self.update()
+            if self.root and self.root.page and hasattr(self.root.page, "close"):
+                self.root.page.close(self._edit_dialog)
+            else:
+                self._edit_dialog.open = False
+                self.update()
 
         # Build Input
         if isinstance(current_val, bool) or col.key in ["activa", "activo", "afecta_stock", "afecta_cuenta_corriente", "redondeo"]:
@@ -1358,6 +1552,9 @@ class GenericTable:
         ]
         
         if self.root and self.root.page:
-            self.root.page.dialog = self._edit_dialog
-            self._edit_dialog.open = True
-            self.root.page.update()
+            if hasattr(self.root.page, "open"):
+                self.root.page.open(self._edit_dialog)
+            else:
+                self.root.page.dialog = self._edit_dialog
+                self._edit_dialog.open = True
+                self.root.page.update()

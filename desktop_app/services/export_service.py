@@ -78,8 +78,8 @@ class ExportService:
 
     @staticmethod
     def _format_value(val: Any) -> str:
-        """Format values for export (Booleans to Spanish, None to empty)."""
-        if val is None:
+        """Format values for export (Booleans to Spanish, None/Placeholders to empty)."""
+        if val is None or val == "" or val == "—" or val == "--":
             return ""
         if isinstance(val, bool):
             return "Sí" if val else "No"
@@ -90,17 +90,19 @@ class ExportService:
         if not data:
             return b""
 
-        # Use Landscape to accommodate more columns
-        pdf = FPDF(orientation="L", format="A4")
+        headers = list(data[0].keys())
+        col_count = len(headers)
+
+        # Use Landscape. Switch to A3 if too many columns
+        fmt = "A3" if col_count > 12 else "A4"
+        pdf = FPDF(orientation="L", format=fmt)
         pdf.add_page()
         
         # Dynamic font size based on column count
-        headers = list(data[0].keys())
-        col_count = len(headers)
         base_font_size = 10
-        if col_count > 10:
+        if col_count > 15:
             base_font_size = 7
-        elif col_count > 6:
+        elif col_count > 10:
             base_font_size = 8
         
         pdf.set_font("helvetica", size=base_font_size)

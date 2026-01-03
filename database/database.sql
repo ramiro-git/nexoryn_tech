@@ -155,6 +155,10 @@ CREATE TABLE IF NOT EXISTS seguridad.backup_config (
   ultimo_run      TIMESTAMPTZ,
   destino_local   TEXT,
   retencion_dias  INTEGER NOT NULL DEFAULT 30,
+  -- Campos para rastrear último backup de cada tipo (detección de backups perdidos)
+  ultimo_daily    TIMESTAMPTZ,
+  ultimo_weekly   TIMESTAMPTZ,
+  ultimo_monthly  TIMESTAMPTZ,
   CONSTRAINT ck_backup_freq CHECK (frecuencia IN ('DIARIA', 'SEMANAL', 'MENSUAL', 'OFF'))
 );
 
@@ -183,7 +187,7 @@ CREATE TABLE IF NOT EXISTS app.entidad_comercial (
   fecha_creacion       TIMESTAMPTZ NOT NULL DEFAULT now(),
   fecha_actualizacion  TIMESTAMPTZ NOT NULL DEFAULT now(),
   activo               BOOLEAN NOT NULL DEFAULT TRUE,
-  telefono             VARCHAR(30),
+  telefono             VARCHAR(100),
   email                VARCHAR(150),
   tipo                 VARCHAR(10),
   CONSTRAINT ck_entidad_tipo CHECK (tipo IS NULL OR tipo IN ('CLIENTE', 'PROVEEDOR', 'AMBOS'))
@@ -200,24 +204,26 @@ CREATE TABLE IF NOT EXISTS app.lista_cliente (
 );
 
 CREATE TABLE IF NOT EXISTS app.articulo (
-  id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  nombre            VARCHAR(200) NOT NULL,
-  id_marca          BIGINT REFERENCES ref.marca(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  id_rubro          BIGINT REFERENCES ref.rubro(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  id_tipo_iva       BIGINT REFERENCES ref.tipo_iva(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  costo             NUMERIC(14,4) NOT NULL DEFAULT 0,
-  stock_minimo      NUMERIC(14,4) NOT NULL DEFAULT 0,
-  id_unidad_medida  BIGINT REFERENCES ref.unidad_medida(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  id_proveedor      BIGINT REFERENCES app.entidad_comercial(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  descuento_base    NUMERIC(6,2) NOT NULL DEFAULT 0,
-  redondeo          BOOLEAN NOT NULL DEFAULT FALSE,
-  activo            BOOLEAN NOT NULL DEFAULT TRUE,
-  observacion       TEXT,
-  ubicacion         VARCHAR(100),
-  fecha_creacion    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id                     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nombre                 VARCHAR(200) NOT NULL,
+  id_marca               BIGINT REFERENCES ref.marca(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  id_rubro               BIGINT REFERENCES ref.rubro(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  id_tipo_iva            BIGINT REFERENCES ref.tipo_iva(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  costo                  NUMERIC(14,4) NOT NULL DEFAULT 0,
+  stock_minimo           NUMERIC(14,4) NOT NULL DEFAULT 0,
+  id_unidad_medida       BIGINT REFERENCES ref.unidad_medida(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  id_proveedor           BIGINT REFERENCES app.entidad_comercial(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  descuento_base         NUMERIC(6,2) NOT NULL DEFAULT 0,
+  redondeo               BOOLEAN NOT NULL DEFAULT FALSE,
+  porcentaje_ganancia_2  NUMERIC(6,2) DEFAULT NULL,
+  activo                 BOOLEAN NOT NULL DEFAULT TRUE,
+  observacion            TEXT,
+  ubicacion              VARCHAR(100),
+  fecha_creacion         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT ck_art_costo CHECK (costo >= 0),
   CONSTRAINT ck_art_stock_min CHECK (stock_minimo >= 0),
-  CONSTRAINT ck_art_desc_base CHECK (descuento_base >= 0 AND descuento_base <= 100)
+  CONSTRAINT ck_art_desc_base CHECK (descuento_base >= 0 AND descuento_base <= 100),
+  CONSTRAINT ck_art_pgan2 CHECK (porcentaje_ganancia_2 IS NULL OR (porcentaje_ganancia_2 >= 0 AND porcentaje_ganancia_2 <= 1000))
 );
 
 CREATE TABLE IF NOT EXISTS app.articulo_stock_resumen (
@@ -342,6 +348,7 @@ CREATE TABLE IF NOT EXISTS app.remito_detalle (
 -- VIEWS
 -- ============================================================================
 
+DROP VIEW IF EXISTS seguridad.v_usuario_publico CASCADE;
 CREATE OR REPLACE VIEW seguridad.v_usuario_publico AS
 SELECT
   u.id,
@@ -355,6 +362,7 @@ SELECT
 FROM seguridad.usuario u
 JOIN seguridad.rol r ON r.id = u.id_rol;
 
+DROP VIEW IF EXISTS app.v_stock_actual CASCADE;
 CREATE OR REPLACE VIEW app.v_stock_actual AS
 SELECT
   ma.id_articulo,
@@ -368,6 +376,7 @@ JOIN ref.deposito d ON d.id = ma.id_deposito
 JOIN ref.tipo_movimiento_articulo tma ON tma.id = ma.id_tipo_movimiento
 GROUP BY ma.id_articulo, a.nombre, ma.id_deposito, d.nombre;
 
+DROP VIEW IF EXISTS app.v_stock_total CASCADE;
 CREATE OR REPLACE VIEW app.v_stock_total AS
 SELECT
   a.id AS id_articulo,
@@ -377,6 +386,7 @@ SELECT
 FROM app.articulo a
 LEFT JOIN app.articulo_stock_resumen sr ON a.id = sr.id_articulo;
 
+DROP VIEW IF EXISTS app.v_movimientos_full CASCADE;
 CREATE OR REPLACE VIEW app.v_movimientos_full AS
 SELECT 
   m.id,
@@ -398,6 +408,7 @@ LEFT JOIN app.documento doc ON m.id_documento = doc.id
 LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
 LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
 
+DROP VIEW IF EXISTS app.v_documento_resumen CASCADE;
 CREATE OR REPLACE VIEW app.v_documento_resumen AS
 SELECT
   doc.id,
@@ -421,6 +432,7 @@ JOIN ref.tipo_documento td ON td.id = doc.id_tipo_documento
 JOIN app.entidad_comercial ec ON ec.id = doc.id_entidad_comercial
 LEFT JOIN seguridad.usuario u ON u.id = doc.id_usuario;
 
+DROP VIEW IF EXISTS app.v_entidad_detallada CASCADE;
 CREATE OR REPLACE VIEW app.v_entidad_detallada AS
 SELECT
   e.id,
@@ -439,6 +451,9 @@ SELECT
   e.notas,
   e.activo,
   e.fecha_creacion,
+  e.id_localidad,
+  l.id_provincia,
+  e.id_condicion_iva,
   lc.id_lista_precio,
   lp.nombre AS lista_precio,
   lc.descuento,
@@ -451,31 +466,40 @@ LEFT JOIN ref.condicion_iva ci ON ci.id = e.id_condicion_iva
 LEFT JOIN app.lista_cliente lc ON lc.id_entidad_comercial = e.id
 LEFT JOIN ref.lista_precio lp ON lp.id = lc.id_lista_precio;
 
+DROP VIEW IF EXISTS app.v_articulo_detallado CASCADE;
 CREATE OR REPLACE VIEW app.v_articulo_detallado AS
 SELECT
   a.id,
   a.nombre,
+  a.id_marca,
   m.nombre AS marca,
+  a.id_rubro,
   r.nombre AS rubro,
   a.costo,
+  a.id_tipo_iva,
   ti.porcentaje AS porcentaje_iva,
+  a.id_unidad_medida,
   um.nombre AS unidad_medida,
   um.abreviatura AS unidad_abreviatura,
+  a.id_proveedor,
   COALESCE(prov.razon_social, TRIM(COALESCE(prov.apellido, '') || ' ' || COALESCE(prov.nombre, ''))) AS proveedor,
   a.stock_minimo,
   a.descuento_base,
   a.redondeo,
+  a.porcentaje_ganancia_2,
   a.activo,
   a.observacion,
   a.ubicacion,
-  COALESCE(st.stock_total, 0) AS stock_actual
+  COALESCE(st.stock_total, 0) AS stock_actual,
+  ap.precio AS precio_lista
 FROM app.articulo a
 LEFT JOIN ref.marca m ON m.id = a.id_marca
 LEFT JOIN ref.rubro r ON r.id = a.id_rubro
 LEFT JOIN ref.tipo_iva ti ON ti.id = a.id_tipo_iva
 LEFT JOIN ref.unidad_medida um ON um.id = a.id_unidad_medida
 LEFT JOIN app.entidad_comercial prov ON prov.id = a.id_proveedor
-LEFT JOIN app.v_stock_total st ON st.id_articulo = a.id;
+LEFT JOIN app.v_stock_total st ON st.id_articulo = a.id
+LEFT JOIN app.articulo_precio ap ON ap.id_articulo = a.id AND ap.id_lista_precio = 1;
 
 -- ============================================================================
 -- AUDIT FUNCTION
@@ -810,7 +834,8 @@ INSERT INTO ref.lista_precio(nombre, activa, orden) VALUES
   ('Lista 4', TRUE, 4),
   ('Lista 5', TRUE, 5),
   ('Lista 6', TRUE, 6),
-  ('Lista 7', TRUE, 7)
+  ('Lista 7', TRUE, 7),
+  ('Lista Gremio', TRUE, 8)
 ON CONFLICT (nombre) DO NOTHING;
 
 -- Default admin user
@@ -846,6 +871,7 @@ ON CONFLICT (clave) DO NOTHING;
 -- REPORTING VIEWS
 -- ============================================================================
 
+DROP VIEW IF EXISTS app.v_reporte_ventas_mensual CASCADE;
 CREATE OR REPLACE VIEW app.v_reporte_ventas_mensual AS
 SELECT
   date_trunc('month', d.fecha) AS mes,
@@ -858,6 +884,7 @@ WHERE td.clase = 'VENTA' AND d.estado IN ('CONFIRMADO', 'PAGADO')
 GROUP BY 1
 ORDER BY 1 DESC;
 
+DROP VIEW IF EXISTS app.v_top_articulos_mes CASCADE;
 CREATE OR REPLACE VIEW app.v_top_articulos_mes AS
 SELECT
   a.nombre,
@@ -876,6 +903,7 @@ GROUP BY a.nombre, r.nombre
 ORDER BY total_facturado DESC
 LIMIT 20;
 
+DROP VIEW IF EXISTS app.v_deudores CASCADE;
 CREATE OR REPLACE VIEW app.v_deudores AS
 SELECT
   ec.id,
@@ -904,16 +932,19 @@ ALTER TABLE app.movimiento_articulo ENABLE ROW LEVEL SECURITY;
 -- Generic Policy for "Internal System" (Allows logic to rely on app.user_id for audit, but doesn't hide data from the app itself)
 -- If we wanted strict multi-tenant, we would filter by tenant_id. Here we ensure auditability.
 
+DROP POLICY IF EXISTS "Audit required for modification" ON app.documento;
 CREATE POLICY "Audit required for modification" ON app.documento
   FOR ALL
   USING (true)
   WITH CHECK (current_setting('app.user_id', true) IS NOT NULL);
 
+DROP POLICY IF EXISTS "Audit required for modification entity" ON app.entidad_comercial;
 CREATE POLICY "Audit required for modification entity" ON app.entidad_comercial
   FOR ALL
   USING (true)
   WITH CHECK (current_setting('app.user_id', true) IS NOT NULL);
 
+DROP POLICY IF EXISTS "Audit required for modification movimiento" ON app.movimiento_articulo;
 CREATE POLICY "Audit required for modification movimiento" ON app.movimiento_articulo
   FOR ALL
   USING (true)

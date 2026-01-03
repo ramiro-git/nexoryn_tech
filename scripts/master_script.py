@@ -9,7 +9,7 @@ import psycopg
 from psycopg import sql
 
 # Add tests dir to path to import test_data_generator
-sys.path.append(str(Path(__file__).parent / "tests"))
+sys.path.append(str(Path(__file__).parent.parent / "database" / "tests"))
 from test_data_generator import TestDataGenerator
 
 class DatabaseMaster:

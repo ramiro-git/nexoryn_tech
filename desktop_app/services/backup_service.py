@@ -366,3 +366,166 @@ class BackupService:
                     except Exception as e:
                         logger.error(f"Failed to delete {f}: {e}")
 
+    # =========================================================================
+    # MISSED BACKUP DETECTION SYSTEM
+    # =========================================================================
+
+    def get_last_required_run_date(self, backup_type: str) -> datetime:
+        """
+        Calculate when the last backup of a given type SHOULD have been executed.
+        This is used to detect missed backups.
+        """
+        now = datetime.now()
+        
+        if backup_type == "daily":
+            # Daily backup runs at 23:00. If it's before 23:00 today, the last required
+            # was yesterday at 23:00. If it's after, it was today at 23:00.
+            today_run = now.replace(hour=23, minute=0, second=0, microsecond=0)
+            if now >= today_run:
+                return today_run
+            else:
+                return today_run - timedelta(days=1)
+        
+        elif backup_type == "weekly":
+            # Weekly backup runs on Sunday at 23:30
+            days_since_sunday = (now.weekday() + 1) % 7  # Sunday = 0
+            last_sunday = now - timedelta(days=days_since_sunday)
+            last_sunday_run = last_sunday.replace(hour=23, minute=30, second=0, microsecond=0)
+            
+            # If today is Sunday and we're before 23:30, last required was previous Sunday
+            if days_since_sunday == 0 and now < last_sunday_run:
+                return last_sunday_run - timedelta(days=7)
+            return last_sunday_run
+        
+        elif backup_type == "monthly":
+            # Monthly backup runs on day 1 at 00:00
+            this_month_run = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # If we're on day 1 and it's midnight, this is the run time
+            # Otherwise, the last required was the first of this month (if we're past day 1)
+            # or the first of last month (if we're still on day 1 before the run)
+            if now.day == 1 and now.hour == 0 and now.minute == 0:
+                return this_month_run
+            elif now >= this_month_run:
+                return this_month_run
+            else:
+                # We're before day 1 somehow - shouldn't happen, but handle it
+                if now.month == 1:
+                    return now.replace(year=now.year - 1, month=12, day=1, hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    return now.replace(month=now.month - 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        return now  # Fallback
+
+    def check_missed_backups(self, db) -> List[str]:
+        """
+        Check for missed backups by comparing last execution dates with when they should have run.
+        
+        Args:
+            db: Database connection object with fetch_backup_config() method
+            
+        Returns:
+            List of backup types that are overdue (e.g., ['daily', 'weekly'])
+        """
+        missed = []
+        
+        try:
+            config = db.fetch_backup_config()
+            if not config:
+                logger.warning("No backup config found in database")
+                return []
+            
+            for backup_type in ["daily", "weekly", "monthly"]:
+                column_name = f"ultimo_{backup_type}"
+                last_run = config.get(column_name)
+                
+                # Calculate when this backup should have last run
+                required_date = self.get_last_required_run_date(backup_type)
+                
+                if last_run is None:
+                    # Never run before - definitely missed
+                    logger.info(f"Backup '{backup_type}' has never been executed - marked as missed")
+                    missed.append(backup_type)
+                else:
+                    # Convert to naive datetime if needed for comparison
+                    if hasattr(last_run, 'tzinfo') and last_run.tzinfo is not None:
+                        last_run = last_run.replace(tzinfo=None)
+                    
+                    # If last run is before the required date, it's missed
+                    if last_run < required_date:
+                        logger.info(f"Backup '{backup_type}' is overdue. Last run: {last_run}, Required: {required_date}")
+                        missed.append(backup_type)
+                    else:
+                        logger.debug(f"Backup '{backup_type}' is up to date. Last run: {last_run}")
+        
+        except Exception as e:
+            logger.error(f"Error checking for missed backups: {e}")
+        
+        return missed
+
+    def record_backup_execution(self, db, backup_type: str) -> bool:
+        """
+        Record that a backup of the given type was executed.
+        Updates the corresponding ultimo_<type> column in backup_config.
+        
+        Args:
+            db: Database connection object with update_backup_config() method
+            backup_type: One of 'daily', 'weekly', 'monthly'
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if backup_type not in ["daily", "weekly", "monthly"]:
+            logger.warning(f"Cannot record backup execution for type: {backup_type}")
+            return False
+        
+        try:
+            column_name = f"ultimo_{backup_type}"
+            db.update_backup_config({column_name: datetime.now()})
+            logger.info(f"Recorded backup execution for '{backup_type}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to record backup execution for '{backup_type}': {e}")
+            return False
+
+    def execute_missed_backups(self, db, missed_types: List[str], progress_callback=None) -> Dict[str, bool]:
+        """
+        Execute all missed backups and record their execution.
+        
+        Args:
+            db: Database connection object
+            missed_types: List of backup types to execute (e.g., ['daily', 'weekly'])
+            progress_callback: Optional callback function(backup_type, status) for UI updates
+            
+        Returns:
+            Dict mapping backup_type -> success (True/False)
+        """
+        results = {}
+        
+        for i, backup_type in enumerate(missed_types):
+            try:
+                if progress_callback:
+                    progress_callback(backup_type, "running", i + 1, len(missed_types))
+                
+                logger.info(f"Executing missed backup: {backup_type}")
+                file_path = self.create_backup(backup_type)
+                
+                # Record the execution in the database
+                self.record_backup_execution(db, backup_type)
+                
+                results[backup_type] = True
+                logger.info(f"Missed backup '{backup_type}' completed: {file_path}")
+                
+                if progress_callback:
+                    progress_callback(backup_type, "completed", i + 1, len(missed_types))
+                    
+            except Exception as e:
+                logger.error(f"Failed to execute missed backup '{backup_type}': {e}")
+                results[backup_type] = False
+                
+                if progress_callback:
+                    progress_callback(backup_type, "failed", i + 1, len(missed_types))
+        
+        return results
+
+
