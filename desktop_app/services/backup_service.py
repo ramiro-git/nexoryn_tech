@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -9,10 +10,48 @@ import shutil
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Settings file path
+SETTINGS_FILE = Path.home() / ".nexoryn" / "backup_settings.json"
+
+def _load_settings() -> Dict:
+    """Load settings from JSON file."""
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load backup settings: {e}")
+    return {}
+
+def _save_settings(settings: Dict) -> bool:
+    """Save settings to JSON file."""
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save backup settings: {e}")
+        return False
+
 class BackupService:
     def __init__(self, backup_dir: str = "backups", pg_bin_path: Optional[str] = None, sync_dir: Optional[str] = None):
+        # Load persisted settings
+        settings = _load_settings()
+        
+        # Use persisted backup_dir if not overridden
+        saved_backup_dir = settings.get("backup_dir")
+        if saved_backup_dir and backup_dir == "backups":
+            backup_dir = saved_backup_dir
+        
         self.backup_dir = Path(backup_dir)
         self.pg_bin_path = pg_bin_path
+        
+        # Use persisted sync_dir if not overridden
+        saved_sync_dir = settings.get("sync_dir")
+        if saved_sync_dir and sync_dir is None:
+            sync_dir = saved_sync_dir
+        
         self.sync_dir: Optional[Path] = Path(sync_dir) if sync_dir else None
         self.sync_enabled: bool = sync_dir is not None
         self.last_sync_status: Optional[Dict[str, any]] = None
@@ -38,6 +77,12 @@ class BackupService:
             new_dir.mkdir(parents=True, exist_ok=True)
             self.backup_dir = new_dir
             self._ensure_directories()
+            
+            # Persist to settings file
+            settings = _load_settings()
+            settings["backup_dir"] = str(new_dir.absolute())
+            _save_settings(settings)
+            
             logger.info(f"Backup directory changed to: {new_path}")
             return True
         except Exception as e:
@@ -51,9 +96,13 @@ class BackupService:
     def set_sync_dir(self, new_path: Optional[str]) -> bool:
         """Set the cloud sync directory. Pass None to disable sync."""
         try:
+            settings = _load_settings()
+            
             if new_path is None or new_path.strip() == "":
                 self.sync_dir = None
                 self.sync_enabled = False
+                settings.pop("sync_dir", None)
+                _save_settings(settings)
                 logger.info("Cloud sync disabled")
                 return True
             
@@ -61,6 +110,11 @@ class BackupService:
             sync_path.mkdir(parents=True, exist_ok=True)
             self.sync_dir = sync_path
             self.sync_enabled = True
+            
+            # Persist to settings file
+            settings["sync_dir"] = str(sync_path.absolute())
+            _save_settings(settings)
+            
             logger.info(f"Cloud sync directory set to: {new_path}")
             return True
         except Exception as e:
@@ -361,10 +415,17 @@ class BackupService:
             if len(files) > limit:
                 for f in files[limit:]:
                     try:
-                        logger.info(f"Pruning old backup: {f}")
-                        f.unlink()
+                        # Use missing_ok=True to handle cases where another instance 
+                        # might have already deleted the file (race condition at 1:00 AM)
+                        if f.exists():
+                            logger.info(f"Pruning old backup: {f}")
+                            f.unlink(missing_ok=True)
+                        else:
+                            logger.debug(f"Backup already pruned by another instance: {f}")
                     except Exception as e:
-                        logger.error(f"Failed to delete {f}: {e}")
+                        # Only log as error if it's not a 'File not found' error
+                        if not isinstance(e, FileNotFoundError):
+                            logger.error(f"Failed to delete {f}: {e}")
 
     # =========================================================================
     # MISSED BACKUP DETECTION SYSTEM

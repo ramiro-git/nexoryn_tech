@@ -10,6 +10,7 @@ import os
 import threading
 import threading
 from datetime import datetime
+import time
 from desktop_app.services.export_service import ExportService
 
 SortSpec = List[Tuple[str, str]]  # [(key, "asc"|"desc")] in order
@@ -206,6 +207,8 @@ class GenericTable:
         inline_edit_callback: Optional[InlineEditCallback] = None,
         mass_edit_callback: Optional[MassEditCallback] = None,
         mass_delete_callback: Optional[MassDeleteCallback] = None,
+        mass_activate_callback: Optional[Callable[[List[Any]], None]] = None,
+        mass_deactivate_callback: Optional[Callable[[List[Any]], None]] = None,
         show_inline_controls: bool = True,
         show_mass_actions: bool = True,
         show_selection: bool = True,
@@ -213,6 +216,7 @@ class GenericTable:
         page_size: int = 10,
         page_size_options: Sequence[int] = (10, 25, 50),
         show_export_button: bool = True,
+        show_export_scope: bool = False,
     ) -> None:
         super().__init__()
         self.columns = list(columns)
@@ -223,11 +227,14 @@ class GenericTable:
         self.inline_edit_callback = inline_edit_callback
         self.mass_edit_callback = mass_edit_callback
         self.mass_delete_callback = mass_delete_callback
+        self.mass_activate_callback = mass_activate_callback
+        self.mass_deactivate_callback = mass_deactivate_callback
         self.show_inline_controls = show_inline_controls
         self.show_mass_actions = show_mass_actions
         self.show_selection = show_selection
         self.auto_load = auto_load
         self.show_export_button = show_export_button
+        self.show_export_scope = show_export_scope
         self.page = 1
         self.page_size = page_size
         self.page_size_options = list(page_size_options)
@@ -289,7 +296,7 @@ class GenericTable:
         )
         self.reset_button = ft.IconButton(
             icon=ft.Icons.REPLAY,
-            tooltip="Reiniciar filtros (DEBUG)",
+            tooltip="Reiniciar filtros",
             on_click=lambda e: self._reset_filters(),
         )
         self.refresh_button = ft.IconButton(
@@ -342,15 +349,36 @@ class GenericTable:
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
             on_click=lambda e: self._confirm_mass_delete(),
         )
+        self.mass_activate_button = ft.ElevatedButton(
+            "Activar Seleccionados",
+            icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
+            bgcolor="#10B981",
+            color="#FFFFFF",
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+            on_click=lambda e: self._mass_activate(),
+        )
+        self.mass_deactivate_button = ft.ElevatedButton(
+            "Desactivar Seleccionados",
+            icon=ft.Icons.DO_NOT_DISTURB_ON_ROUNDED,
+            bgcolor="#EA580C",
+            color="#FFFFFF",
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+            on_click=lambda e: self._mass_deactivate(),
+        )
         if hasattr(self.mass_edit_button, "disabled"):
             self.mass_edit_button.disabled = True
         if hasattr(self.mass_delete_button, "disabled"):
             self.mass_delete_button.disabled = True
+        if hasattr(self.mass_activate_button, "disabled"):
+            self.mass_activate_button.disabled = True
+        if hasattr(self.mass_deactivate_button, "disabled"):
+            self.mass_deactivate_button.disabled = True
         self.status = ft.Text("", size=11, color="#64748B")
         self.results_label = ft.Text("0 resultados", size=11, color="#64748B")
         self.range_label = ft.Text("", size=11, color="#64748B")
         self.sort_label = ft.Text("Orden: —", size=11, color="#64748B")
         self.selected_label = ft.Text("0 seleccionados", size=11, color="#64748B")
+        self.progress_bar = ft.ProgressBar(height=4, color="#6366F1", bgcolor="#E2E8F0", visible=False)
         self.page_size_dropdown = ft.Dropdown(
             label="Filas",
             value=str(self.page_size),
@@ -531,6 +559,7 @@ class GenericTable:
                 ft.dropdown.Option("Page", "Página actual"),
             ],
             width=200,
+            visible=self.show_export_scope,
         )
         _style_input(self.export_format)
         _style_input(self.export_scope)
@@ -553,14 +582,18 @@ class GenericTable:
             
             self._perform_export(fmt, scope)
 
+        dialog_controls = [
+            ft.Text("Seleccioná el formato de la exportación."),
+            self.export_format,
+        ]
+        if self.show_export_scope:
+            dialog_controls.insert(1, ft.Text("Seleccioná el alcance de la exportación."))
+            dialog_controls.append(self.export_scope)
+
         self.export_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Exportar Datos"),
-            content=ft.Column([
-                ft.Text("Seleccioná el formato y el alcance de la exportación."),
-                self.export_format,
-                self.export_scope,
-            ], tight=True, spacing=20),
+            content=ft.Column(dialog_controls, tight=True, spacing=20),
             actions=[
                 ft.TextButton("Cancelar", on_click=close_dlg),
                 ft.ElevatedButton(
@@ -588,6 +621,8 @@ class GenericTable:
             page.update()
 
     def _perform_export(self, fmt: str, scope: str) -> None:
+        self.progress_bar.visible = True
+        self.update()
         try:
             self._notify("Generando exportación...", kind="info")
             
@@ -664,6 +699,9 @@ class GenericTable:
 
         except Exception as exc:
             self._notify(f"Error exportando: {exc}", kind="error")
+        finally:
+            self.progress_bar.visible = False
+            self.update()
 
     def build(self) -> ft.Control:
         if self.auto_load and not self._loaded_once:
@@ -682,6 +720,7 @@ class GenericTable:
         if self.show_export_button:
             row_controls.append(self.export_button)
         controls = [
+            self.progress_bar,
             ft.Row(row_controls, alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ]
         if self.advanced_expander:
@@ -703,8 +742,14 @@ class GenericTable:
                                 spacing=10,
                             ),
                             ft.Row(
-                                [self.selected_label, self.mass_delete_button],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                [
+                                    self.selected_label, 
+                                    self.mass_delete_button if self.mass_delete_callback else ft.Container(),
+                                    self.mass_activate_button if self.mass_activate_callback else ft.Container(),
+                                    self.mass_deactivate_button if self.mass_deactivate_callback else ft.Container(),
+                                ],
+                                alignment=ft.MainAxisAlignment.START,
+                                spacing=10,
                             ),
                         ],
                         spacing=10,
@@ -754,33 +799,32 @@ class GenericTable:
     def _notify(self, message: str, kind: str = "info") -> None:
         if not self.root or getattr(self.root, "page", None) is None:
             return
+        
         page = self.root.page
-        snack = getattr(page, "snack_bar", None)
-        if snack is None or not hasattr(snack, "open"):
-            snack = self._snack
-            page.snack_bar = snack
-        content = getattr(snack, "content", None)
-        if content is not None and hasattr(content, "value"):
-            content.value = message
-        else:
+        
+        # Check if we already have a toast manager attached to the page
+        if not hasattr(page, "toast_manager"):
             try:
-                snack.content = ft.Text(message)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        if kind == "error":
-            snack.bgcolor = "#FEE2E2"
-            if hasattr(self, "_snack_text"):
-                self._snack_text.color = "#991B1B"
-        elif kind == "success":
-            snack.bgcolor = "#DCFCE7"
-            if hasattr(self, "_snack_text"):
-                self._snack_text.color = "#166534"
-        else:
-            snack.bgcolor = "#E2E8F0"
-            if hasattr(self, "_snack_text"):
-                self._snack_text.color = "#111827"
-        snack.open = True
-        page.update()
+                from .toast import ToastManager
+                page.toast_manager = ToastManager(page)
+            except ImportError:
+                # Fallback to SnackBar if toast module fails
+                print("Could not import ToastManager")
+                snack = getattr(page, "snack_bar", None)
+                if snack is None:
+                    snack = ft.SnackBar(content=ft.Text(""))
+                    page.snack_bar = snack
+                snack.content = ft.Text(message)
+                snack.bgcolor = {
+                    "error": "#FEE2E2",
+                    "success": "#DCFCE7",
+                }.get(kind, "#E2E8F0")
+                # Text color logic omitted for brevity in fallback
+                snack.open = True
+                page.update()
+                return
+
+        page.toast_manager.show(message, kind)
 
     def _on_simple_filter_change(self) -> None:
         self.page = 1
@@ -817,31 +861,37 @@ class GenericTable:
         setter: Optional[Callable[[ft.Control, Any], None]] = None,
         reset_value: Any = _FILTER_RESET_UNSET,
     ) -> None:
+        """Resetea un control (incluye fix para Dropdown que quedaba 'pegado' visualmente)."""
         has_reset_value = reset_value is not _FILTER_RESET_UNSET
-        
-        # 1. Use setter if provided
+
+        # 1) Setter custom (si lo hay)
         if setter:
             try:
                 setter(control, reset_value if has_reset_value else None)
-            except:
+                try:
+                    control.update()
+                except Exception:
+                    pass
+            except Exception:
                 pass
             return
 
-        # 2. Handle RangeSlider
+        # 2) RangeSlider
         if isinstance(control, ft.RangeSlider):
             try:
                 control.start_value = control.min
                 control.end_value = control.max
-            except:
+                control.update()
+            except Exception:
                 pass
             return
 
         if not hasattr(control, "value"):
             return
 
-        # 3. Determine target reset value
+        # 3) Determinar valor objetivo
         target_val = reset_value if has_reset_value else ""
-        
+
         if not has_reset_value:
             if isinstance(control, ft.Checkbox):
                 target_val = False
@@ -855,70 +905,128 @@ class GenericTable:
                 else:
                     target_val = None
 
-        # 4. Apply value change
+        # 4) Aplicar + forzar sincronización UI (Dropdown es el problemático)
         if isinstance(control, ft.Dropdown):
             options = getattr(control, "options", [])
             option_keys = [_dropdown_option_key(opt) for opt in options]
-            
+
             final_val = target_val
+
+            # Normalizar tipo
             if final_val is not None and not isinstance(final_val, str):
-                final_val = str(final_val)
-            
+                try:
+                    final_val = str(final_val)
+                except Exception:
+                    final_val = None
+
+            # Asegurar que exista en options
             if final_val not in option_keys:
                 if "" in option_keys:
                     final_val = ""
                 elif option_keys:
                     final_val = option_keys[0]
+                    if final_val is not None and not isinstance(final_val, str):
+                        try:
+                            final_val = str(final_val)
+                        except Exception:
+                            pass
                 else:
                     final_val = None
 
             control.value = final_val
+
+            # 🔥 FIX: forzar que Flutter reconstruya el Dropdown
+            # Primero intentamos cambiar key (si existe en tu versión de Flet),
+            # si no existe, hacemos un "bounce" de value.
+            try:
+                control.key = f"reset-{time.time_ns()}"
+            except Exception:
+                try:
+                    control.value = None
+                    control.update()
+                except Exception:
+                    pass
+                control.value = final_val
+
+            try:
+                control.update()
+            except Exception:
+                pass
         else:
             control.value = target_val
+            try:
+                control.update()
+            except Exception:
+                pass
 
     def _reset_filters(self) -> None:
         if self._search_timer:
             self._search_timer.cancel()
-        
-        # 1. VISUAL RELOAD: Detach whole section to force Flet to "forget" stuck state
-        if self.advanced_expander:
-            self.advanced_expander.content = ft.Row([ft.ProgressRing(scale=0.5), ft.Text("Reiniciando filtros...", size=12)], alignment=ft.MainAxisAlignment.CENTER)
-            try: self.advanced_expander.update()
-            except: pass
 
-        # 2. Reset internal values
+        # 1) Reset valores base
         self.search_field.value = ""
+        try:
+            self.search_field.update()
+        except Exception:
+            pass
+
         if self.simple_filter_dropdown:
             self.simple_filter_dropdown.value = self._simple_default_value
+            # Forzar rebuild si está disponible (mismo fix que Dropdown)
+            try:
+                self.simple_filter_dropdown.key = f"reset-{time.time_ns()}"
+            except Exception:
+                try:
+                    self.simple_filter_dropdown.value = None
+                    self.simple_filter_dropdown.update()
+                except Exception:
+                    pass
+                self.simple_filter_dropdown.value = self._simple_default_value
+            try:
+                self.simple_filter_dropdown.update()
+            except Exception:
+                pass
 
+        # 2) Reset filtros avanzados (cada control se actualiza)
         for flt in self.advanced_filters:
             self._reset_filter_control(flt.control, flt.setter, flt.initial_value)
-        
-        # Clear other state
+
+        # 3) Reset estado de orden/selección
         self.sorts.clear()
         self._last_sort_idx = None
         self._sync_sort_indicator()
         self._update_sort_label()
-        
+
         self.selected_ids.clear()
         self.select_all_global = False
         self.selection_bar.visible = False
         self._update_selected_label()
-        
+
+        # 4) Volver a página 1 y refrescar
         self.page = 1
         self._set_status("")
-        
-        # 3. Restore section
-        if self.advanced_expander:
-            # Rebuild the row to be sure
-            self.advanced_filters_row.controls = [flt.control for flt in self.advanced_filters]
-            self.advanced_expander.content = self.advanced_filters_row
-            try: self.advanced_expander.update()
-            except: pass
 
-        # 4. Final refresh
+        # Si querés asegurarte que el expander refleje cambios (sin usar .content en Column)
+        if self.advanced_expander and hasattr(self.advanced_expander, "controls"):
+            try:
+                ctrls = self.advanced_expander.controls  # type: ignore[attr-defined]
+                if isinstance(ctrls, list) and len(ctrls) >= 2:
+                    body = ctrls[1]
+                    if isinstance(body, ft.Container):
+                        body.content = self.advanced_filters_row
+                        try:
+                            body.update()
+                        except Exception:
+                            pass
+                try:
+                    self.advanced_expander.update()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
         self._refresh_data()
-        
+
         if not self._last_error:
             self._notify("Filtros reiniciados", kind="success")
 
@@ -1023,6 +1131,7 @@ class GenericTable:
     def _set_loading(self, value: bool) -> None:
         self._is_loading = value
         self._loading_overlay.visible = value
+        self.progress_bar.visible = value
         if value:
             self._table_viewport.visible = False
             self._empty_overlay.visible = False
@@ -1238,6 +1347,10 @@ class GenericTable:
             self.mass_edit_button.disabled = not (has_targets and can_edit and ready)
         if hasattr(self.mass_delete_button, "disabled"):
             self.mass_delete_button.disabled = not (has_targets and self.mass_delete_callback is not None)
+        if hasattr(self.mass_activate_button, "disabled"):
+            self.mass_activate_button.disabled = not (has_targets and self.mass_activate_callback is not None)
+        if hasattr(self.mass_deactivate_button, "disabled"):
+            self.mass_deactivate_button.disabled = not (has_targets and self.mass_deactivate_callback is not None)
 
     def _sync_select_all_checkbox(self) -> None:
         if not self.show_selection or self.select_all_checkbox is None:
@@ -1277,6 +1390,8 @@ class GenericTable:
 
     def _toggle_global_selection(self, value: bool) -> None:
         if value:
+            self.progress_bar.visible = True
+            self.update()
             self._set_status("Seleccionando todos los resultados...", kind="info")
             try:
                 # Reuse data provider to fetch all IDs
@@ -1305,6 +1420,7 @@ class GenericTable:
             self.selection_bar.visible = False
             self._set_status("Selección reiniciada", kind="info")
         
+        self.progress_bar.visible = False
         self._sync_select_all_checkbox()
         for rid, cb in self._row_selection_controls.items():
             cb.value = rid in self.selected_ids
@@ -1338,34 +1454,35 @@ class GenericTable:
             self._update_selected_label()
             self.update()
 
-        if key.lower() == "activo":
-            dd = ft.Dropdown(
-                label="Valor",
-                width=220,
-                options=[
-                    ft.dropdown.Option("true", "Activar"),
-                    ft.dropdown.Option("false", "Desactivar"),
-                ],
-                on_change=lambda e: (
-                    setter(True)
-                    if e.control.value == "true"
-                    else setter(False)
-                    if e.control.value == "false"
-                    else setter(None)
-                ),
+        if key.lower() == "activo" or isinstance(col.inline_editor, ft.Switch):
+            setter(False)  # Default for switch
+            sw = ft.Switch(
+                label="Valor (Activar/Desactivar)",
+                value=False,
+                on_change=lambda e: setter(e.control.value),
             )
-            _style_input(dd)
-            return dd
+            return sw
 
         if col.inline_editor is not None:
             try:
-                return col.inline_editor(None, {}, setter)
+                ctrl = col.inline_editor(None, {}, setter)
+                if isinstance(ctrl, ft.Dropdown):
+                    # Filter out placeholders like "Todas", "Todos", "", "—", "(Sin marca)"
+                    placeholders = {"", None, _ALL_VALUE, "—", "(Sin marca)", "(Sin rubro)", "Todas", "Todos"}
+                    ctrl.options = [opt for opt in ctrl.options if _dropdown_option_key(opt) not in placeholders]
+                    if ctrl.options:
+                        ctrl.value = _dropdown_option_key(ctrl.options[0])
+                        setter(ctrl.value)
+                    ctrl.hint_text = "Seleccioná un valor…"
+                elif isinstance(ctrl, ft.TextField):
+                    ctrl.hint_text = "Escribí el nuevo valor…"
+                return ctrl
             except Exception:
                 pass
 
         control = ft.TextField(
             label="Valor",
-            hint_text="Escribe un valor…",
+            hint_text="Escribí el valor a aplicar…",
             on_change=lambda e: setter(e.control.value),
         )
         _style_input(control)
@@ -1373,13 +1490,18 @@ class GenericTable:
 
     def _apply_mass_edit(self) -> None:
         if not self._mass_field_key:
-            self._set_status("Selecciona un campo para editar", kind="error")
+            self._set_status("Seleccioná un campo para editar", kind="error")
             self.update()
             return
-        if self._mass_value is None:
-            self._set_status("Define un valor para aplicar", kind="error")
-            self.update()
-            return
+
+        # Validation logic
+        is_empty = self._mass_value is None or (isinstance(self._mass_value, str) and not str(self._mass_value).strip())
+        if is_empty:
+            # Check if it's a field that MUST be provided
+            # For ERPs, almost everything except 'notas' or 'descripcion' usually should be filled
+            if self._mass_field_key.lower() not in ["notas", "descripción", "observaciones"]:
+                self._notify("Por favor, ingresá un valor válido (no puede estar vacío).", kind="error")
+                return
         if not self.mass_edit_callback:
             self._set_status("No hay callback para edición masiva", kind="error")
             self._notify("No hay callback para edición masiva", kind="error")
@@ -1391,13 +1513,17 @@ class GenericTable:
             self.update()
             return
         updates = {self._mass_field_key: self._mass_value}
+        self.progress_bar.visible = True
+        self.update()
         try:
             self.mass_edit_callback(targets, updates)
         except Exception as exc:
+            self.progress_bar.visible = False
             self._set_status(f"Error: {exc}", kind="error")
             self._notify(f"Error aplicando edición masiva: {exc}", kind="error")
             self.update()
             return
+        self.progress_bar.visible = False
         self._set_status("Edición masiva aplicada", kind="success")
         self._notify("Edición masiva aplicada", kind="success")
         self._refresh_data()
@@ -1456,20 +1582,74 @@ class GenericTable:
             self._notify("No hay callback para eliminar", kind="error")
             self.update()
             return
+        self.progress_bar.visible = True
+        self.update()
         if self.mass_delete_callback:
             try:
                 self.mass_delete_callback(targets)
             except Exception as exc:
+                self.progress_bar.visible = False
                 self._set_status(f"Error: {exc}", kind="error")
                 self._notify(f"Error eliminando: {exc}", kind="error")
                 self.update()
                 return
+        self.progress_bar.visible = False
         self.selected_ids.clear()
         self._update_selected_label()
         self._set_status("Eliminación masiva procesada", kind="success")
         self._notify("Registros eliminados", kind="success")
         self._refresh_data()
 
+        self._refresh_data()
+
+    def _mass_activate(self) -> None:
+        targets = [rid for rid in self.selected_ids]
+        if not targets:
+            self._set_status("Selecciona filas para activar", kind="error")
+            self.update()
+            return
+        if not self.mass_activate_callback:
+            return
+        self.progress_bar.visible = True
+        self.update()
+        try:
+            self.mass_activate_callback(targets)
+        except Exception as exc:
+            self.progress_bar.visible = False
+            self._set_status(f"Error: {exc}", kind="error")
+            self._notify(f"Error activando: {exc}", kind="error")
+            self.update()
+            return
+        self.progress_bar.visible = False
+        self.selected_ids.clear()
+        self._update_selected_label()
+        self._set_status("Registros activados", kind="success")
+        self._notify("Registros activados", kind="success")
+        self._refresh_data()
+
+    def _mass_deactivate(self) -> None:
+        targets = [rid for rid in self.selected_ids]
+        if not targets:
+            self._set_status("Selecciona filas para desactivar", kind="error")
+            self.update()
+            return
+        if not self.mass_deactivate_callback:
+            return
+        self.progress_bar.visible = True
+        self.update()
+        try:
+            self.mass_deactivate_callback(targets)
+        except Exception as exc:
+            self.progress_bar.visible = False
+            self._set_status(f"Error: {exc}", kind="error")
+            self._notify(f"Error desactivando: {exc}", kind="error")
+            self.update()
+            return
+        self.progress_bar.visible = False
+        self.selected_ids.clear()
+        self._update_selected_label()
+        self._set_status("Registros desactivados", kind="success")
+        self._notify("Registros desactivados", kind="success")
         self._refresh_data()
 
     def _open_inline_edit_dialog(self, row: Dict[str, Any], col: ColumnConfig) -> None:

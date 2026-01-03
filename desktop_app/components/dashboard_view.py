@@ -138,7 +138,7 @@ class DashboardView(ft.Container):
         
         self.kpi_row.controls.extend([
             self._kpi_card("Ventas Hoy", f"${v_hoy}" if isinstance(v_hoy, (float, int)) else v_hoy, ft.Icons.ATTACH_MONEY_ROUNDED, self.COLOR_SUCCESS, f"{v_cant} oper."),
-            self._kpi_card("Stock Bajo", str(s_bajo), ft.Icons.INVENTORY_2_ROUNDED, self.COLOR_WARNING if s_bajo > 0 else self.COLOR_INFO, "Requiere acción" if s_bajo > 0 else "Al día"),
+            self._kpi_card("Stock Crítico", str(s_bajo), ft.Icons.INVENTORY_2_ROUNDED, self.COLOR_WARNING if s_bajo > 0 else self.COLOR_INFO, "Requiere acción" if s_bajo > 0 else "Al día"),
             self._kpi_card("Remitos Pend.", str(r_pend), ft.Icons.LOCAL_SHIPPING_ROUNDED, self.COLOR_PRIMARY, "Por entregar"),
             self._kpi_card("Docs Hoy", str(self.stats.get("operativas", {}).get("mis_operaciones_hoy", 0)), ft.Icons.DESCRIPTION_ROUNDED, self.COLOR_INFO, "Mis registros")
         ])
@@ -254,9 +254,9 @@ class DashboardView(ft.Container):
         return ft.Row([
             self._stat_item("Total Artículos", s.get("total", 0)),
             self._stat_item("Activos", s.get("activos", 0), self.COLOR_SUCCESS),
-            self._stat_item("Bajo Stock", s.get("bajo_stock", 0), self.COLOR_WARNING),
+            self._stat_item("Stock Crítico", s.get("bajo_stock", 0), self.COLOR_WARNING),
             self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR),
-            self._stat_item("Stock Unidades", f"{s.get('stock_unidades', 0):,}", self.COLOR_INFO),
+            self._stat_item("Valor Inventario", f"${s.get('valor_inventario', 0):,.0f}", self.COLOR_INFO),
             self._stat_item("Ingresos Mes", s.get("entradas_mes", 0)),
             self._stat_item("Salidas Mes", s.get("salidas_mes", 0)),
         ], wrap=True, spacing=40)

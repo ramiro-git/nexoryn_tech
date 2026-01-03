@@ -26,7 +26,7 @@ class BackupView:
         self.TYPE_COLORS = {
             "daily": "#3B82F6",    # Blue
             "weekly": "#8B5CF6",   # Purple
-            "monthly": "#EC4899",  # Pink
+            "monthly": "#0D9488",  # Teal 600
             "manual": "#10B981",   # Green
         }
         
@@ -84,14 +84,69 @@ class BackupView:
             )
         ]
 
+        # Date filter controls with consistent styling
+        self.date_from_picker = ft.DatePicker(
+            on_change=lambda e: self._on_date_filter_change(e, "from"),
+            help_text="SELECCIONAR FECHA",
+            cancel_text="CANCELAR",
+            confirm_text="ACEPTAR",
+        )
+        self.date_to_picker = ft.DatePicker(
+            on_change=lambda e: self._on_date_filter_change(e, "to"),
+            help_text="SELECCIONAR FECHA",
+            cancel_text="CANCELAR",
+            confirm_text="ACEPTAR",
+        )
+        self.page.overlay.append(self.date_from_picker)
+        self.page.overlay.append(self.date_to_picker)
+        
+        # Style constants (matching ui_basic.py)
+        COLOR_ACCENT = "#6366F1"
+        
+        def _style_input(control):
+            control.border_color = "#475569"
+            control.focused_border_color = COLOR_ACCENT
+            control.border_radius = 12
+            control.text_size = 14
+            control.label_style = ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD)
+            control.content_padding = ft.padding.all(12)
+            control.bgcolor = "#F8FAFC"
+            control.filled = True
+            if hasattr(control, "border_width"):
+                control.border_width = 2 if isinstance(control, ft.Dropdown) else 1
+        
+        self.date_from_field = ft.TextField(
+            label="Desde", width=150,
+            suffix=ft.IconButton(ft.Icons.CALENDAR_MONTH_ROUNDED, icon_size=18, on_click=lambda e: self.page.open(self.date_from_picker))
+        )
+        _style_input(self.date_from_field)
+        
+        self.date_to_field = ft.TextField(
+            label="Hasta", width=150,
+            suffix=ft.IconButton(ft.Icons.CALENDAR_MONTH_ROUNDED, icon_size=18, on_click=lambda e: self.page.open(self.date_to_picker))
+        )
+        _style_input(self.date_to_field)
+        
+        self.type_filter_dropdown = ft.Dropdown(
+            label="Tipo", width=160,
+            options=[ft.dropdown.Option("Todos", "Todos"), ft.dropdown.Option("manual", "Manual"), ft.dropdown.Option("daily", "Diario"), ft.dropdown.Option("weekly", "Semanal"), ft.dropdown.Option("monthly", "Mensual")],
+            value="Todos",
+            on_change=lambda e: self.table.refresh()
+        )
+        _style_input(self.type_filter_dropdown)
+        
+        from desktop_app.components.generic_table import AdvancedFilterControl
+        
         self.table = GenericTable(
             columns=self.backup_columns,
             data_provider=self._data_provider,
             id_field="path",
-            simple_filter=SimpleFilterConfig(
-                label="Tipo",
-                options=[(None, "Todos"), ("manual", "Manual"), ("daily", "Diario"), ("weekly", "Semanal"), ("monthly", "Mensual")],
-            ),
+            advanced_filters=[
+                AdvancedFilterControl("type", self.type_filter_dropdown),
+                AdvancedFilterControl("date_from", self.date_from_field),
+                AdvancedFilterControl("date_to", self.date_to_field),
+            ],
+            show_mass_actions=False,
             auto_load=True,
             page_size=10
         )
@@ -154,11 +209,42 @@ class BackupView:
             bgcolor=f"{color}1A",  # 10% opacity
         )
         
+    def _on_date_filter_change(self, e, which: str):
+        """Handle date picker changes."""
+        if e.control.value:
+            date_str = e.control.value.strftime("%Y-%m-%d")
+            if which == "from":
+                self.date_from_field.value = date_str
+            else:
+                self.date_to_field.value = date_str
+            self.page.update()
+            self.table.refresh()
+
     def _data_provider(self, offset: int, limit: int, search: Optional[str], simple_filter_value: Optional[str], advanced: Dict[str, Any], sorts: List[tuple]) -> tuple[List[Dict[str, Any]], int]:
         # Filter logic
         filtered = self.data
-        if simple_filter_value:
-             filtered = [b for b in filtered if b['type'] == simple_filter_value]
+        
+        # Type filter
+        type_val = advanced.get("type")
+        if type_val and type_val != "Todos":
+            filtered = [b for b in filtered if b['type'] == type_val]
+        
+        # Date filters
+        date_from = advanced.get("date_from")
+        if date_from:
+            from datetime import datetime
+            try:
+                from_dt = datetime.strptime(date_from, "%Y-%m-%d")
+                filtered = [b for b in filtered if b['created'] >= from_dt]
+            except: pass
+        
+        date_to = advanced.get("date_to")
+        if date_to:
+            from datetime import datetime
+            try:
+                to_dt = datetime.strptime(date_to, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+                filtered = [b for b in filtered if b['created'] <= to_dt]
+            except: pass
         
         if search:
             s = search.lower()
@@ -474,6 +560,7 @@ class BackupView:
                         icon=ft.Icons.ADD_ROUNDED, 
                         bgcolor=self.COLOR_PRIMARY, 
                         color=ft.Colors.WHITE,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                         on_click=self._trigger_backup
                     ),
                 ], spacing=8)

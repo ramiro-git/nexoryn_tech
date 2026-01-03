@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from psycopg.errors import ForeignKeyViolation, IntegrityError
 from psycopg_pool import ConnectionPool
 
 
@@ -319,6 +320,7 @@ class Database:
             "bajo_stock": row[2] or 0,
             "sin_stock": row[3] or 0,
             "valor_costo": float(row[4] or 0) if show_values else "—",
+            "valor_inventario": float(row[4] or 0) if show_values else 0,  # Same as valor_costo for now
             "entradas_mes": row[5] or 0,
             "salidas_mes": row[6] or 0,
             "stock_unidades": row[7] or 0
@@ -395,16 +397,30 @@ class Database:
         """Technical system stats (10 metrics) - ADMIN only"""
         cur.execute("""
             SELECT 
-                (SELECT COUNT(*) FROM seguridad.usuario WHERE activo = true) as users_activos,
+                (
+                    WITH last_states AS (
+                        SELECT 
+                            id_usuario,
+                            accion,
+                            ROW_NUMBER() OVER (PARTITION BY id_usuario ORDER BY fecha_hora DESC) as rn
+                        FROM seguridad.log_actividad
+                        WHERE id_usuario IS NOT NULL
+                          AND accion IN ('LOGIN_OK', 'LOGOUT')
+                          AND fecha_hora > NOW() - INTERVAL '24 hours'
+                    )
+                    SELECT COUNT(*) FROM last_states WHERE rn = 1 AND accion = 'LOGIN_OK'
+                ) as sess_activas,
                 (SELECT COUNT(*) FROM seguridad.log_actividad WHERE id_tipo_evento_log = (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR') AND fecha_hora >= date_trunc('month', now())) as errores_mes,
-                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE accion = 'BACKUP' AND resultado = 'OK' AND fecha_hora >= date_trunc('month', now())) as backups_exitosos_mes
+                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE accion = 'BACKUP' AND resultado = 'OK' AND fecha_hora >= date_trunc('month', now())) as backups_exitosos_mes,
+                (SELECT MAX(ultimo_login) FROM seguridad.usuario) as ultimo_login
         """)
         row = cur.fetchone()
         
         return {
             "usuarios_activos": row[0] or 0,
             "errores_mes": row[1] or 0,
-            "backups_mes": row[2] or 0
+            "backups_mes": row[2] or 0,
+            "ultimo_login": row[3].strftime("%Y-%m-%d %H:%M") if row[3] else "N/A"
         }
 
     # Dashboard Statistics (individual methods kept for backwards compatibility)
@@ -1239,12 +1255,18 @@ class Database:
         if not ids:
             return
         query = "DELETE FROM ref.marca WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
-                self.invalidate_catalog_cache("marcas")
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+                    self.invalidate_catalog_cache("marcas")
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: una o más marcas están asignadas a artículos. "
+                "Primero reasigná los artículos a otra marca."
+            )
 
     def fetch_rubros(
         self,
@@ -1312,12 +1334,18 @@ class Database:
         if not ids:
             return
         query = "DELETE FROM ref.rubro WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
-                self.invalidate_catalog_cache("rubros")
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+                    self.invalidate_catalog_cache("rubros")
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: uno o más rubros están asignados a artículos. "
+                "Primero reasigná los artículos a otro rubro."
+            )
 
     def count_stock_alerts(self, search: Optional[str] = None) -> int:
         filters: List[str] = ["COALESCE(stock_actual, 0) < COALESCE(stock_minimo, 0)"]
@@ -1518,12 +1546,18 @@ class Database:
         if not ids:
             return
         query = "DELETE FROM app.entidad_comercial WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
-                self.invalidate_catalog_cache("proveedores")
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+                    self.invalidate_catalog_cache("proveedores")
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: la entidad tiene documentos, artículos o movimientos asociados. "
+                "Desactivapla en su lugar."
+            )
 
     def create_article(
         self,
@@ -1722,6 +1756,56 @@ class Database:
                 assignments.append("id_rubro = %s")
                 params.append(rubro_id)
 
+        if "id_tipo_iva" in filtered and isinstance(filtered["id_tipo_iva"], str):
+            iva_desc = filtered.pop("id_tipo_iva")
+            if iva_desc in (None, ""):
+                assignments.append("id_tipo_iva = NULL")
+            else:
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id FROM ref.tipo_iva WHERE descripcion = %s", (str(iva_desc),))
+                        res = cur.fetchone()
+                        iva_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                if iva_id is None:
+                    raise ValueError(f"Alícuota de IVA inválida: {iva_desc}")
+                assignments.append("id_tipo_iva = %s")
+                params.append(iva_id)
+
+        if "id_unidad_medida" in filtered and isinstance(filtered["id_unidad_medida"], str):
+            um_name = filtered.pop("id_unidad_medida")
+            if um_name in (None, ""):
+                assignments.append("id_unidad_medida = NULL")
+            else:
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id FROM ref.unidad_medida WHERE nombre = %s OR abreviatura = %s", (str(um_name), str(um_name)))
+                        res = cur.fetchone()
+                        um_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                if um_id is None:
+                    raise ValueError(f"Unidad de medida inválida: {um_name}")
+                assignments.append("id_unidad_medida = %s")
+                params.append(um_id)
+
+        if "id_proveedor" in filtered and isinstance(filtered["id_proveedor"], str):
+            prov_name = filtered.pop("id_proveedor")
+            if prov_name in (None, ""):
+                assignments.append("id_proveedor = NULL")
+            else:
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        q = """
+                            SELECT id FROM app.entidad_comercial 
+                            WHERE (razon_social = %s OR TRIM(COALESCE(apellido, '') || ' ' || COALESCE(nombre, '')) = %s)
+                            AND tipo IN ('PROVEEDOR', 'AMBOS')
+                        """
+                        cur.execute(q, (str(prov_name), str(prov_name)))
+                        res = cur.fetchone()
+                        prov_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                if prov_id is None:
+                    raise ValueError(f"Proveedor inválido: {prov_name}")
+                assignments.append("id_proveedor = %s")
+                params.append(prov_id)
+
         for col, value in filtered.items():
             assignments.append(f"{col} = %s")
             params.append(value)
@@ -1867,11 +1951,17 @@ class Database:
 
     def delete_provincias(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.provincia WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: una o más provincias tienen localidades asociadas. "
+                "Primero eliminá o reasigná las localidades."
+            )
 
     def list_provincias(self) -> List[Dict[str, Any]]:
         query = "SELECT id, nombre FROM ref.provincia ORDER BY nombre"
@@ -1951,11 +2041,17 @@ class Database:
 
     def delete_localidades(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.localidad WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: una o más localidades están asignadas a clientes o proveedores. "
+                "Primero reasigná esas entidades a otra localidad."
+            )
 
     # Units of Measure
     def fetch_unidades_medida(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2006,12 +2102,18 @@ class Database:
 
     def delete_unidades_medida(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.unidad_medida WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
-                self.invalidate_catalog_cache("unidades")
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+                    self.invalidate_catalog_cache("unidades")
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: la unidad de medida está asignada a uno o más artículos. "
+                "Reemplazala antes de eliminar."
+            )
 
     # IVA Conditions
     def fetch_condiciones_iva(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2054,10 +2156,15 @@ class Database:
 
     def delete_condiciones_iva(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.condicion_iva WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: la condición de IVA está asignada a clientes o proveedores."
+            )
 
     # IVA Types
     def fetch_tipos_iva(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2106,11 +2213,16 @@ class Database:
 
     def delete_tipos_iva(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.tipo_iva WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: el tipo de IVA está asignado a uno o más artículos."
+            )
 
     # Deposits
     def fetch_depositos(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2159,11 +2271,17 @@ class Database:
 
     def delete_depositos(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.deposito WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: el depósito tiene movimientos o documentos asociados. "
+                "Desactivá el depósito en su lugar."
+            )
 
     # Payment Methods
     def fetch_formas_pago(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2212,11 +2330,17 @@ class Database:
 
     def delete_formas_pago(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.forma_pago WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: la forma de pago tiene registros históricos asociados. "
+                "Desactivala en su lugar."
+            )
 
     # Price Lists
     def fetch_listas_precio(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2265,11 +2389,17 @@ class Database:
 
     def delete_listas_precio(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.lista_precio WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: la lista de precios está asignada a clientes o tiene precios definidos."
+                "Desactivala en su lugar."
+            )
 
     # Logs
     def fetch_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2295,10 +2425,32 @@ class Database:
             filters.append("lower(l.accion) LIKE %s")
             params.append(f"%{acc.lower().strip()}%")
             
+        res = advanced.get("resultado")
+        if res and res != "Todas":
+            filters.append("l.resultado = %s")
+            params.append(res)
+            
+        ident = advanced.get("id_entidad")
+        if ident:
+            try:
+                filters.append("l.id_entidad = %s")
+                params.append(int(ident))
+            except (ValueError, TypeError): pass
+
         desde = advanced.get("desde")
         if desde:
             filters.append("l.fecha_hora >= %s")
             params.append(desde)
+
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("l.fecha_hora <= %s")
+            params.append(hasta)
+
+        ip = advanced.get("ip")
+        if ip:
+            filters.append("l.ip LIKE %s")
+            params.append(f"%{ip.strip()}%")
 
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "l.id", "fecha": "l.fecha_hora", "usuario": "u.nombre", "entidad": "l.entidad", "accion": "l.accion", "resultado": "l.resultado"}
@@ -2340,10 +2492,32 @@ class Database:
             filters.append("lower(l.accion) LIKE %s")
             params.append(f"%{acc.lower().strip()}%")
             
+        res = advanced.get("resultado")
+        if res and res != "Todas":
+            filters.append("l.resultado = %s")
+            params.append(res)
+            
+        ident = advanced.get("id_entidad")
+        if ident:
+            try:
+                filters.append("l.id_entidad = %s")
+                params.append(int(ident))
+            except (ValueError, TypeError): pass
+
         desde = advanced.get("desde")
         if desde:
             filters.append("l.fecha_hora >= %s")
             params.append(desde)
+
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("l.fecha_hora <= %s")
+            params.append(hasta)
+
+        ip = advanced.get("ip")
+        if ip:
+            filters.append("l.ip LIKE %s")
+            params.append(f"%{ip.strip()}%")
 
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM seguridad.log_actividad l LEFT JOIN seguridad.usuario u ON l.id_usuario = u.id WHERE {where_clause}"
@@ -2356,36 +2530,47 @@ class Database:
 
     def create_tipo_porcentaje(self, tipo: str) -> int:
         query = "INSERT INTO ref.tipo_porcentaje (tipo) VALUES (%s) RETURNING id"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (tipo.strip(),))
-                res = cur.fetchone()
-                conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (tipo.strip(),))
+                    res = cur.fetchone()
+                    conn.commit()
+                    return res.get("id") if isinstance(res, dict) else res[0]
+        except IntegrityError as e:
+            if "ck_tipo_porcentaje_tipo" in str(e):
+                raise ValueError("El tipo de porcentaje debe ser 'Recargo' o 'Descuento'.")
+            raise ValueError(f"Error al crear tipo de porcentaje: {e}")
 
     def create_tipo_documento(self, nombre: str, clase: str, letra: str, afecta_stock: bool, afecta_cta: bool) -> int:
         query = """
             INSERT INTO ref.tipo_documento (nombre, clase, letra, afecta_stock, afecta_cuenta_corriente)
             VALUES (%s, %s, %s, %s, %s) RETURNING id
         """
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (nombre.strip(), clase.strip(), letra.strip(), afecta_stock, afecta_cta))
-                res = cur.fetchone()
-                conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (nombre.strip(), clase.strip(), letra.strip(), afecta_stock, afecta_cta))
+                    res = cur.fetchone()
+                    conn.commit()
+                    return res.get("id") if isinstance(res, dict) else res[0]
+        except IntegrityError as e:
+            raise ValueError(f"Error de integridad al crear tipo documento: {e}")
 
     def create_tipo_movimiento_articulo(self, nombre: str, signo: int) -> int:
         query = "INSERT INTO ref.tipo_movimiento_articulo (nombre, signo_stock) VALUES (%s, %s) RETURNING id"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (nombre.strip(), signo))
-                res = cur.fetchone()
-                conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    cur.execute(query, (nombre.strip(), signo))
+                    res = cur.fetchone()
+                    conn.commit()
+                    return res.get("id") if isinstance(res, dict) else res[0]
+        except IntegrityError as e:
+            raise ValueError(f"Error al crear tipo de movimiento: {e}")
 
     # Percentage Types
     def fetch_tipos_porcentaje(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2420,10 +2605,15 @@ class Database:
 
     def delete_tipos_porcentaje(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.tipo_porcentaje WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: tipo de porcentaje en uso."
+            )
 
     # Document Types
     def fetch_tipos_documento(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2458,10 +2648,15 @@ class Database:
 
     def delete_tipos_documento(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.tipo_documento WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: existen documentos de este tipo."
+            )
 
     # Article Movement Types
     def fetch_tipos_movimiento_articulo(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
@@ -2496,10 +2691,15 @@ class Database:
 
     def delete_tipos_movimiento_articulo(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.tipo_movimiento_articulo WHERE id = ANY(%s)"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (list(ids),))
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (list(ids),))
+                    conn.commit()
+        except IntegrityError:
+            raise ValueError(
+                "No se puede eliminar: existen movimientos de este tipo asociado."
+            )
 
     # Security: Users and Roles
     def fetch_users(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 40, offset: int = 0) -> List[Dict[str, Any]]:

@@ -26,6 +26,7 @@ try:
         GenericTable,
         SimpleFilterConfig,
     )
+    from desktop_app.components.toast import ToastManager
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -33,6 +34,7 @@ except ImportError:
     from services.backup_service import BackupService # type: ignore
     from components.backup_view import BackupView # type: ignore
     from components.dashboard_view import DashboardView # type: ignore
+    from components.toast import ToastManager # type: ignore
     from components.generic_table import (  # type: ignore
         AdvancedFilterControl,
         ColumnConfig,
@@ -268,27 +270,12 @@ def main(page: ft.Page) -> None:
     except Exception as exc:
         db_error = str(exc)
 
-    toast_text = ft.Text("")
-    toast = ft.SnackBar(content=toast_text, open=False)
-    page.snack_bar = toast
-
+    # Toast Manager initialization is handled on demand
     def show_toast(message: str, kind: str = "info") -> None:
-        toast_text.value = message
-        if kind == "error":
-            toast.bgcolor = "#FEE2E2"
-            toast_text.color = "#991B1B"
-        elif kind == "success":
-            toast.bgcolor = "#DCFCE7"
-            toast_text.color = "#166534"
-        else:
-            toast.bgcolor = "#E2E8F0"
-            toast_text.color = COLOR_TEXT
+        if not hasattr(page, "toast_manager"):
+            page.toast_manager = ToastManager(page)
         
-        if hasattr(page, "open"):
-            page.open(toast)
-        else:
-            toast.open = True
-            page.update()
+        page.toast_manager.show(message, kind)
 
     def provider_error() -> Exception:
         return RuntimeError(db_error or "No se pudo conectar a la base de datos.")
@@ -311,7 +298,7 @@ def main(page: ft.Page) -> None:
 
     confirm_dialog = ft.AlertDialog(modal=True)
 
-    def ask_confirm(title: str, message: str, confirm_label: str, on_confirm) -> None:
+    def ask_confirm(title: str, message: str, confirm_label: str, on_confirm, button_color: str = None) -> None:
         def close(_: Any) -> None:
             if hasattr(page, "close"):
                 page.close(confirm_dialog)
@@ -326,6 +313,7 @@ def main(page: ft.Page) -> None:
             except Exception as exc:
                 show_toast(f"Error: {exc}", kind="error")
 
+        final_color = button_color if button_color else COLOR_ERROR
         confirm_dialog.title = ft.Text(title, size=20, weight=ft.FontWeight.BOLD)
         confirm_dialog.content = ft.Container(
             content=ft.Text(message, size=14, color=COLOR_TEXT_MUTED),
@@ -333,13 +321,13 @@ def main(page: ft.Page) -> None:
         )
         confirm_dialog.shape = ft.RoundedRectangleBorder(radius=16)
         confirm_dialog.actions = [
-            ft.TextButton("Cancelar", on_click=close, style=ft.ButtonStyle(color=COLOR_TEXT_MUTED)),
+            ft.TextButton("Cancelar", on_click=close, style=ft.ButtonStyle(color=COLOR_TEXT_MUTED, shape=ft.RoundedRectangleBorder(radius=8))),
             ft.ElevatedButton(
                 confirm_label, 
-                bgcolor=COLOR_ERROR, 
+                bgcolor=final_color, 
                 color="#FFFFFF", 
                 on_click=do_confirm,
-                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12))
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
             ),
         ]
         if hasattr(page, "open"):
@@ -535,7 +523,7 @@ def main(page: ft.Page) -> None:
         articulos_advanced_costo_slider
     ], spacing=0, width=350)
 
-    articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo", value=False, on_change=_art_live)
+    articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo (stock)", value=False, on_change=_art_live)
     
     articulos_advanced_iva = _dropdown("Alicuota IVA", [("", "Todas")], value="", width=200, on_change=_art_live)
     articulos_advanced_unidad = _dropdown("Unidad Medida", [("", "Todas")], value="", width=200, on_change=_art_live)
@@ -725,8 +713,8 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="domicilio", label="Domicilio", width=180, editable=True),
             ColumnConfig(key="telefono", label="Teléfono", width=120, editable=True),
             ColumnConfig(key="email", label="Email", width=180, editable=True),
-            ColumnConfig(key="localidad", label="Localidad", width=140, editable=True),
-            ColumnConfig(key="provincia", label="Provincia", width=110, editable=True),
+            ColumnConfig(key="localidad", label="Localidad", width=140, editable=True, inline_editor=dropdown_editor(lambda: [l["nombre"] for l in db.fetch_localidades(limit=500)], width=250, empty_label="Seleccionar...")),
+            ColumnConfig(key="provincia", label="Provincia", width=110, editable=True, inline_editor=dropdown_editor(lambda: [p["nombre"] for p in db.list_provincias()], width=200, empty_label="Seleccionar...")),
             ColumnConfig(
                 key="notas",
                 label="Notas",
@@ -814,7 +802,8 @@ def main(page: ft.Page) -> None:
         ],
         inline_edit_callback=lambda row_id, changes: db.update_entity_fields(int(row_id), changes) if db else None,
         mass_edit_callback=lambda ids, updates: db.bulk_update_entities([int(i) for i in ids], updates) if db else None,
-        mass_delete_callback=lambda ids: db.bulk_update_entities([int(i) for i in ids], {"activo": False}) if db else None,
+        mass_activate_callback=lambda ids: db.bulk_update_entities([int(i) for i in ids], {"activo": True}) if db else None,
+        mass_deactivate_callback=lambda ids: db.bulk_update_entities([int(i) for i in ids], {"activo": False}) if db else None,
         show_inline_controls=True,
         show_mass_actions=True,
         show_selection=True,
@@ -829,7 +818,7 @@ def main(page: ft.Page) -> None:
         ft.Row([
             make_stat_card("Clientes Activos", "0", "PEOPLE_ROUNDED", COLOR_ACCENT, key="entidades_clientes"),
             make_stat_card("Proveedores", "0", "LOCAL_SHIPPING_ROUNDED", COLOR_WARNING, key="entidades_proveedores"),
-            make_stat_card("Activos Totales", "0", "ACCOUNT_BALANCE_ROUNDED", COLOR_SUCCESS, key="entidades_activos"),
+            make_stat_card("Total Entidades", "0", "ACCOUNT_BALANCE_ROUNDED", COLOR_SUCCESS, key="entidades_activos"),
         ], spacing=20),
         ft.Container(height=10),
         make_card(
@@ -929,7 +918,7 @@ def main(page: ft.Page) -> None:
             ),
             ColumnConfig(
                 key="stock_minimo",
-                label="Mínimo",
+                label="Mínimo (stock)",
                 editable=True,
                 formatter=lambda v, _: "—" if v is None else f"{float(v):.2f}",
                 width=90,
@@ -941,9 +930,26 @@ def main(page: ft.Page) -> None:
                 width=90,
             ),
             ColumnConfig(
+                key="id_tipo_iva",
+                label="Alicuota IVA",
+                editable=True,
+                formatter=lambda v, row: next((i["descripcion"] for i in tipos_iva_values if str(i["id"]) == str(v or row.get("id_tipo_iva"))), "—"),
+                inline_editor=dropdown_editor(lambda: [i["descripcion"] for i in tipos_iva_values], width=200, empty_label="Seleccionar..."),
+                width=150,
+            ),
+            ColumnConfig(
+                key="id_proveedor",
+                label="Proveedor",
+                editable=True,
+                formatter=lambda v, row: next((p["nombre"] for p in proveedores_values if str(p["id"]) == str(v or row.get("id_proveedor"))), "—"),
+                inline_editor=dropdown_editor(lambda: [p["nombre"] for p in proveedores_values], width=200, empty_label="Seleccionar..."),
+                width=180,
+            ),
+            ColumnConfig(
                 key="ubicacion",
                 label="Ubicación",
                 width=120,
+                editable=True,
             ),
             ColumnConfig(
                 key="activo",
@@ -1024,7 +1030,8 @@ def main(page: ft.Page) -> None:
         ],
         inline_edit_callback=lambda row_id, changes: db.update_article_fields(int(row_id), changes) if db else None,
         mass_edit_callback=lambda ids, updates: db.bulk_update_articles([int(i) for i in ids], updates) if db else None,
-        mass_delete_callback=lambda ids: db.bulk_update_articles([int(i) for i in ids], {"activo": False}) if db else None,
+        mass_activate_callback=lambda ids: db.bulk_update_articles([int(i) for i in ids], {"activo": True}) if db else None,
+        mass_deactivate_callback=lambda ids: db.bulk_update_articles([int(i) for i in ids], {"activo": False}) if db else None,
         show_inline_controls=True,
         show_mass_actions=True,
         show_selection=True,
@@ -1038,8 +1045,8 @@ def main(page: ft.Page) -> None:
     articulos_view = ft.Column([
         ft.Row([
             make_stat_card("Artículos en Stock", "0", "INVENTORY_ROUNDED", COLOR_ACCENT, key="articulos_total"),
-            make_stat_card("Bajo Mínimo", "0", "WARNING_AMBER_ROUNDED", COLOR_ERROR, key="articulos_bajo_stock"),
-            make_stat_card("Stock Unidades", "0", "NUMBERS_ROUNDED", COLOR_INFO, key="articulos_valor"),
+            make_stat_card("Stock Crítico", "0", "WARNING_AMBER_ROUNDED", COLOR_ERROR, key="articulos_bajo_stock"),
+            make_stat_card("Valor Inventario", "$0", "ATTACH_MONEY_ROUNDED", COLOR_INFO, key="articulos_valor"),
         ], spacing=20),
         ft.Container(height=10),
         make_card(
@@ -2300,7 +2307,14 @@ def main(page: ft.Page) -> None:
 
     def delete_usuario(uid: int) -> None:
         # Users might be sensitive, but consistent with others
-        if db: db.update_user_fields(int(uid), {"activo": False}); usuarios_table.refresh(); show_toast("Usuario desactivado (Soft Delete)", kind="success")
+        if db: db.update_user_fields(int(uid), {"activo": False}); usuarios_table.refresh(); show_toast("Usuario desactivado correctamente", kind="success")
+
+    def toggle_usuario(uid: int, is_active: bool) -> None:
+        if not db: return
+        if is_active:
+            ask_confirm("Desactivar", "¿Desactivar usuario?", "Sí, desactivar", lambda: (db.update_user_fields(int(uid), {"activo": False}), usuarios_table.refresh(), show_toast("Usuario desactivado correctamente", kind="success")))
+        else:
+            ask_confirm("Reactivar", "¿Reactivar usuario?", "Sí, reactivar", lambda: (db.update_user_fields(int(uid), {"activo": True}), usuarios_table.refresh(), show_toast("Usuario reactivado correctamente", kind="success")), button_color=COLOR_SUCCESS)
 
 
     marcas_table = GenericTable(
@@ -2324,7 +2338,7 @@ def main(page: ft.Page) -> None:
                         if rid is not None
                         else None
                     ),
-                ),
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container(),
                 width=40,
             ),
         ],
@@ -2332,7 +2346,7 @@ def main(page: ft.Page) -> None:
         inline_edit_callback=lambda row_id, changes: db.update_marca_fields(int(row_id), changes) if db else None,
         show_inline_controls=True,
         show_mass_actions=False,
-        show_selection=True,
+        show_selection=False,
         auto_load=False,
         page_size=12,
         page_size_options=(10, 25, 50),
@@ -2360,7 +2374,7 @@ def main(page: ft.Page) -> None:
                         if rid is not None
                         else None
                     ),
-                ),
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container(),
                 width=40,
             ),
         ],
@@ -2368,7 +2382,7 @@ def main(page: ft.Page) -> None:
         inline_edit_callback=lambda row_id, changes: db.update_rubro_fields(int(row_id), changes) if db else None,
         show_inline_controls=True,
         show_mass_actions=False,
-        show_selection=True,
+        show_selection=False,
         auto_load=False,
         page_size=12,
         page_size_options=(10, 25, 50),
@@ -2409,12 +2423,12 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta provincia?", "Eliminar", lambda: delete_provincia(int(row["id"])))
-                )
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_provincias, db.count_provincias),
         inline_edit_callback=lambda rid, changes: db.update_provincia_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, show_mass_actions=False, show_selection=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_mass_actions=False, show_selection=False, auto_load=False, page_size=12,
     )
     nueva_provincia_input = ft.TextField(label="Nueva Provincia", width=220)
     _style_input(nueva_provincia_input)
@@ -2439,12 +2453,12 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta localidad?", "Eliminar", lambda: delete_localidad(int(row["id"])))
-                )
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_localidades, db.count_localidades),
         inline_edit_callback=lambda rid, changes: db.update_localidad_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, show_mass_actions=False, show_selection=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_mass_actions=False, show_selection=False, auto_load=False, page_size=12,
     )
     nueva_loc_nombre = ft.TextField(label="Nombre Localidad", width=220)
     nueva_loc_prov = ft.Dropdown(label="Provincia", width=220)
@@ -2478,12 +2492,12 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta unidad?", "Eliminar", lambda: delete_unidad(int(row["id"])))
-                )
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_unidades_medida, db.count_unidades_medida),
         inline_edit_callback=lambda rid, changes: db.update_unidad_medida_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, show_mass_actions=False, auto_load=False, page_size=12,
+        show_inline_controls=True, show_mass_actions=False, show_selection=False, auto_load=False, page_size=12,
     )
     nueva_uni_nombre = ft.TextField(label="Nombre Unidad", width=180)
     nueva_uni_abr = ft.TextField(label="Abreviatura", width=100)
@@ -2507,13 +2521,13 @@ def main(page: ft.Page) -> None:
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
-                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta condición?", "Eliminar", lambda: delete_civa(int(row["id"])))
-                )
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este registro?", "Eliminar", lambda: delete_civa(int(row["id"])))
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_condiciones_iva, db.count_condiciones_iva),
         inline_edit_callback=lambda rid, changes: db.update_condicion_iva_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
     nueva_civa = ft.TextField(label="Nueva Condición", width=220); _style_input(nueva_civa)
 
@@ -2528,7 +2542,6 @@ def main(page: ft.Page) -> None:
     # IVA Types
     tiva_table = GenericTable(
         columns=[
-            ColumnConfig(key="codigo", label="Cod.", editable=True, width=80),
             ColumnConfig(key="porcentaje", label="%", editable=True, width=80),
             ColumnConfig(key="descripcion", label="Descripción", editable=True, width=200),
             ColumnConfig(
@@ -2536,22 +2549,26 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de IVA?", "Eliminar", lambda: delete_tiva(int(row["id"])))
-                )
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_iva, db.count_tipos_iva),
         inline_edit_callback=lambda rid, changes: db.update_tipo_iva_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
-    nueva_tiva_cod = ft.TextField(label="Cód.", width=80)
     nueva_tiva_porc = ft.TextField(label="%", width=80)
     nueva_tiva_desc = ft.TextField(label="Desc.", width=180)
-    _style_input(nueva_tiva_cod); _style_input(nueva_tiva_porc); _style_input(nueva_tiva_desc)
+    _style_input(nueva_tiva_porc); _style_input(nueva_tiva_desc)
 
     def agregar_tiva(_: Any = None):
         try:
-            db.create_tipo_iva(int(nueva_tiva_cod.value), float(nueva_tiva_porc.value), nueva_tiva_desc.value)
-            nueva_tiva_cod.value = ""; nueva_tiva_porc.value = ""; nueva_tiva_desc.value = ""
+            # Auto-generate code
+            existing = db.fetch_tipos_iva()
+            max_code = max([int(t["codigo"]) for t in existing if str(t["codigo"]).isdigit()], default=0)
+            new_code = max_code + 1
+            
+            db.create_tipo_iva(new_code, float(nueva_tiva_porc.value), nueva_tiva_desc.value)
+            nueva_tiva_porc.value = ""; nueva_tiva_desc.value = ""
             tiva_table.refresh(); show_toast("Tipo IVA agregado", kind="success")
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
 
@@ -2565,13 +2582,13 @@ def main(page: ft.Page) -> None:
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
-                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este depósito?", "Eliminar", lambda: delete_deposito(int(row["id"])))
-                )
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este rubro?", "Eliminar", lambda: delete_deposito(int(row["id"])))
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_depositos, db.count_depositos),
         inline_edit_callback=lambda rid, changes: db.update_deposito_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
     nuevo_depo_nom = ft.TextField(label="Nombre", width=180); nuevo_depo_ubi = ft.TextField(label="Ubicación", width=180)
     _style_input(nuevo_depo_nom); _style_input(nuevo_depo_ubi)
@@ -2595,12 +2612,12 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta forma de pago?", "Eliminar", lambda: delete_fpay(int(row["id"])))
-                )
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_formas_pago, db.count_formas_pago),
         inline_edit_callback=lambda rid, changes: db.update_forma_pago_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
     nueva_fpay = ft.TextField(label="Nueva Forma", width=220); _style_input(nueva_fpay)
 
@@ -2612,31 +2629,53 @@ def main(page: ft.Page) -> None:
             nueva_fpay.value = ""; fpay_table.refresh(); show_toast("Forma agregada", kind="success")
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
 
+    def toggle_lista_precio(lid: int, is_active: bool) -> None:
+        if not db: return
+        # If currently active, we want to deactivate (rojo)
+        # If currently inactive, we want to activate (verde)
+        if is_active:
+            ask_confirm("Desactivar", "¿Desactivar esta lista de precios?", "Desactivar", 
+                       lambda: (db.update_lista_precio_fields(int(lid), {"activa": False}), 
+                               precios_table.refresh(), 
+                               show_toast("Lista desactivada", kind="success")))
+        else:
+            ask_confirm("Activar", "¿Activar esta lista de precios?", "Activar", 
+                       lambda: (db.update_lista_precio_fields(int(lid), {"activa": True}), 
+                               precios_table.refresh(), 
+                               show_toast("Lista activada", kind="success")), 
+                       button_color=COLOR_SUCCESS)
+
     # Price Lists (Separate module-like view)
     precios_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Lista", editable=True, width=200),
             ColumnConfig(key="orden", label="Orden", editable=True, width=80),
-            ColumnConfig(key="activa", label="Activa", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(key="activa", label="Activa", editable=False, width=100, formatter=_format_bool),
             ColumnConfig(
-                key="_delete", label="", sortable=False, width=40,
+                key="_toggle", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
-                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta lista de precios?", "Eliminar", lambda: delete_lista_precio(int(row["id"])))
+                    icon=ft.Icons.UNPUBLISHED_OUTLINED if row.get("activa") else ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    tooltip="Desactivar" if row.get("activa") else "Activar",
+                    icon_color="#DC2626" if row.get("activa") else "#10B981", # Rojo si esta activa (para desactivar), Verde si inactiva (para activar)
+                    on_click=lambda e: toggle_lista_precio(int(row["id"]), row.get("activa", False))
                 )
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_listas_precio, db.count_listas_precio),
         inline_edit_callback=lambda rid, changes: db.update_lista_precio_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, auto_load=False, page_size=20,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=20, show_export_scope=False,
     )
     nueva_lp_nom = ft.TextField(label="Nombre Lista", width=220); _style_input(nueva_lp_nom)
+    nueva_lp_orden = ft.TextField(label="Orden", width=80, value="0", input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9]")); _style_input(nueva_lp_orden)
+
     def agregar_lp(_: Any = None):
         nom = (nueva_lp_nom.value or "").strip()
+        orden_val = (nueva_lp_orden.value or "0").strip()
         if not nom: return
         try:
-            db.create_lista_precio(nom)
-            nueva_lp_nom.value = ""; precios_table.refresh(); show_toast("Lista agregada", kind="success")
+            db.create_lista_precio(nom, orden=int(orden_val))
+            nueva_lp_nom.value = ""; nueva_lp_orden.value = "0"
+            precios_table.refresh(); show_toast("Lista agregada", kind="success")
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
 
     # Percentage Types
@@ -2648,11 +2687,11 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de porcentaje?", "Eliminar", lambda: delete_ptype(int(row["id"])))
-                )
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_porcentaje, db.count_tipos_porcentaje),
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
     # New Percentage Type Input
     nuevo_ptype = ft.TextField(label="Tipo", width=220); _style_input(nuevo_ptype)
@@ -2677,12 +2716,12 @@ def main(page: ft.Page) -> None:
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
-                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de documento?", "Eliminar", lambda: delete_dtype(int(row["id"])))
-                )
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de doc?", "Eliminar", lambda: delete_dtype(int(row["id"])))
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_documento, db.count_tipos_documento),
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
     # New Doc Type Inputs
     nuevo_dtype_nom = ft.TextField(label="Nombre", width=180); _style_input(nuevo_dtype_nom)
@@ -2717,12 +2756,12 @@ def main(page: ft.Page) -> None:
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
-                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de movimiento?", "Eliminar", lambda: delete_mtype(int(row["id"])))
-                )
+                    on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de mov?", "Eliminar", lambda: delete_mtype(int(row["id"])))
+                ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_tipos_movimiento_articulo, db.count_tipos_movimiento_articulo),
-        show_inline_controls=True, auto_load=False, page_size=12,
+        show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=12,
     )
     # New Movement Type Inputs
     nuevo_mtype_nom = ft.TextField(label="Nombre", width=180); _style_input(nuevo_mtype_nom)
@@ -2748,19 +2787,21 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="nombre", label="Usuario", editable=True, width=200),
             ColumnConfig(key="email", label="Email", editable=True, width=200),
             ColumnConfig(key="rol", label="Rol", editable=False, width=100),
-            ColumnConfig(key="activo", label="Activo", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(key="activo", label="Estado", width=110, renderer=lambda row: _bool_pill(row.get("activo"))),
             ColumnConfig(key="ultimo_login", label="Últ. Acceso", width=160),
             ColumnConfig(
-                key="_delete", label="", sortable=False, width=40,
+                key="_toggle", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Desactivar Usuario", icon_color="#DC2626",
-                    on_click=lambda e, rid=row.get("id"): ask_confirm("Desactivar", "¿Desactivar usuario?", "Si, desactivar", lambda: delete_usuario(int(rid))) if rid else None
+                    icon=ft.Icons.PERSON_OFF_ROUNDED if row.get("activo") else ft.Icons.PERSON_ADD_ROUNDED,
+                    tooltip="Desactivar Usuario" if row.get("activo") else "Reactivar Usuario",
+                    icon_color="#DC2626" if row.get("activo") else "#10B981",
+                    on_click=lambda e, rid=row.get("id"), is_active=row.get("activo"): toggle_usuario(int(rid), is_active) if rid else None
                 )
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_users, db.count_users),
         inline_edit_callback=lambda rid, changes: db.update_user_fields(int(rid), changes) if db else None,
-        show_inline_controls=True, auto_load=False, page_size=20,
+        show_inline_controls=True, show_mass_actions=False, auto_load=False, page_size=20, show_export_scope=False,
     )
 
     sesiones_table = GenericTable(
@@ -2774,13 +2815,14 @@ def main(page: ft.Page) -> None:
         data_provider=create_catalog_provider(db.fetch_active_sessions, db.count_active_sessions),
         auto_load=False, page_size=10,
         show_selection=False, show_mass_actions=False, # cleaner for sessions
+        show_export_button=False,
     )
 
     # User creation fields
-    nuevo_user_nombre = ft.TextField(label="Nombre", width=200); _style_input(nuevo_user_nombre)
-    nuevo_user_email = ft.TextField(label="Email", width=220); _style_input(nuevo_user_email)
-    nuevo_user_password = ft.TextField(label="Contraseña", password=True, can_reveal_password=True, width=200); _style_input(nuevo_user_password)
-    nuevo_user_rol = ft.Dropdown(label="Rol", width=150, options=[], text_style=ft.TextStyle(size=14)); _style_input(nuevo_user_rol)
+    nuevo_user_nombre = ft.TextField(label="Nombre *", width=380); _style_input(nuevo_user_nombre)
+    nuevo_user_email = ft.TextField(label="Email *", width=380); _style_input(nuevo_user_email)
+    nuevo_user_password = ft.TextField(label="Contraseña *", password=True, can_reveal_password=True, width=380); _style_input(nuevo_user_password)
+    nuevo_user_rol = ft.Dropdown(label="Rol *", width=380, options=[], text_style=ft.TextStyle(size=14)); _style_input(nuevo_user_rol)
 
     def refresh_user_roles():
         if not db: return
@@ -2822,17 +2864,17 @@ def main(page: ft.Page) -> None:
         
         content = ft.Column([
             nuevo_user_nombre,
-            ft.Container(height=10),
+            ft.Container(height=15),
             nuevo_user_email,
-            ft.Container(height=10),
+            ft.Container(height=15),
             nuevo_user_password,
-            ft.Container(height=10),
+            ft.Container(height=15),
             nuevo_user_rol,
-        ], spacing=0)
+        ], spacing=0, width=400)
         
         open_form("Nuevo Usuario", content, [
             ft.TextButton("Cancelar", on_click=close_form),
-            ft.ElevatedButton("Crear Usuario", bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=crear_usuario)
+            ft.ElevatedButton("Crear Usuario", bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=crear_usuario)
         ])
 
     
@@ -2886,7 +2928,7 @@ def main(page: ft.Page) -> None:
         ], spacing=20),
         ft.Container(height=10),
         usuarios_tabs
-    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], expand=True, spacing=10)
 
     # Backup Config View (Replaced with Advanced BackupView)
     def set_conn_adapter(connected: bool, msg: str):
@@ -3271,13 +3313,27 @@ def main(page: ft.Page) -> None:
     logs_adv_user = ft.TextField(label="Usuario contiene", width=180); _style_input(logs_adv_user)
     logs_adv_ent = ft.TextField(label="Entidad contiene", width=180); _style_input(logs_adv_ent)
     logs_adv_acc = ft.TextField(label="Acción contiene", width=180); _style_input(logs_adv_acc)
-    logs_adv_desde = _date_field(page, "Desde", width=150)
+    logs_adv_res = ft.Dropdown(
+        label="Resultado", 
+        width=140,
+        options=[
+            ft.dropdown.Option("Todas", "Todos"),
+            ft.dropdown.Option("OK", "OK"),
+            ft.dropdown.Option("FAIL", "FALLO"),
+            ft.dropdown.Option("WARNING", "ADVERTENCIA"),
+        ],
+        value="Todas"
+    ); _style_input(logs_adv_res)
+    logs_adv_ide = ft.TextField(label="Id. Registro", width=110, keyboard_type=ft.KeyboardType.NUMBER); _style_input(logs_adv_ide)
+    logs_adv_desde = _date_field(page, "Desde", width=140)
+    logs_adv_hasta = _date_field(page, "Hasta", width=140)
 
     logs_table = GenericTable(
         columns=[
             ColumnConfig(key="fecha", label="Fecha", width=160),
             ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(key="entidad", label="Entidad", width=120),
+            ColumnConfig(key="id_entidad", label="Id. Reg.", width=70),
             ColumnConfig(key="accion", label="Acción", width=100),
             ColumnConfig(key="resultado", label="Res.", width=80),
             ColumnConfig(key="ip", label="IP", width=120),
@@ -3288,15 +3344,18 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("usuario", logs_adv_user),
             AdvancedFilterControl("entidad", logs_adv_ent),
             AdvancedFilterControl("accion", logs_adv_acc),
+            AdvancedFilterControl("resultado", logs_adv_res),
+            AdvancedFilterControl("id_entidad", logs_adv_ide),
             AdvancedFilterControl("desde", logs_adv_desde),
+            AdvancedFilterControl("hasta", logs_adv_hasta),
         ],
-        show_inline_controls=False, show_mass_actions=False, show_selection=False, auto_load=False, page_size=50,
+        show_inline_controls=False, show_mass_actions=False, show_selection=True, auto_load=False, page_size=50,
     )
 
     precios_view = make_card(
         "Listas de Precio", "Definición y actualización de listas.",
         ft.Column([
-            ft.Row([nueva_lp_nom, ft.ElevatedButton("Crear Lista", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_lp, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10),
+            ft.Row([nueva_lp_nom, nueva_lp_orden, ft.ElevatedButton("Crear Lista", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_lp, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10),
             precios_table.build()
         ], expand=True, spacing=10)
     )
@@ -3402,7 +3461,7 @@ def main(page: ft.Page) -> None:
                 text="Tipos IVA",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_tiva_cod, nueva_tiva_porc, nueva_tiva_desc, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_tiva, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_tiva_porc, nueva_tiva_desc, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_tiva, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         tiva_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -3545,15 +3604,16 @@ def main(page: ft.Page) -> None:
                 se = stats.get("entidades", {})
                 if "entidades_clientes" in card_registry: card_registry["entidades_clientes"].value = f"{se.get('clientes_total', 0):,}"
                 if "entidades_proveedores" in card_registry: card_registry["entidades_proveedores"].value = f"{se.get('proveedores_total', 0):,}"
+                if "entidades_activos" in card_registry: card_registry["entidades_activos"].value = f"{se.get('clientes_total', 0) + se.get('proveedores_total', 0):,}"
                 
                 # Articulos
                 sa = stats.get("stock", {})
                 if "articulos_total" in card_registry: card_registry["articulos_total"].value = f"{sa.get('total', 0):,}"
                 if "articulos_bajo_stock" in card_registry: card_registry["articulos_bajo_stock"].value = f"{sa.get('bajo_stock', 0):,}"
                 
-                val_stock = sa.get('stock_unidades', 0)
+                val_inventario = sa.get('valor_inventario', 0)
                 if "articulos_valor" in card_registry: 
-                    card_registry["articulos_valor"].value = f"{val_stock:,}"
+                    card_registry["articulos_valor"].value = _format_money(val_inventario)
                 
                 # Facturacion / Ventas
                 sv = stats.get("ventas", {})
@@ -3572,8 +3632,7 @@ def main(page: ft.Page) -> None:
                 # Usuarios
                 so = stats.get("sistema", {})
                 if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{so.get('usuarios_activos', 0):,}"
-                # but we can add it if needed. For now, we'll keep the previous value or skip.
-                # if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = su['ultimo_login']
+                if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = so.get('ultimo_login', "N/A")
                 
                 if not window_is_closing:
                     page.update()
@@ -3591,6 +3650,7 @@ def main(page: ft.Page) -> None:
     # LOGIN VIEW & AUTHENTICATION
     # =========================================================================
     CURRENT_USER_ROLE = "EMPLEADO"  # Default, will be set on login
+    monitor_started = False
 
     def apply_role_permissions() -> None:
         is_admin = CURRENT_USER_ROLE == "ADMIN"
@@ -3787,6 +3847,34 @@ def main(page: ft.Page) -> None:
         sidebar_user_role.value = f"Rol: {CURRENT_USER_ROLE}"
         apply_role_permissions()
         
+        def start_background_monitor():
+            nonlocal monitor_started
+            if monitor_started:
+                return
+            monitor_started = True
+            import threading
+            import time
+            def background_monitor():
+                while not window_is_closing:
+                    try:
+                        # Only refresh if logged in
+                        if db and db.current_user_id:
+                            refresh_all_stats()
+                            # If current view is Usuarios (Sessions), refresh sesiones_table only
+                            if current_view["key"] == "usuarios":
+                                try:
+                                    sesiones_table.refresh()
+                                except: pass
+                    except: pass
+                    # Refresh every 5 seconds for real-time feel
+                    for _ in range(5):
+                        if window_is_closing: break
+                        time.sleep(1)
+
+            threading.Thread(target=background_monitor, daemon=True).start()
+
+        start_background_monitor()
+        
         # Log login and load system config
         db.log_activity("SISTEMA", "LOGIN_OK", detalle={"modo": "BASIC_UI", "usuario": user["nombre"]})
         try:
@@ -3918,12 +4006,16 @@ def main(page: ft.Page) -> None:
         if key in ["usuarios", "backups", "logs"] and CURRENT_USER_ROLE != "ADMIN":
             show_toast("Acceso restringido a administradores", kind="error")
             return
+            
+        if key == "config" and CURRENT_USER_ROLE not in ["ADMIN", "GERENTE"]:
+             show_toast("Acceso restringido", kind="error")
+             return
 
         current_view["key"] = key
         
         # Log View Action
         if db:
-            db.log_activity(key.upper(), "VIEW")
+            db.log_activity("SISTEMA", "NAVEGACION", detalle={"vista": key.upper()})
             refresh_all_stats()
 
         if key == "dashboard":
@@ -4014,7 +4106,14 @@ def main(page: ft.Page) -> None:
         icon_value = getattr(ft.Icons, icon_name, ft.Icons.QUESTION_MARK_ROUNDED)
         
         # Start admin-only items as hidden (will be shown after login if ADMIN)
-        is_admin_only = key in admin_only_keys
+        if key in admin_only_keys:
+             is_admin_only = True
+        elif key == "config":
+             # Config only for Admin and Manager
+             # But here we handle visibility logic
+             is_admin_only = False # Handled in update_nav
+        else:
+             is_admin_only = False
         
         item = ft.Container(
             content=ft.Row([
@@ -4041,6 +4140,12 @@ def main(page: ft.Page) -> None:
             # Show/hide admin-only items based on current role
             if key in admin_only_keys:
                 item.visible = (CURRENT_USER_ROLE == "ADMIN")
+            elif key == "config":
+                item.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
+            
+            # Header visibility
+            header_sistema.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
+            header_principal.visible = True # Always visible for now
             
             selected = key == current_view["key"]
             item.bgcolor = "#312E81" if selected else None  # Indigo 900 for active state
@@ -4082,7 +4187,7 @@ def main(page: ft.Page) -> None:
                 ),
                 ft.Column(
                     [
-                        ft.Text("NAVIGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                        header_principal := ft.Text("NAVIGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
                         nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
                         nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
                         nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
@@ -4092,7 +4197,7 @@ def main(page: ft.Page) -> None:
                         nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
                         
                         ft.Container(height=15),
-                        ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                        header_sistema := ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
                         nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
                         nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
                         nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
@@ -4155,7 +4260,6 @@ def main(page: ft.Page) -> None:
                     )
                 ],
                 expand=True,
-                scroll=ft.ScrollMode.ADAPTIVE,
             ),
         ],
         expand=True,
