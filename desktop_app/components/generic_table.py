@@ -304,8 +304,15 @@ class GenericTable:
             tooltip="Actualizar",
             on_click=lambda e: self.refresh(),
         )
+        unique_controls = []
+        seen_controls = set()
+        for flt in self.advanced_filters:
+            if flt.control not in seen_controls:
+                unique_controls.append(flt.control)
+                seen_controls.add(flt.control)
+
         self.advanced_filters_row = ft.Row(
-            [flt.control for flt in self.advanced_filters],
+            unique_controls,
             wrap=True,
             spacing=12,
             run_spacing=12,
@@ -528,7 +535,7 @@ class GenericTable:
         self.table_container = ft.Container(
             self._table_root,
             expand=1,
-            padding=0,
+            padding=ft.padding.only(left=10, right=16, top=10, bottom=10),  # Right padding for scrollbar
             bgcolor="#FFFFFF",
             border=ft.border.all(1, "#E2E8F0"),
             border_radius=12,
@@ -824,7 +831,10 @@ class GenericTable:
                 page.update()
                 return
 
-        page.toast_manager.show(message, kind)
+        try:
+            page.toast_manager.show(message, kind)
+        except AssertionError:
+            pass
 
     def _on_simple_filter_change(self) -> None:
         self.page = 1
@@ -1182,68 +1192,109 @@ class GenericTable:
             self._set_status(f"Error: {exc}", kind="error")
             self._notify(f"Error cargando datos: {exc}", kind="error")
             rows, total = [], 0
-        self.current_rows = rows
-        self.total_rows = total
-        self.total_pages = max(1, ceil(total / self.page_size)) if total else 1
-        if self.page > self.total_pages:
-            self.page = self.total_pages
-            offset = (self.page - 1) * self.page_size
-            try:
-                rows, total = self.data_provider(
-                    offset,
-                    self.page_size,
-                    search,
-                    simple_value,
-                    advanced_payload,
-                    list(self.sorts),
-                )
-            except Exception as exc:
-                self._last_error = str(exc)
-                self._set_status(f"Error: {exc}", kind="error")
-                rows, total = [], 0
+
+        try:
             self.current_rows = rows
             self.total_rows = total
-        self._current_page_ids = [row.get(self.id_field) for row in rows if row.get(self.id_field) is not None]
-        # self.selected_ids &= set(self._current_page_ids)  # Persist selection across pages
-        self._update_selected_label()
-        self.current_rows_by_id = {
-            row.get(self.id_field): row for row in rows if row.get(self.id_field) is not None
-        }
-        try:
+            self.total_pages = max(1, ceil(total / self.page_size)) if total else 1
+            if self.page > self.total_pages:
+                self.page = self.total_pages
+                offset = (self.page - 1) * self.page_size
+                try:
+                    rows, total = self.data_provider(
+                        offset,
+                        self.page_size,
+                        search,
+                        simple_value,
+                        advanced_payload,
+                        list(self.sorts),
+                    )
+                except Exception as exc:
+                    self._last_error = str(exc)
+                    self._set_status(f"Error: {exc}", kind="error")
+                    rows, total = [], 0
+                self.current_rows = rows
+                self.total_rows = total
+
+            self._current_page_ids = [row.get(self.id_field) for row in rows if row.get(self.id_field) is not None]
+            self._update_selected_label()
+            self.current_rows_by_id = {
+                row.get(self.id_field): row for row in rows if row.get(self.id_field) is not None
+            }
+
+            # Build rows (wrapped in its own try/except via _render_cell and here)
             new_rows = self._build_rows(rows)
             self.table.rows.clear()
             self.table.rows.extend(new_rows)
             self._safe_table_update()
-        except Exception:
-            self.table.rows = self._build_rows(rows)
-            self._safe_table_update()
-        self.page_input.value = str(self.page)
-        self.pagination_label.value = f"de {self.total_pages}"
-        start = offset + 1 if total else 0
-        end = offset + len(rows) if total else 0
-        self.range_label.value = f"Mostrando {start}-{end} de {total}"
-        self.first_button.disabled = self.page <= 1
-        self.prev_button.disabled = self.page <= 1
-        self.next_button.disabled = self.page >= self.total_pages
-        self.last_button.disabled = self.page >= self.total_pages
-        if self._last_error:
-            self.results_label.value = "Sin datos"
-            self._empty_title.value = "No se pudo cargar"
-            self._empty_message.value = "Revisá la conexión a PostgreSQL y reintentá."
-            self._empty_overlay.visible = True
-            self._table_viewport.visible = False
-        else:
-            self.results_label.value = f"{total} resultados"
-            self._empty_title.value = "Sin resultados"
-            self._empty_message.value = "Ajustá el buscador o filtros."
-            self._empty_overlay.visible = total == 0
-            self._table_viewport.visible = total > 0
-            if total and self.status.value.startswith("Error:"):
+
+            self.page_input.value = str(self.page)
+            self.pagination_label.value = f"de {self.total_pages}"
+            start = offset + 1 if total else 0
+            end = offset + len(rows) if total else 0
+            self.range_label.value = f"Mostrando {start}-{end} de {total}"
+            self.first_button.disabled = self.page <= 1
+            self.prev_button.disabled = self.page <= 1
+            self.next_button.disabled = self.page >= self.total_pages
+            self.last_button.disabled = self.page >= self.total_pages
+
+            if self._last_error:
+                self.results_label.value = "Sin datos"
+                self._empty_title.value = "No se pudo cargar"
+                self._empty_message.value = "Revisá la conexión a PostgreSQL y reintentá."
+                self._empty_overlay.visible = True
+                self._table_viewport.visible = False
+            else:
+                self.results_label.value = f"{total} resultados"
+                self._empty_title.value = "Sin resultados"
+                self._empty_message.value = "Ajustá el buscador o filtros."
+                self._empty_overlay.visible = total == 0
+                self._table_viewport.visible = total > 0
                 self._set_status("")
-        self._sync_select_all_checkbox()
-        self._set_loading(False)
-        if update_ui:
-            self.update()
+                if total and self.status.value.startswith("Error:"):
+                    self._set_status("")
+            self._sync_select_all_checkbox()
+        finally:
+            self._set_loading(False)
+            if update_ui:
+                self.update()
+
+    def _update_filter_chips(self, advanced: Dict[str, Any]) -> None:
+        self.filter_chips.controls.clear()
+        
+        # Helper to check if a value is "active"
+        def is_active(val, initial):
+            if val is initial: return False
+            if val is None or val == "": return False
+            if val == "Todos" or val == "0" or val == "__ALL__" or val == "Todas": return False
+            # Range sliders often use min/max as defaults
+            return True
+
+        for flt in self.advanced_filters:
+            val = advanced.get(flt.name)
+            if is_active(val, flt.initial_value):
+                # Unique chip for each filter or group
+                label_text = f"{flt.name}: {val}"
+                # Humanize name if possible?
+                # Let's just use flt.name for now or allow flt to have a label
+                # But flt doesn't have a label in the dataclass. I'll just use name.
+                self.filter_chips.controls.append(
+                    ft.Chip(
+                        label=ft.Text(label_text, size=11),
+                        bgcolor="#EEF2FF",
+                        label_padding=2,
+                        on_delete=lambda e, f=flt: self._reset_filter_control(f.control, f.setter, f.initial_value) or self.refresh()
+                    )
+                )
+        if self.filter_chips.controls:
+             self.filter_chips.visible = True
+        else:
+             self.filter_chips.visible = False
+             
+        try:
+            self.filter_chips.update()
+        except:
+            pass
 
     def update(self) -> None:
         if not self.root:
@@ -1253,7 +1304,7 @@ class GenericTable:
                 self.root.page.update()
             else:
                 self.root.update()
-        except Exception:
+        except (Exception, AssertionError):
             pass
 
     def _safe_table_update(self) -> None:
@@ -1312,15 +1363,19 @@ class GenericTable:
         return result
 
     def _render_cell(self, row_id: Any, row: Dict[str, Any], col: ColumnConfig) -> ft.Control:
-        if col.renderer:
-            return col.renderer(row)
-        value = row.get(col.key)
-        text = col.formatter(value, row) if col.formatter else ("" if value is None else str(value))
-        return ft.Text(
-            text,
-            size=12,
-            overflow=ft.TextOverflow.ELLIPSIS,
-        )
+        try:
+            if col.renderer:
+                return col.renderer(row)
+            value = row.get(col.key)
+            text = col.formatter(value, row) if col.formatter else ("" if value is None else str(value))
+            return ft.Text(
+                text,
+                size=12,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            )
+        except Exception as e:
+            # Prevent whole table crash if one renderer fails
+            return ft.Text(f"Err: {e}", size=10, color="#EF4444")
 
     def _toggle_selection(self, row_id: Any, value: bool) -> None:
         if value:

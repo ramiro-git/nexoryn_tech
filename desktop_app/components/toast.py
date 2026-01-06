@@ -114,13 +114,19 @@ class ToastManager:
             try:
                 if toast in self.container.controls:
                     self.container.controls.remove(toast)
-                    self.page.update()
+                    try:
+                        self.page.update()
+                    except AssertionError:
+                        pass
             except:
                 pass
 
         toast = ToastNotification(message, kind, duration, on_dismiss)
         self.container.controls.append(toast)
-        self.page.update()
+        try:
+            self.page.update()
+        except AssertionError:
+            pass
         
         # Manually trigger animations if did_mount doesn't likely fire immediately
         # or rely on Flet's behavior. For overlay, explicit update is often needed.

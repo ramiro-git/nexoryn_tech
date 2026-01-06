@@ -528,7 +528,7 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     else:
         df['cuit_clean'] = None
 
-    df['fchalta_dt'] = pd.to_datetime(df['fchalta'], errors='coerce').fillna(datetime.now())
+    df['fchalta_dt'] = pd.to_datetime(df['fchalta'], format='mixed', errors='coerce').fillna(datetime.now())
     
     final_df = pd.DataFrame()
     final_df['id'] = df['id'].astype(int)
@@ -1012,12 +1012,22 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     final_df = pd.DataFrame()
     final_df['id'] = df['idv'].astype(int)
     final_df['id_tipo_documento'] = df['id_td']
-    final_df['fecha'] = pd.to_datetime(df['fch'], errors='coerce').fillna(datetime.now())
-    final_df['numero_serie'] = df['nfact'].astype(str).str.slice(0, 20).replace({'nan': None}, regex=True)
+    # Use 'mixed' format to handle ISO (YYYY-MM-DD) or Argentine (DD/MM/YYYY) without warnings
+    final_df['fecha'] = pd.to_datetime(df['fch'], format='mixed', errors='coerce').fillna(datetime.now())
+    # NFact represents the invoice number/series
+    final_df['numero_serie'] = df['nfact'].astype(str).str.slice(0, 20).replace({'nan': None, 'None': None}, regex=True)
     final_df['id_entidad_comercial'] = df['id_entidad_comercial_final']
+    final_df['observacion'] = df['obs'].astype(str).replace({'nan': None, 'None': None, '': None}, regex=True)
 
-    final_df['estado'] = 'CONFIRMADO'
+    # Determine status from CSV Paga/Anul columns
+    def determine_status(row):
+        if str(row.get('anul')) == '1': return 'ANULADO'
+        if str(row.get('paga')) == '1': return 'PAGADO'
+        return 'CONFIRMADO'
+    
+    final_df['estado'] = df.apply(determine_status, axis=1)
     final_df['total'] = pd.to_numeric(df['tventa'], errors='coerce').fillna(0)
+    final_df['sena'] = pd.to_numeric(df['sena'], errors='coerce').fillna(0)
     
     # Use accurate CSV columns if available
     if 'neto' in df.columns:
@@ -1035,16 +1045,23 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     else:
         final_df['iva_total'] = final_df['total'] - final_df['neto']
     
-    columns = ['id', 'id_tipo_documento', 'fecha', 'numero_serie', 'id_entidad_comercial', 'estado', 'total', 'neto', 'subtotal', 'iva_total']
+    if 'desc' in df.columns:
+        final_df['descuento_importe'] = pd.to_numeric(df['desc'], errors='coerce').fillna(0).abs()
+    else:
+        final_df['descuento_importe'] = 0
+    
+    final_df['descuento_porcentaje'] = 0
+    
+    columns = ['id', 'id_tipo_documento', 'fecha', 'numero_serie', 'id_entidad_comercial', 'estado', 'total', 'neto', 'subtotal', 'iva_total', 'sena', 'descuento_porcentaje', 'descuento_importe', 'observacion']
     
     imported = 0
     with conn.cursor() as cur:
         cur.execute("CREATE TEMP TABLE tmp_doc (LIKE app.documento INCLUDING DEFAULTS) ON COMMIT DROP")
         fast_bulk_insert(cur, final_df[columns], "tmp_doc", columns)
         cur.execute("""
-            INSERT INTO app.documento (id, id_tipo_documento, fecha, numero_serie, id_entidad_comercial, estado, total, neto, subtotal, iva_total)
+            INSERT INTO app.documento (id, id_tipo_documento, fecha, numero_serie, id_entidad_comercial, estado, total, neto, subtotal, iva_total, sena, descuento_porcentaje, descuento_importe, observacion)
             OVERRIDING SYSTEM VALUE
-            SELECT id, id_tipo_documento, fecha, numero_serie, id_entidad_comercial, estado, total, neto, subtotal, iva_total
+            SELECT id, id_tipo_documento, fecha, numero_serie, id_entidad_comercial, estado, total, neto, subtotal, iva_total, sena, descuento_porcentaje, descuento_importe, observacion
             FROM tmp_doc
             ON CONFLICT (id) DO NOTHING
         """)
@@ -1055,7 +1072,7 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
             logger.info(f"Generating payments for {imported} documents...")
             pay_df = pd.DataFrame()
             pay_df['id_documento'] = final_df['id']
-            pay_df['id_forma_pago'] = 1 # Efectivo
+            pay_df['id_forma_pago'] = 1 # Efectivo / Contado
             pay_df['fecha'] = final_df['fecha']
             pay_df['monto'] = final_df['total']
             pay_df['referencia'] = "Importacion Legacy"
@@ -1170,16 +1187,36 @@ def import_ventdet(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
         final_df['descripcion_historica'] = df['art'].fillna("Importado").str.slice(0, 255)
     else:
         final_df['descripcion_historica'] = "Importado"
+
+    # 2026-01-06: Add Lista (Price List) and NtaPie (Observation) mapping
+    if 'lista' in df.columns:
+        final_df['id_lista_precio'] = pd.to_numeric(df['lista'], errors='coerce').astype('Int64')
+    else:
+        final_df['id_lista_precio'] = None
+        
+    if 'ntapie' in df.columns:
+        final_df['observacion'] = df['ntapie'].fillna("").astype(str).str.slice(0, 500)
+    else:
+        final_df['observacion'] = None
     
-    cols = ['id_documento', 'nro_linea', 'id_articulo', 'cantidad', 'precio_unitario', 'total_linea', 'descripcion_historica']
+    cols = ['id_documento', 'nro_linea', 'id_articulo', 'cantidad', 'precio_unitario', 'total_linea', 'descripcion_historica', 'id_lista_precio', 'observacion']
     
     imported = 0
     with conn.cursor() as cur:
+        # Verify Price Lists exist before bulk insert to avoid FK violations
+        if 'id_lista_precio' in final_df.columns:
+            valid_lists = final_df['id_lista_precio'].dropna().unique()
+            if len(valid_lists) > 0:
+                cur.execute("SELECT id FROM ref.lista_precio")
+                existing_lps = set(row[0] for row in cur.fetchall())
+                # Replace invalid LPs with NULL
+                final_df.loc[~final_df['id_lista_precio'].isin(existing_lps), 'id_lista_precio'] = None
+
         cur.execute("CREATE TEMP TABLE tmp_det (LIKE app.documento_detalle INCLUDING DEFAULTS) ON COMMIT DROP")
         fast_bulk_insert(cur, final_df[cols], "tmp_det", cols)
         cur.execute("""
-            INSERT INTO app.documento_detalle (id_documento, nro_linea, id_articulo, cantidad, precio_unitario, total_linea, descripcion_historica)
-            SELECT id_documento, nro_linea, id_articulo, cantidad, precio_unitario, total_linea, descripcion_historica
+            INSERT INTO app.documento_detalle (id_documento, nro_linea, id_articulo, cantidad, precio_unitario, total_linea, descripcion_historica, id_lista_precio, observacion)
+            SELECT id_documento, nro_linea, id_articulo, cantidad, precio_unitario, total_linea, descripcion_historica, id_lista_precio, observacion
             FROM tmp_det
             ON CONFLICT (id_documento, nro_linea) DO NOTHING
         """)

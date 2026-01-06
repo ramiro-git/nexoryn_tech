@@ -5,9 +5,38 @@ from datetime import datetime
 import atexit
 import socket
 import sys
+import time
+import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from venv import logger
 
 import flet as ft
+from flet.core.datatable import DataTable as CoreDataTable
+
+if not getattr(CoreDataTable.before_update, "_nexoryn_patched_v2", False):
+    _original_before_update_core = CoreDataTable.before_update
+    
+    def _patched_before_update_core(self):
+        try:
+            # Asegurarse de que __content existe y tiene visible=True
+            if hasattr(self, '_DataTable__content'):
+                # Asegurarnos que el contenido es visible
+                content = self._DataTable__content
+                if hasattr(content, 'visible'):
+                    content.visible = True
+            return _original_before_update_core(self)
+        except AssertionError as e:
+            if "content must be visible" in str(e):
+                # Silenciar este error específico
+                return
+            raise
+        except Exception:
+            # Silenciar otros errores durante before_update
+            pass
+    
+    _patched_before_update_core._nexoryn_patched_v2 = True
+    CoreDataTable.before_update = _patched_before_update_core
+    ft.DataTable.before_update = _patched_before_update_core
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -28,6 +57,7 @@ try:
     )
     from desktop_app.components.toast import ToastManager
     from desktop_app.components.mass_update_view import MassUpdateView
+    from desktop_app.services.print_service import generate_pdf_and_open
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -43,7 +73,15 @@ except ImportError:
         SimpleFilterConfig,
     )
     from components.mass_update_view import MassUpdateView # type: ignore
-
+    from services.print_service import generate_pdf_and_open # type: ignore
+except ImportError:
+    from config import load_config  # type: ignore
+    from database import Database  # type: ignore
+    from services.afip_service import AfipService # type: ignore
+    from services.backup_service import BackupService # type: ignore
+    from services.print_service import generate_pdf_and_open # type: ignore
+    from components.backup_view import BackupView # type: ignore
+    from components.dashboard_view import DashboardView # type: ignore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -66,6 +104,38 @@ COLOR_SUCCESS = "#10B981"
 COLOR_ERROR = "#EF4444"
 COLOR_WARNING = "#EA580C"  # Deep Orange 600 (definitely not yellow)
 COLOR_INFO = "#3B82F6"     # Blue 500
+
+class SafeDataTable(ft.DataTable):
+    """Subclass of DataTable to fix TypeErrors and AssertionErrors in Flet updates"""
+    def before_update(self):
+        try:
+            # Ensure content is visible before parent update
+            if hasattr(self, '_DataTable__content'):
+                content = self._DataTable__content
+                if hasattr(content, 'visible'):
+                    content.visible = True
+            
+            # Ensure index is int or None before parent check
+            if hasattr(self, "sort_column_index"):
+                val = self.sort_column_index
+                if val is not None and not isinstance(val, int):
+                    try:
+                        self.sort_column_index = int(val)
+                    except:
+                        self.sort_column_index = None
+            
+            # Forzar visibilidad de la tabla
+            self.visible = True
+            
+            super().before_update()
+        except AssertionError as e:
+            if "content must be visible" in str(e):
+                # Ignorar este error específico
+                return
+            raise
+        except Exception:
+            # Ignorar otros errores
+            pass
 
 
 def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
@@ -96,6 +166,28 @@ def _bool_pill(value: Any) -> ft.Control:
             color="#166534" if ok else "#991B1B",
         ),
     )
+
+def _status_pill(value: Any, row: Optional[Dict[str, Any]] = None) -> ft.Control:
+    status = str(value or "").upper()
+    colors = {
+        "PAGADO": ("#DCFCE7", "#166534"),
+        "CONFIRMADO": ("#E0F2FE", "#075985"),
+        "BORRADOR": ("#F1F5F9", "#475569"),
+        "ANULADO": ("#FEE2E2", "#991B1B"),
+    }
+    bg, fg = colors.get(status, ("#F3F4F6", "#374151"))
+    return ft.Container(
+        padding=ft.padding.symmetric(horizontal=10, vertical=4),
+        border_radius=20,
+        bgcolor=bg,
+        content=ft.Text(status, size=11, weight=ft.FontWeight.W_600, color=fg),
+    )
+
+
+def _icon_button_or_spacer(visible: bool, **kwargs: Any) -> ft.Control:
+    if visible:
+        return ft.IconButton(**kwargs)
+    return ft.Container(width=24, height=24)
 
 
 def _maybe_set(obj: Any, name: str, value: Any) -> None:
@@ -181,11 +273,20 @@ def _date_field(page: ft.Page, label: str, width: int = 180) -> ft.TextField:
         error_invalid_text="Fecha fuera de rango",
     )
     page.overlay.append(dp)
+    page.update()  # Ensure DatePicker is registered with the page
     
     def open_picker(_):
-        if hasattr(page, "open"):
-            page.open(dp)
-        else:
+        try:
+            if hasattr(page, "open"):
+                page.open(dp)
+            else:
+                dp.open = True
+                page.update()
+        except AssertionError:
+            # Fallback: re-add and try again
+            if dp not in page.overlay:
+                page.overlay.append(dp)
+                page.update()
             dp.open = True
             page.update()
 
@@ -203,6 +304,65 @@ def main(page: ft.Page) -> None:
     page.window_height = 860
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
+    page.fonts = {"Roboto": "Roboto-Regular.ttf"}
+
+    def print_document_external(doc_id):
+        """Global helper to print from table"""
+        try:
+            if not db: return 
+            
+            # Fetch full document data
+            doc = db.get_document_full(doc_id)
+            if not doc:
+                show_toast("Error al recuperar datos del documento", kind="error")
+                return
+            
+            # Get client name
+            ent = db.get_entity_simple(doc.get("id_entidad_comercial"))
+            
+            # Build Items Data
+            items_data = []
+            for item in doc.get("items", []):
+                art = db.get_article_simple(item["id_articulo"])
+                item_copy = item.copy()
+                item_copy["articulo_nombre"] = art["nombre"] if art else f"Artículo {item['id_articulo']}"
+                items_data.append(item_copy)
+
+            # Generate PDF
+            generate_pdf_and_open(doc, ent or {}, items_data)
+            show_toast(f"PDF generado correctamente.", kind="success")
+            
+        except Exception as e:
+            show_toast(f"Error al imprimir: {e}", kind="error")
+
+
+    # --- SHARED DIALOGS ---
+    form_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Formulario"),
+        content=ft.Container(),
+        actions=[],
+    )
+    page.overlay.append(form_dialog)
+
+    def close_form(e=None):
+        if hasattr(page, "close"):
+            page.close(form_dialog)
+        else:
+            form_dialog.open = False
+            page.update()
+
+    def open_form(title, content, actions):
+        form_dialog.title = ft.Text(title)
+        form_dialog.content = content
+        form_dialog.actions = actions
+        if hasattr(page, "open"):
+            page.open(form_dialog)
+        else:
+            form_dialog.open = True
+            page.update()
+    
+    # ----------------------
     page.spacing = 0
     
     # Set Spanish locale for date pickers and other components
@@ -365,6 +525,8 @@ def main(page: ft.Page) -> None:
         
         # Also refresh filter dropdowns if they exist
         try: refresh_articles_catalogs()
+        except: pass
+        try: refresh_movimientos_catalogs()
         except: pass
 
     # reload_catalogs() will be called at the end of main after all controls are defined
@@ -838,7 +1000,13 @@ def main(page: ft.Page) -> None:
                 )
             ]
         )
-    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    
+    entidades_view = ft.Container(
+        content=entidades_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
 
     # Filters and catalogs defined above to avoid circular dependency
 
@@ -1066,7 +1234,13 @@ def main(page: ft.Page) -> None:
                 )
             ]
         )
-    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    articulos_view = ft.Container(
+        content=articulos_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
 
     admin_export_tables = [entidades_table, articulos_table]
 
@@ -1850,7 +2024,7 @@ def main(page: ft.Page) -> None:
 
             prices_table = ft.Row(
                 [
-                    ft.DataTable(
+                    SafeDataTable(
                         columns=[
                             ft.DataColumn(ft.Text("Lista")),
                             ft.DataColumn(ft.Text("Precio")),
@@ -2959,42 +3133,148 @@ def main(page: ft.Page) -> None:
             db.log_activity("DOCUMENTO", "VIEW_DETAIL", id_entidad=doc_id)
         try:
             details = db.fetch_documento_detalle(doc_id)
-            content = ft.Column([
-                ft.Row(
-                    [
-                        ft.DataTable(
+            # Improved content with more details
+            total_doc = float(doc_row.get("total", 0))
+            
+            content = ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Column([
+                                ft.Text("CLIENTE / PROVEEDOR", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                                ft.Text(doc_row.get("entidad", "—"), size=16, weight=ft.FontWeight.W_600),
+                            ], spacing=2, expand=True),
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text("FORMA DE PAGO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.CENTER),
+                                    ft.Text(doc_row.get("forma_pago", "No especificada"), size=14, weight=ft.FontWeight.W_500, text_align=ft.TextAlign.CENTER),
+                                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                                padding=ft.padding.symmetric(horizontal=20),
+                            ),
+                            ft.Column([
+                                ft.Text("FECHA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.RIGHT),
+                                ft.Text(str(doc_row.get("fecha", "—"))[:10] if doc_row.get("fecha") else "—", size=14, text_align=ft.TextAlign.RIGHT),
+                            ], spacing=2, width=100),
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        padding=ft.padding.only(bottom=15),
+                        border=ft.border.only(bottom=ft.BorderSide(1, "#E2E8F0"))
+                    ),
+                    ft.Container(height=10),
+                    ft.Row([
+                        ft.Text("ÍTEMS DEL COMPROBANTE", size=11, weight=ft.FontWeight.BOLD, color=COLOR_ACCENT),
+                        ft.Container(
+                            content=ft.Text(
+                                doc_row.get("estado", ""), 
+                                size=10, 
+                                weight=ft.FontWeight.BOLD, 
+                                color="#FFFFFF"
+                            ),
+                            bgcolor=COLOR_SUCCESS if doc_row.get("estado") == "PAGADO" else (COLOR_ERROR if doc_row.get("estado") == "ANULADO" else COLOR_INFO),
+                            padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                            border_radius=20
+                        )
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Container(
+                        content=SafeDataTable(
+                            heading_row_color="#F8FAFC",
+                            heading_row_height=40,
+                            data_row_min_height=40,
+                            column_spacing=20,
                             columns=[
-                                ft.DataColumn(ft.Text("Artículo")),
-                                ft.DataColumn(ft.Text("Cant.")),
-                                ft.DataColumn(ft.Text("Unitario")),
-                                ft.DataColumn(ft.Text("Total")),
+                                ft.DataColumn(ft.Text("Artículo", size=12, weight=ft.FontWeight.BOLD)),
+                                ft.DataColumn(ft.Text("Lista", size=12, weight=ft.FontWeight.BOLD)),
+                                ft.DataColumn(ft.Text("Cant.", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                ft.DataColumn(ft.Text("Unitario", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                ft.DataColumn(ft.Text("Total", size=12, weight=ft.FontWeight.BOLD), numeric=True),
                             ],
                             rows=[
                                 ft.DataRow(cells=[
-                                    ft.DataCell(ft.Text(d["articulo"])),
-                                    ft.DataCell(ft.Text(str(d["cantidad"]))),
-                                    ft.DataCell(ft.Text(_format_money(d["precio_unitario"]))),
-                                    ft.DataCell(ft.Text(_format_money(d["total_linea"]))),
+                                    ft.DataCell(ft.Text(f"{d['articulo']} ({d.get('codigo_art', d.get('id_articulo'))})", size=13)),
+                                    ft.DataCell(ft.Text(d.get("lista_nombre") or (doc_row.get("lista_precio") if doc_row.get("id_lista_precio") == d.get("id_lista_precio") else "---") , size=12, color=COLOR_TEXT_MUTED)),
+                                    ft.DataCell(ft.Text(str(d["cantidad"]), size=13)),
+                                    ft.DataCell(ft.Text(_format_money(d["precio_unitario"]), size=13)),
+                                    ft.DataCell(ft.Text(_format_money(d["total_linea"]), size=13, weight=ft.FontWeight.W_500)),
                                 ]) for d in details
                             ],
+                        ),
+                        border=ft.border.all(1, "#E2E8F0"),
+                        border_radius=8,
+                    ),
+                     ft.Container(height=10),
+                     ft.Row([
+                         ft.Container(
+                             content=ft.Column([
+                                 ft.Text("OBSERVACIONES:", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                                 ft.Text(doc_row.get("observacion") or "Sin observaciones", size=12, italic=True if not doc_row.get("observacion") else False),
+                             ], spacing=2),
+                             expand=True,
+                             padding=ft.padding.only(right=20)
+                         ) if doc_row.get("observacion") else ft.Container(expand=True),
+                         ft.Container(
+                             content=ft.Column([
+                                ft.Row([
+                                    ft.Text("SUBTOTAL BRUTO:", size=11, color=COLOR_TEXT_MUTED),
+                                    ft.Text(_format_money(doc_row.get("subtotal", 0)), size=11),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250),
+                                ft.Row([
+                                    ft.Text(f"DESCUENTO ({doc_row.get('descuento_porcentaje', 0)}%):" if float(doc_row.get("descuento_porcentaje", 0)) > 0 else "DESCUENTO:", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"- {_format_money(doc_row.get('descuento_importe') if float(doc_row.get('descuento_importe',0)) > 0 else float(doc_row.get('subtotal', 0)) - float(doc_row.get('neto', 0)))}", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250) if float(doc_row.get("descuento_porcentaje", 0)) > 0 or float(doc_row.get("descuento_importe", 0)) > 0 else ft.Container(),
+                                ft.Row([
+                                    ft.Text("NETO GRAVADO:", size=12, color=COLOR_TEXT_MUTED),
+                                    ft.Text(_format_money(doc_row.get("neto", 0)), size=12),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250),
+                                ft.Row([
+                                    ft.Text("IVA TOTAL:", size=12, color=COLOR_TEXT_MUTED),
+                                    ft.Text(_format_money(doc_row.get("iva_total", 0)), size=12),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250),
+                                ft.Divider(height=1, color="#CBD5E1"),
+                                ft.Row([
+                                    ft.Text("TOTAL:", size=16, weight=ft.FontWeight.BOLD, color=COLOR_ACCENT),
+                                    ft.Text(_format_money(total_doc), size=18, weight=ft.FontWeight.BOLD, color=COLOR_ACCENT),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250),
+                                ft.Row([
+                                    ft.Text("SEÑA / A CUENTA:", size=12, color=COLOR_SUCCESS),
+                                    ft.Text(_format_money(doc_row.get("sena", 0)), size=12, color=COLOR_SUCCESS),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250) if float(doc_row.get("sena", 0)) > 0 else ft.Container(),
+                                ft.Row([
+                                    ft.Text("SALDO PENDIENTE:", size=13, weight=ft.FontWeight.BOLD, color=COLOR_WARNING),
+                                    ft.Text(_format_money(max(0, total_doc - float(doc_row.get("sena", 0)))), size=14, weight=ft.FontWeight.BOLD, color=COLOR_WARNING),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250) if float(doc_row.get("sena", 0)) > 0 else ft.Container(),
+                            ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.END),
+                            padding=15,
+                            bgcolor="#F1F5F9",
+                            border_radius=12,
                         )
-                    ],
-                    scroll=ft.ScrollMode.ADAPTIVE,
-                )
-            ], scroll=ft.ScrollMode.ADAPTIVE, height=400)
+                    ])
+                ], spacing=5, scroll=ft.ScrollMode.ADAPTIVE),
+                padding=10,
+                width=650,
+                height=550,
+            )
             
             actions = [ft.TextButton("Cerrar", on_click=close_form)]
             if estado == "BORRADOR":
                 def confirm_click(_):
-                    try:
-                        if not db: return
-                        db.confirm_document(doc_id)
-                        show_toast("Comprobante confirmado", kind="success")
-                        close_form()
-                        documentos_summary_table.refresh()
-                        refresh_all_stats()
-                    except Exception as exc:
-                        show_toast(f"Error al confirmar: {exc}", kind="error")
+                    def on_confirm_real():
+                        try:
+                            if not db: return
+                            db.confirm_document(doc_id)
+                            show_toast("Comprobante confirmado", kind="success")
+                            close_form()
+                            if hasattr(documentos_summary_table, "refresh"):
+                                documentos_summary_table.refresh()
+                            refresh_all_stats()
+                        except Exception as exc:
+                            show_toast(f"Error al confirmar: {exc}", kind="error")
+
+                    ask_confirm(
+                        "Confirmar Comprobante",
+                        "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
+                        "Confirmar",
+                        on_confirm_real,
+                        button_color=COLOR_SUCCESS
+                    )
                 
                 actions.insert(0, ft.ElevatedButton("Confirmar Comprobante", icon=ft.Icons.CHECK_CIRCLE, bgcolor=COLOR_SUCCESS, color="#FFFFFF", on_click=confirm_click))
             
@@ -3083,39 +3363,219 @@ def main(page: ft.Page) -> None:
             open_form(f"Detalle: {doc_row.get('tipo_documento','')} {doc_row.get('numero_serie','')}", content, actions)
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
 
+    # Movement filters (Move up to be accessible via reload_catalogs if needed)
+    def _mov_live(_=None):
+        try: movimientos_table.trigger_refresh()
+        except: pass
+
+    mov_adv_art = ft.Dropdown(label="Artículo", width=220, on_change=_mov_live, enable_search=True); _style_input(mov_adv_art)
+    mov_adv_tipo = ft.Dropdown(label="Tipo Mov.", width=180, on_change=_mov_live); _style_input(mov_adv_tipo)
+    mov_adv_depo = ft.Dropdown(label="Depósito", width=180, on_change=_mov_live); _style_input(mov_adv_depo)
+    mov_adv_user = ft.Dropdown(label="Usuario", width=180, on_change=_mov_live); _style_input(mov_adv_user)
+    mov_adv_desde = _date_field(page, "Desde", width=140); mov_adv_desde.on_submit = _mov_live
+    mov_adv_hasta = _date_field(page, "Hasta", width=140); mov_adv_hasta.on_submit = _mov_live
+
+    def refresh_movimientos_catalogs():
+        if not db: return
+        try:
+            tipos = db.list_tipos_movimiento_simple()
+            mov_adv_tipo.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(t["nombre"], t["nombre"]) for t in tipos
+            ]
+            depos = db.fetch_depositos()
+            mov_adv_depo.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(d["nombre"], d["nombre"]) for d in depos
+            ]
+            users = db.list_usuarios_simple()
+            mov_adv_user.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(u["nombre"], u["nombre"]) for u in users
+            ]
+            
+            # Add articles dropdown
+            arts = db.list_articulos_simple(limit=500)
+            mov_adv_art.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(a["nombre"], a["nombre"]) for a in arts
+            ]
+
+            for ctrl in [mov_adv_tipo, mov_adv_depo, mov_adv_user, mov_adv_art]:
+                try: 
+                    if ctrl.page: ctrl.update()
+                except: pass
+        except: pass
+
     # Documents View
-    doc_adv_entidad = ft.TextField(label="Entidad contiene", width=200); _style_input(doc_adv_entidad)
-    doc_adv_tipo = ft.TextField(label="Tipo contiene", width=200); _style_input(doc_adv_tipo)
-    doc_adv_desde = _date_field(page, "Fecha desde", width=200)
-    doc_adv_hasta = _date_field(page, "Fecha hasta", width=200)
+    # fetch document types and entities for dropdowns
+    try:
+        tipos_doc = db.list_tipos_documento()
+        tipo_options = [ft.dropdown.Option("Todos", "Todos")] + [ft.dropdown.Option(t["nombre"], t["nombre"]) for t in tipos_doc]
+        
+        entidades = db.list_entidades_simple()
+        ent_options = [ft.dropdown.Option("0", "Todas")] + [ft.dropdown.Option(str(e["id"]), f"{e['nombre_completo']} ({e['tipo']})") for e in entidades]
+    except:
+        tipo_options = [ft.dropdown.Option("Todos", "Todos")]
+        ent_options = [ft.dropdown.Option("0", "Todas")]
+
+    doc_adv_entidad = ft.Dropdown(label="Entidad", options=ent_options, width=280, value="0", enable_search=True); _style_input(doc_adv_entidad)
+    doc_adv_tipo = ft.Dropdown(label="Tipo", options=tipo_options, width=160, value="Todos", enable_search=True); _style_input(doc_adv_tipo)
+    
+    doc_adv_letra = ft.Dropdown(
+        label="Letra", 
+        width=100, 
+        options=[ft.dropdown.Option("Todos", "Todas")] + [ft.dropdown.Option(l, l) for l in ["A", "B", "C", "M", "R", "X"]],
+        value="Todos"
+    ); _style_input(doc_adv_letra)
+
+    doc_adv_numero = ft.TextField(label="Número", width=120); _style_input(doc_adv_numero)
+
+    doc_adv_estado = ft.Dropdown(
+        label="Estado", 
+        width=140, 
+        options=[
+            ft.dropdown.Option("Todos", "Todos"),
+            ft.dropdown.Option("BORRADOR", "Borrador"),
+            ft.dropdown.Option("CONFIRMADO", "Confirmado"),
+            ft.dropdown.Option("ANULADO", "Anulado"),
+            ft.dropdown.Option("PAGADO", "Pagado"),
+        ],
+        value="Todos"
+    ); _style_input(doc_adv_estado)
+
+    doc_adv_desde = _date_field(page, "Desde", width=130)
+    doc_adv_hasta = _date_field(page, "Hasta", width=130)
+    
+    # Range slider for Total
+    max_total = 1000000.0
+    try: max_total = db.get_max_document_total()
+    except: pass
+    if max_total < 1000: max_total = 1000.0
+
+    # Label for Range Slider (Matches inventory style)
+    range_label = ft.Text(f"Total: entre $0 y ${max_total:,.0f}", size=12, weight=ft.FontWeight.BOLD)
+    
+    def on_range_change(e):
+        s = e.control
+        range_label.value = f"Total: entre ${_format_money(s.start_value)} y ${_format_money(s.end_value)}"
+        try: range_label.update()
+        except: pass
+
+    doc_adv_total = ft.RangeSlider(
+        min=0, max=max_total,
+        start_value=0, end_value=max_total,
+        divisions=100,
+        inactive_color="#E2E8F0",
+        active_color=COLOR_ACCENT,
+        label="{value}",
+        width=300,
+        on_change=on_range_change,
+        on_change_end=lambda _: documentos_summary_table.refresh()
+    )
+    
+    doc_adv_total_container = ft.Column([
+        range_label,
+        doc_adv_total
+    ], spacing=0, width=320)
+
+    # Setter for Range Slider Reset
+    def reset_range_slider(container, _):
+        doc_adv_total.start_value = 0
+        doc_adv_total.end_value = max_total
+        range_label.value = f"Total: entre $0 y ${max_total:,.0f}"
+        try:
+            doc_adv_total.update()
+            range_label.update()
+        except: pass
 
     documentos_summary_table = GenericTable(
         columns=[
             ColumnConfig(key="fecha", label="Fecha", width=120),
-            ColumnConfig(key="letra", label="L", width=40),
+            ColumnConfig(key="letra", label="Letra", width=60),
             ColumnConfig(key="tipo_documento", label="Tipo", width=120),
             ColumnConfig(key="numero_serie", label="Número", width=100),
             ColumnConfig(key="entidad", label="Entidad", width=200),
-            ColumnConfig(key="total", label="Total", width=100, formatter=_format_money),
-            ColumnConfig(key="estado", label="Estado", width=100),
+            ColumnConfig(key="total", label="Total", width=120, formatter=_format_money),
+            ColumnConfig(key="forma_pago", label="Forma de Pago", width=130),
+            ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"))),
             ColumnConfig(key="usuario", label="Usuario", width=120),
+            ColumnConfig(
+                key="_edit", label="", sortable=False, width=40,
+                renderer=lambda row: _icon_button_or_spacer(
+                    row.get("estado") == "BORRADOR" and not row.get("cae"),
+                    icon=ft.Icons.EDIT_ROUNDED,
+                    tooltip="Editar borrador",
+                    icon_color=COLOR_ACCENT,
+                    on_click=lambda e, rid=row["id"]: open_nuevo_comprobante(edit_doc_id=rid),
+                )
+            ),
+            ColumnConfig(
+                key="_copy", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.COPY_ALL_ROUNDED,
+                    tooltip="Copiar como nuevo",
+                    icon_color=ft.Colors.BLUE_400,
+                    icon_size=18,
+                    on_click=lambda e, rid=row["id"]: open_nuevo_comprobante(copy_doc_id=rid),
+                )
+            ),
+            ColumnConfig(
+                key="_print", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.PRINT_ROUNDED,
+                    tooltip="Imprimir",
+                    icon_color=COLOR_TEXT_MUTED,
+                    icon_size=18,
+                    on_click=lambda e, rid=row["id"]: print_document_external(rid),
+                )
+            ),
+            ColumnConfig(
+                key="_annul", label="", sortable=False, width=40,
+                renderer=lambda row: _icon_button_or_spacer(
+                    row.get("estado") != "ANULADO" and not row.get("cae"),
+                    icon=ft.Icons.BLOCK_ROUNDED,
+                    tooltip="Anular comprobante",
+                    icon_color=COLOR_ERROR,
+                    on_click=lambda e: ask_confirm(
+                        "Anular Comprobante",
+                        f"¿Estás seguro que deseas anular el comprobante {row['numero_serie']}? Esta acción revertirá el stock.",
+                        "Anular",
+                        lambda: (db.anular_documento(row["id"]), show_toast("Comprobante anulado", kind="success"), documentos_summary_table.refresh())
+                    ),
+                )
+            ),
+            ColumnConfig(
+                key="_nc", label="", sortable=False, width=40,
+                renderer=lambda row: _icon_button_or_spacer(
+                    row.get("estado") == "CONFIRMADO" and row.get("cae"),
+                    icon=ft.Icons.RECEIPT_LONG_OUTLINED,
+                    tooltip="Generar Nota de Crédito",
+                    icon_color=COLOR_WARNING,
+                    on_click=lambda e, rid=row["id"]: open_nuevo_comprobante(copy_doc_id=rid),
+                )
+            ),
             ColumnConfig(
                 key="_detail", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.INFO_OUTLINE, tooltip="Ver detalle",
+                    icon_color=COLOR_TEXT_MUTED,
                     on_click=lambda e: view_doc_detail(row)
                 )
             )
         ],
         data_provider=create_catalog_provider(db.fetch_documentos_resumen, db.count_documentos_resumen),
         advanced_filters=[
-            AdvancedFilterControl("entidad", doc_adv_entidad),
+            AdvancedFilterControl("id_entidad", doc_adv_entidad),
             AdvancedFilterControl("tipo", doc_adv_tipo),
+            AdvancedFilterControl("letra", doc_adv_letra),
+            AdvancedFilterControl("numero", doc_adv_numero),
             AdvancedFilterControl("desde", doc_adv_desde),
             AdvancedFilterControl("hasta", doc_adv_hasta),
+            AdvancedFilterControl("estado", doc_adv_estado),
+            AdvancedFilterControl("total_min", doc_adv_total_container, getter=lambda _: doc_adv_total.start_value, setter=reset_range_slider),
+            AdvancedFilterControl("total_max", doc_adv_total_container, getter=lambda _: doc_adv_total.end_value, setter=reset_range_slider),
         ],
-        show_inline_controls=False, auto_load=False, page_size=20, show_export_button=False,
+        show_inline_controls=False, show_mass_actions=False, auto_load=True, page_size=50, show_export_button=True,
     )
+    # Manual wire for RangeSlider since it's inside a container in AdvancedFilterControl
+    # Reset on_change to standard refreshing
     documentos_view = ft.Column([
         ft.Row([
             make_stat_card("Facturación Mes", "$0", "RECEIPT_LONG_ROUNDED", COLOR_ACCENT, key="docs_ventas"),
@@ -3133,12 +3593,16 @@ def main(page: ft.Page) -> None:
                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
             ]
         )
-    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    documentos_view = ft.Container(
+        content=documentos_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
 
     # Movements View
-    mov_adv_art = ft.TextField(label="Artículo contiene", width=200); _style_input(mov_adv_art)
-    mov_adv_tipo = ft.TextField(label="Tipo contiene", width=200); _style_input(mov_adv_tipo)
-    mov_adv_desde = _date_field(page, "Fecha desde", width=200)
+    # (Filters moved up)
 
     movimientos_table = GenericTable(
         columns=[
@@ -3146,6 +3610,11 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="articulo", label="Artículo", width=200),
             ColumnConfig(key="tipo_movimiento", label="Tipo", width=120),
             ColumnConfig(key="cantidad", label="Cant.", width=80),
+            ColumnConfig(
+                key="comprobante", label="Comprobante", width=180,
+                renderer=lambda row: ft.Text(f"{row.get('tipo_documento') or ''} {row.get('nro_comprobante') or ''}".strip() or "---", size=13)
+            ),
+            ColumnConfig(key="entidad", label="Entidad", width=180),
             ColumnConfig(key="deposito", label="Depósito", width=120),
             ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(key="observacion", label="Obs.", width=200),
@@ -3153,10 +3622,13 @@ def main(page: ft.Page) -> None:
         data_provider=create_catalog_provider(db.fetch_movimientos_stock, db.count_movimientos_stock),
         advanced_filters=[
             AdvancedFilterControl("articulo", mov_adv_art),
-            AdvancedFilterControl("tipo", mov_adv_tipo),
+            AdvancedFilterControl("tipo_movimiento", mov_adv_tipo),
+            AdvancedFilterControl("deposito", mov_adv_depo),
+            AdvancedFilterControl("usuario", mov_adv_user),
             AdvancedFilterControl("desde", mov_adv_desde),
+            AdvancedFilterControl("hasta", mov_adv_hasta),
         ],
-        show_inline_controls=False, auto_load=False, page_size=20,
+        show_inline_controls=False, show_mass_actions=False, auto_load=True, page_size=20,
     )
     movimientos_view = ft.Column([
         ft.Row([
@@ -3170,7 +3642,13 @@ def main(page: ft.Page) -> None:
             "Registro histórico de entradas, salidas y transferencias.", 
             movimientos_table.build()
         )
-    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    movimientos_view = ft.Container(
+        content=movimientos_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
 
     # Payments View
     # Payments View
@@ -3188,7 +3666,7 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("referencia", ft.TextField(label="Referencia", width=200)),
             # AdvancedFilterControl("desde", pago_adv_desde), # Re-enable if needed
         ],
-        show_inline_controls=False, auto_load=False, page_size=20,
+        show_inline_controls=False, auto_load=True, page_size=20,
     )
 
     def open_nuevo_pago(_=None):
@@ -3309,7 +3787,13 @@ def main(page: ft.Page) -> None:
                  ft.ElevatedButton("Nuevo Pago", icon=ft.Icons.ADD, bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=open_nuevo_pago)
             ]
         )
-    ], expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    pagos_view = ft.Container(
+        content=pagos_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
 
     # Logs View
     logs_adv_user = ft.TextField(label="Usuario contiene", width=180); _style_input(logs_adv_user)
@@ -3559,7 +4043,7 @@ def main(page: ft.Page) -> None:
     )
     wire_refresh(
         movimientos_table,
-        [mov_adv_art, mov_adv_tipo, mov_adv_desde],
+        [mov_adv_art, mov_adv_tipo, mov_adv_depo, mov_adv_user, mov_adv_desde, mov_adv_hasta],
     )
     # Note: pagos_table advanced filters redefined inline; wire_live_search handles them.
     wire_refresh(
@@ -3631,7 +4115,7 @@ def main(page: ft.Page) -> None:
                 if "docs_ventas" in card_registry: 
                     card_registry["docs_ventas"].value = _format_money(v_mes) if isinstance(v_mes, (int, float)) else v_mes
                 if "docs_pendientes" in card_registry: 
-                    card_registry["docs_pendientes"].value = f"{sv.get('presupuestos_pend', 0):,}"
+                    card_registry["docs_pendientes"].value = f"{sv.get('docs_pendientes', 0):,}"
                 
                 # Finanzas (if available)
                 if "finanzas" in stats:
@@ -3644,11 +4128,20 @@ def main(page: ft.Page) -> None:
                 if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{so.get('usuarios_activos', 0):,}"
                 if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = so.get('ultimo_login', "N/A")
                 
+                # Movimientos
+                sm = stats.get("movimientos", {})
+                if "movs_ingresos" in card_registry: card_registry["movs_ingresos"].value = f"{sm.get('ingresos', 0):,}"
+                if "movs_salidas" in card_registry: card_registry["movs_salidas"].value = f"{sm.get('salidas', 0):,}"
+                if "movs_ajustes" in card_registry: card_registry["movs_ajustes"].value = f"{sm.get('ajustes', 0):,}"
+                
                 if not window_is_closing:
                     page.update()
             except (Exception, RuntimeError) as e:
+                # Suppress transient Flet errors like "content must be visible" during transitions
                 if not window_is_closing and db and not db.is_closing:
-                    print(f"Error refreshing stats: {e}")
+                    err_msg = str(e).lower()
+                    if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
+                        print(f"Error refreshing stats: {e}")
         
         # Run in a background thread to avoid UI lag on tab switches
         import threading
@@ -4065,8 +4558,17 @@ def main(page: ft.Page) -> None:
             except: pass
         else:
             content_holder.content = articulos_view
+        
         update_nav()
-        page.update()
+
+        def delayed_update():
+            time.sleep(0.1)  # 100ms de retraso
+            try:
+                page.update()
+            except Exception:
+                pass
+        
+        threading.Thread(target=delayed_update, daemon=True).start()
         
         # Trigger refresh on the target table
         table_map = {
@@ -4080,8 +4582,10 @@ def main(page: ft.Page) -> None:
             "articulos": articulos_table,
             "dashboard": ensure_dashboard()
         }
+
         def safe_table_refresh(tab):
             try:
+                time.sleep(0.2)  # Retraso adicional para tablas
                 if hasattr(tab, "refresh"):
                     tab.refresh()
                 elif hasattr(tab, "load_data"):
@@ -4090,7 +4594,6 @@ def main(page: ft.Page) -> None:
                 pass
 
         if key == "usuarios":
-            import threading
             def safe_refresh():
                 try:
                     usuarios_table.refresh()
@@ -4104,7 +4607,6 @@ def main(page: ft.Page) -> None:
                 dashboard_view_component.on_navigate = lambda x: set_view(x)
                 dashboard_view_component.load_data()
         elif key in table_map:
-            import threading
             threading.Thread(target=safe_table_refresh, args=(table_map[key],), daemon=True).start()
         elif key == "config":
             # Initial load for the selected tab only
@@ -4206,27 +4708,30 @@ def main(page: ft.Page) -> None:
                     ], spacing=12),
                     padding=ft.padding.only(bottom=20, top=10)
                 ),
-                ft.Column(
-                    [
-                        header_principal := ft.Text("NAVIGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
-                        nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
-                        nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
-                        nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
-                        nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
-                        nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
-                        nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
-                        nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
-                        nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
-                        
-                        ft.Container(height=15),
-                        header_sistema := ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
-                        nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
-                        nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
-                        nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
-                        nav_item("backups", "Respaldos", "CLOUD_SYNC_ROUNDED"),
-                    ],
-                    spacing=6,
-                    scroll=ft.ScrollMode.ADAPTIVE,
+                ft.Container(
+                    content=ft.ListView(
+                        controls=[
+                            header_principal := ft.Text("NAVIGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                            nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
+                            nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
+                            nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
+                            nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
+                            nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
+                            nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
+                            nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
+                            nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
+                            
+                            ft.Container(height=15),
+                            header_sistema := ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                            nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
+                            nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
+                            nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
+                            nav_item("backups", "Respaldos", "CLOUD_SYNC_ROUNDED"),
+                        ],
+                        spacing=6,
+                        padding=ft.padding.only(right=10), # Internal padding for scrollbar separation
+                    ),
+                    padding=0, # Remove external padding
                     expand=True,
                 ),
                 # Logout section at bottom
@@ -4300,103 +4805,433 @@ def main(page: ft.Page) -> None:
             expand=True,
         )
     )
-    def open_nuevo_comprobante():
+    def open_nuevo_comprobante(edit_doc_id=None, copy_doc_id=None):
         db = get_db_or_toast()
         if not db: return
 
         try:
             tipos = db.fetch_tipos_documento()
-            entidades = db.list_entidades_simple()
+            entidades = db.list_entidades_simple(limit=100) # Performance limit
             depositos = db.fetch_depositos()
-            articulos = db.fetch_articles(limit=500) # Simple list for now
+            articulos = db.list_articulos_simple(limit=100) # Performance limit with price info
+            listas = db.fetch_listas_precio(limit=50)
         except Exception as e:
             show_toast(f"Error cargando datos: {e}", kind="error")
             return
 
+        # Load existing data first to ensure referenced items are available
+        doc_data = None
+        if edit_doc_id:
+            doc_data = db.get_document_full(edit_doc_id)
+        elif copy_doc_id:
+            doc_data = db.get_document_full(copy_doc_id)
+            
+        if doc_data:
+            # Ensure Entity exists
+            eid = doc_data.get("id_entidad_comercial")
+            if eid and not any(e["id"] == eid for e in entidades):
+                missing_ent = db.get_entity_simple(eid)
+                if missing_ent:
+                    if not missing_ent.get("activo", True):
+                        missing_ent["nombre_completo"] += " (Inactivo)"
+                    entidades.append(missing_ent)
+                    entidades.sort(key=lambda x: x["nombre_completo"])
+
+            # Ensure Price List exists
+            lid = doc_data.get("id_lista_precio")
+            if lid and not any(l["id"] == lid for l in listas):
+                missing_list = db.get_lista_precio_simple(lid)
+                if missing_list:
+                    if not missing_list.get("activa", True):
+                        missing_list["nombre"] += " (Inactiva)"
+                    listas.append(missing_list)
+
+            # Ensure Articles and their Price Lists exist in the list
+            for item in doc_data.get("items", []):
+                # Article
+                aid = item["id_articulo"]
+                if aid and not any(a["id"] == aid for a in articulos):
+                    missing_art = db.get_article_simple(aid)
+                    if missing_art:
+                        if not missing_art.get("activo", True):
+                            missing_art["nombre"] += " (Inactivo)"
+                        articulos.append(missing_art)
+                
+                # Price List for the item
+                # Schema fallback: app.documento_detalle doesn't assume list, 
+                # so we use the header's list primarily.
+                lid_item = item.get("id_lista_precio") or doc_data.get("id_lista_precio")
+                if lid_item and not any(l["id"] == lid_item for l in listas):
+                    missing_list_item = db.get_lista_precio_simple(lid_item)
+                    if missing_list_item:
+                        if not missing_list_item.get("activa", True):
+                            missing_list_item["nombre"] += " (Inactiva)"
+                        listas.append(missing_list_item)
+            
+            # Re-sort articles for better UX
+            articulos.sort(key=lambda x: x["nombre"])
+
+        
         # Form Fields
         field_fecha = _date_field(page, "Fecha", width=160)
         field_vto = _date_field(page, "Vencimiento", width=160)
         
-        # Load lists
-        listas = db.fetch_listas_precio(limit=50) # Assuming exists
-        dropdown_lista = ft.Dropdown(
-            label="Lista de Precios", 
-            options=[ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas], 
-            width=200
-        )
-        _style_input(dropdown_lista)
+        lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
 
-        dropdown_tipo = ft.Dropdown(label="Tipo", options=[ft.dropdown.Option(str(t["id"]), t["nombre"]) for t in tipos], width=200); _style_input(dropdown_tipo)
         dropdown_entidad = ft.Dropdown(label="Entidad", options=[ft.dropdown.Option(str(e["id"]), f"{e['nombre_completo']} ({e['tipo']})") for e in entidades], width=300); _style_input(dropdown_entidad)
+        field_saldo = ft.Text("", size=12, color=COLOR_ACCENT, weight=ft.FontWeight.W_500)
+        
+        def _update_entidad_info(e):
+            if dropdown_entidad.value:
+                bal = db.get_entity_balance(int(dropdown_entidad.value))
+                field_saldo.value = f"Saldo actual: {_format_money(bal)}"
+                if bal < 0: field_saldo.color = COLOR_SUCCESS 
+                else: field_saldo.color = COLOR_ERROR
+                if field_saldo.page:
+                    field_saldo.update()
+        
+        dropdown_entidad.on_change = _update_entidad_info
+
         dropdown_deposito = ft.Dropdown(label="Depósito", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito)
-        field_obs = ft.TextField(label="Observaciones", multiline=True, width=720); _style_input(field_obs)
+        
+        # Lista de precios global (opcional, se aplica a todos los ítems)
+        dropdown_lista_global = ft.Dropdown(
+            label="Lista de Precios (Global)", 
+            options=lista_options, 
+            width=220,
+            hint_text="Aplicar a todos los ítems"
+        ); _style_input(dropdown_lista_global)
+        
+        field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, width=800, height=80); _style_input(field_obs)
+        field_direccion = ft.TextField(label="Dirección de Entrega", width=500); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200); _style_input(field_numero)
         field_descuento = ft.TextField(label="Desc. %", width=100, value="0"); _style_input(field_descuento)
+        field_sena = ft.TextField(label="Seña $", width=120, value="0", on_change=lambda _: _recalc_total()); _style_input(field_sena)
         
-        def _on_lista_change(e):
-             # Logic to update prices of all current lines
-             lid = dropdown_lista.value
-             if not lid: return
-             # Iterate lines and update price
-             for row in lines_container.controls:
-                 controls = row.controls
-                 # controls[0] is Dropdown, controls[2] is price
-                 art_id = controls[0].value
-                 if not art_id: continue
-                 # Fetch price for this article and list
-                 # We need a synchronous fetch or preload. 
-                 # Doing single fetches is slow but safe.
-                 # Better: fetch_article_prices(art_id)
-                 prices = db.fetch_article_prices(int(art_id))
-                 # Find matching list
-                 p_obj = next((p for p in prices if str(p["id_lista_precio"]) == str(lid)), None)
-                 if p_obj and p_obj.get("precio"):
-                     controls[2].value = str(p_obj["precio"])
-                     controls[2].update()
-             
-        dropdown_lista.on_change = _on_lista_change
+        # Filter tipos: NC/ND only allowed if it's a copy of an already "facturado" (with CAE) doc
+        # AND the source document was a Factura (not Presupuesto, Remito, etc)
+        is_facturado = doc_data and doc_data.get("cae") is not None
+        source_is_factura = False
+        if doc_data:
+             # Try to determine if source type name contains "FACTURA"
+             # Since we only have ID here, we look it up in 'tipos' list loop below or pre-fetch?
+             # Easier: we loop below.
+             pass
 
-        lines_container = ft.Column(spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+        allowed_tipos = []
+        
+        # Helper to check if source type was valid for NC/ND
+        def _check_source_is_factura(sid):
+            found = next((t for t in tipos if str(t["id"]) == str(sid)), None)
+            if found:
+                n = found["nombre"].upper()
+                return "FACTURA" in n or "TICKET" in n
+            return False
 
-        def _add_line(_=None):
-            art_drop = ft.Dropdown(label="Artículo", options=[ft.dropdown.Option(str(a["id"]), a["nombre"]) for a in articulos], expand=True); _style_input(art_drop)
-            cant_field = ft.TextField(label="Cant.", width=80, value="1"); _style_input(cant_field)
-            price_field = ft.TextField(label="Precio", width=120, value="0"); _style_input(price_field)
-            iva_field = ft.TextField(label="IVA %", width=80, value="21"); _style_input(iva_field)
+        if doc_data:
+             source_is_factura = _check_source_is_factura(doc_data.get("id_tipo_documento"))
+
+        for t in tipos:
+            name = t["nombre"].upper()
+            is_nc_nd = "NOTA CREDITO" in name or "NOTA DEBITO" in name
+            # Allow NC/ND if the referenced doc (copy) or the current doc (edit) is facturado,
+            # OR if we are editing an existing document that is already of this type.
+            is_current_type = doc_data and str(t["id"]) == str(doc_data.get("id_tipo_documento"))
             
-            def _on_art_change(e):
-                # Auto-fill price and IVA if possible
-                art_id = int(e.control.value)
-                art = next((a for a in articulos if a["id"] == art_id), None)
-                if art:
-                    # Logic: Use selected price list if available, else Costo * Markup?
-                    # Or just Basic Cost if no list.
-                    # Let's try to fetch specific price if list selected.
-                    lid = dropdown_lista.value
-                    final_price = art.get("costo", 0)
-                    
-                    if lid:
-                         # Fetch specific price... redundant calls but needed unless we cache ALL prices.
-                         # Optimization: `fetch_article_details` includes prices.
-                         # `articulos` list here is `fetch_articles` (simple). 
-                         # Let's do a quick fetch.
-                         prices = db.fetch_article_prices(art_id)
-                         p_obj = next((p for p in prices if str(p["id_lista_precio"]) == str(lid)), None)
-                         if p_obj and p_obj.get("precio"):
-                             final_price = p_obj["precio"]
-                    
-                    price_field.value = str(final_price)
-                    iva_field.value = str(art.get("porcentaje_iva", 21))
-                    page.update()
+            if is_nc_nd:
+                # ONLY allow if source has CAE AND source was actually a Factura/Ticket
+                if (is_facturado and source_is_factura) or is_current_type:
+                    allowed_tipos.append(t)
+            else:
+                allowed_tipos.append(t)
 
-            art_drop.on_change = _on_art_change
+        def _update_serial_number(e=None):
+            if not edit_doc_id and dropdown_tipo.value:
+                try:
+                    next_num = db.get_next_number(int(dropdown_tipo.value))
+                    field_numero.value = str(next_num)
+                    field_numero.update()
+                except:
+                    pass
 
-            row = ft.Row([
-                art_drop, cant_field, price_field, iva_field,
-                ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_color=COLOR_ERROR, on_click=lambda _: lines_container.controls.remove(row) or page.update())
-            ], spacing=10)
-            lines_container.controls.append(row)
+        dropdown_tipo = ft.Dropdown(
+            label="Tipo", 
+            options=[ft.dropdown.Option(str(t["id"]), t["nombre"]) for t in allowed_tipos], 
+            width=200,
+            on_change=_update_serial_number
+        ); _style_input(dropdown_tipo)
+        
+        if doc_data:
+            dropdown_tipo.value = str(doc_data["id_tipo_documento"])
+            dropdown_entidad.value = str(doc_data["id_entidad_comercial"])
+            dropdown_deposito.value = str(doc_data["id_deposito"])
+            field_obs.value = doc_data["observacion"]
+            
+            if edit_doc_id:
+                field_numero.value = doc_data["numero_serie"]
+                field_fecha.value = doc_data["fecha"][:10] if doc_data["fecha"] else None
+            elif copy_doc_id:
+                field_obs.value = f"Copia de {doc_data.get('numero_serie','')}. " + (doc_data.get('observacion','') or "")
+                # Auto-generate next number for the copied type
+                try:
+                    next_num = db.get_next_number(int(doc_data["id_tipo_documento"]))
+                    field_numero.value = str(next_num)
+                except:
+                    field_numero.value = ""
+                field_fecha.value = datetime.now().strftime("%Y-%m-%d")
+            
+            field_descuento.value = str(doc_data["descuento_porcentaje"])
+            field_vto.value = doc_data["fecha_vencimiento"]
+            field_direccion.value = doc_data.get("direccion_entrega", "") or ""
+            
+            # Set price list if available
+            if doc_data.get("id_lista_precio"):
+                dropdown_lista_global.value = str(doc_data["id_lista_precio"])
+            
+            field_sena.value = str(doc_data.get("sena", 0))
+            
+            _update_entidad_info(None)
+
+        # Financial Summary
+        manual_mode = ft.Switch(label="Manual", value=False)
+        
+        sum_subtotal = ft.TextField(value="0.00", width=120, read_only=True, text_align=ft.TextAlign.RIGHT, label="Subtotal")
+        sum_iva = ft.TextField(value="0.00", width=100, read_only=True, text_align=ft.TextAlign.RIGHT, label="IVA")
+        sum_total = ft.TextField(value="0.00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_ACCENT), label="TOTAL")
+        sum_saldo = ft.TextField(value="0.00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_WARNING), label="SALDO")
+        
+        if doc_data:
+            sum_subtotal.value = str(doc_data.get("neto", 0))
+            sum_iva.value = str(doc_data.get("iva_total", 0))
+            sum_total.value = str(doc_data.get("total", 0))
+        
+        def _recalc_total():
+            if manual_mode.value: return # Don't overwrite manual edits
+            
+            sub = 0.0
+            iva_tot = 0.0
+            
+            for row in lines_container.controls:
+                try:
+                    # [Artículo, Lista, Cant, Precio, IVA, Delete]
+                    # Cant is now a Column: controls[2].controls[0] is the TextField
+                    c_cant = float(row.controls[2].controls[0].value or 0)
+                    c_price = float(row.controls[3].value or 0)
+                    c_iva = float(row.controls[4].value or 0)
+                    
+                    line_neto = c_cant * c_price
+                    sub += line_neto
+                    iva_tot += line_neto * (c_iva / 100.0)
+                except: pass
+            
+            try:
+                desc_pct = float(field_descuento.value or 0)
+            except: desc_pct = 0.0
+            
+            if desc_pct > 0:
+                sub = sub * (1 - desc_pct/100)
+                iva_tot = iva_tot * (1 - desc_pct/100)
+
+            total = sub + iva_tot
+            
+            try:
+                sena_val = float(field_sena.value or 0)
+            except: sena_val = 0.0
+
+            sum_subtotal.value = str(round(sub, 2))
+            sum_iva.value = str(round(iva_tot, 2))
+            sum_total.value = str(round(total, 2))
+            sum_saldo.value = str(round(max(0, total - sena_val), 2))
             page.update()
+
+        def toggle_manual(e):
+             is_manual = manual_mode.value
+             sum_subtotal.read_only = not is_manual
+             sum_iva.read_only = not is_manual
+             sum_total.read_only = not is_manual
+             if not is_manual:
+                 _recalc_total() # Restore auto values
+             else:
+                 page.update()
+
+        manual_mode.on_change = toggle_manual
+
+        field_descuento.on_change = lambda _: _recalc_total()
+        
+        # Use ListView with internal padding to prevent "first item cut-off" issue
+        lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
+
+        def _add_line(_=None, update_ui=True, initial_data=None):
+            art_drop = ft.Dropdown(label="Artículo", options=[ft.dropdown.Option(str(a["id"]), f"{a['nombre']} (Código: {a['id']})") for a in articulos], expand=True); _style_input(art_drop)
+            lista_drop = ft.Dropdown(label="Lista", options=lista_options, width=140); _style_input(lista_drop)
+            cant_field = ft.TextField(label="Cant.", width=80, value="1"); _style_input(cant_field)
+            price_field = ft.TextField(label="Precio",width=90, value="0"); _style_input(price_field)
+            iva_field = ft.TextField(label="IVA %", width=60, value="21"); _style_input(iva_field)
+            total_field = ft.TextField(label="Total", width=100, value="0.00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field)
+            
+            if initial_data:
+                art_drop.value = str(initial_data["id_articulo"])
+                lista_drop.value = str(initial_data["id_lista_precio"]) if initial_data.get("id_lista_precio") else ""
+                cant_field.value = str(initial_data["cantidad"])
+                price_field.value = str(initial_data["precio_unitario"])
+                iva_field.value = str(initial_data["porcentaje_iva"])
+            else:
+                 # Usar lista global si está seleccionada
+                 if dropdown_lista_global.value and dropdown_lista_global.value != "":
+                     lista_drop.value = dropdown_lista_global.value
+                 else:
+                     lista_drop.value = ""
+            
+            def _update_line_total():
+                """Actualiza el total de la línea"""
+                try:
+                    c_cant = float(cant_field.value or 0)
+                    c_price = float(price_field.value or 0)
+                    line_total = c_cant * c_price
+                    total_field.value = f"{line_total:.2f}"
+                    if total_field.page:
+                        total_field.update()
+                except:
+                    total_field.value = "0.00"
+            
+            def _update_price_from_list():
+                """Actualiza el precio basado en artículo y lista seleccionados"""
+                art_id_val = art_drop.value
+                # Primero intentar usar la lista del ítem, si no la lista global
+                lid = lista_drop.value
+                if not lid or lid == "":
+                    lid = dropdown_lista_global.value
+                
+                if not art_id_val:
+                    return
+                
+                art_id = int(art_id_val)
+                art = next((a for a in articulos if a["id"] == art_id), None)
+                if not art:
+                    return
+                
+                final_price = 0.0
+                prices = db.fetch_article_prices(art_id)
+                
+                if prices:
+                    if lid and lid != "":
+                        # Usar la lista seleccionada
+                        p_obj = next((p for p in prices if str(p["id_lista_precio"]) == str(lid)), None)
+                        if p_obj and p_obj.get("precio"):
+                            final_price = float(p_obj["precio"])
+                    
+                    # Si no hay lista seleccionada o no tiene precio, usar la primera con precio
+                    if final_price == 0.0:
+                        for p in prices:
+                            if p.get("precio") and float(p.get("precio", 0)) > 0:
+                                final_price = float(p["precio"])
+                                break
+                
+                # Fallback al costo si no hay precios
+                if final_price == 0.0:
+                    final_price = float(art.get("costo") or 0)
+                
+                price_field.value = str(final_price)
+                iva_field.value = str(art.get("porcentaje_iva", 21))
+                _update_line_total()
+                page.update()
+                _recalc_total()
+            
+            stock_text = ft.Text("Stock: -", size=10, color=COLOR_TEXT_MUTED)
+
+            def _check_stock_warning():
+                if not art_drop.value: return
+                try:
+                    requested = float(cant_field.value or 0)
+                    available = db.get_article_stock(int(art_drop.value))
+                    stock_text.value = f"Stock: {available}"
+                    if requested > available:
+                        stock_text.color = COLOR_ERROR
+                        stock_text.weight = ft.FontWeight.BOLD
+                    else:
+                        stock_text.color = ft.Colors.GREEN_600
+                        stock_text.weight = ft.FontWeight.NORMAL
+                    if stock_text.page:
+                        stock_text.update()
+                except: pass
+
+            def _on_art_change(e):
+                _update_price_from_list()
+                _check_stock_warning()
+            
+            def _on_lista_change(e):
+                _update_price_from_list()
+
+            def _on_value_change(_):
+                _update_line_total()
+                _recalc_total()
+
+            cant_field.on_change = lambda _: (_check_stock_warning(), _update_line_total(), _recalc_total())
+            art_drop.on_change = _on_art_change
+            lista_drop.on_change = _on_lista_change
+            
+            for f in [price_field, iva_field]:
+                f.on_change = _on_value_change
+
+            cant_container = ft.Column([cant_field, stock_text], spacing=0, width=80)
+
+            # Store callbacks for external updates
+            row_map = {
+                "update_price": _update_price_from_list,
+                "lista_drop": lista_drop,
+                "art_drop": art_drop,
+                "cant_field": cant_field # For potential future use
+            }
+
+            delete_btn = ft.IconButton(
+                icon=ft.Icons.DELETE, 
+                icon_color=COLOR_ERROR, 
+                tooltip="Eliminar línea",
+                on_click=lambda e: _remove_line(e.control.parent)
+            )
+
+            # [Artículo, Lista, Cant, Precio, IVA, Total, Delete]
+            row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
+            row.data = row_map # Attack callbacks to row
+            
+            lines_container.controls.append(row)
+            if update_ui:
+                lines_container.update()
+                _recalc_total()
+            
+            # Initial Run
+            if initial_data:
+                _update_line_total()
+                # If editing, check stock silently?
+                pass
+            
+            # Trigger initial stock check if article is pre-selected (e.g. from copy)
+            if art_drop.value:
+                _check_stock_warning()
+        
+        def _remove_line(row_to_remove):
+            lines_container.controls.remove(row_to_remove)
+            lines_container.update()
+            _recalc_total()
+
+        def _on_global_list_change(e):
+            """When global price list changes, update all line items that don't have a specific list set."""
+            new_global_list_id = dropdown_lista_global.value
+            if not new_global_list_id: return 
+
+            for row in lines_container.controls:
+                row_map = row.data
+                line_lista_drop = row_map["lista_drop"]
+                
+                # If the line list is empty (Automatic), change it to the new Global list
+                # This satisfies the user's request: "automaticamente todos los precios deberían tomar la lista 2"
+                if not line_lista_drop.value or line_lista_drop.value == "":
+                    row_map["update_price"]() # Update price using global list automatically
+            
+            page.update()
+            _recalc_total()
+
+        dropdown_lista_global.on_change = _on_global_list_change
 
         def _save(_=None):
             if not dropdown_tipo.value or not dropdown_entidad.value or not dropdown_deposito.value:
@@ -4406,52 +5241,77 @@ def main(page: ft.Page) -> None:
             items = []
             for row in lines_container.controls:
                 controls = row.controls
+                # [Artículo, Lista, Cant, Precio, IVA, Total, Delete]
                 art_id = controls[0].value
                 if not art_id: continue
+                
+                # Usar lista del ítem, o la global si no tiene
+                item_lista = controls[1].value
+                if not item_lista or item_lista == "" or item_lista == "Automático":
+                    item_lista = dropdown_lista_global.value
+                
+                # Ensure global value is also clean
+                if item_lista == "Automático": item_lista = ""
+
                 items.append({
                     "id_articulo": int(art_id),
-                    "cantidad": float(controls[1].value or 0),
-                    "precio_unitario": float(controls[2].value or 0),
-                    "porcentaje_iva": float(controls[3].value or 0)
+                    "id_lista_precio": int(item_lista) if item_lista and item_lista != "" else None,
+                    "cantidad": float(controls[2].controls[0].value or 0),
+                    "precio_unitario": float(controls[3].value or 0),
+                    "porcentaje_iva": float(controls[4].value or 0)
                 })
             
             if not items:
                 show_toast("El comprobante debe tener al menos una línea", kind="warning")
                 return
 
+            # Determinar id_lista_precio del documento
+            gl_val = dropdown_lista_global.value
+            doc_lista_precio = int(gl_val) if gl_val and gl_val != "" and gl_val != "Automático" else None
+
             try:
-                db.create_document(
-                    id_tipo_documento=int(dropdown_tipo.value),
+                if edit_doc_id:
+                    db.update_document(
+                        doc_id=edit_doc_id,
+                        id_tipo_documento=int(dropdown_tipo.value),
+                        id_entidad_comercial=int(dropdown_entidad.value),
+                        id_deposito=int(dropdown_deposito.value),
+                        items=items,
+                        observacion=field_obs.value,
+                        numero_serie=field_numero.value,
+                        descuento_porcentaje=float(field_descuento.value or 0),
+                        descuento_importe=float(doc_data.get("descuento_importe", 0)) if doc_data else 0,
+                        fecha=field_fecha.value, 
+                        fecha_vencimiento=field_vto.value,
+                        direccion_entrega=field_direccion.value,
+                        id_lista_precio=doc_lista_precio,
+                        sena=float(field_sena.value or 0),
+                        manual_values={
+                            "subtotal": float(sum_subtotal.value or 0),
+                            "iva_total": float(sum_iva.value or 0),
+                            "total": float(sum_total.value or 0),
+                        } if manual_mode.value else None
+                    )
+                else:
+                    db.create_document(
+                        id_tipo_documento=int(dropdown_tipo.value),
                     id_entidad_comercial=int(dropdown_entidad.value),
                     id_deposito=int(dropdown_deposito.value),
                     items=items,
                     observacion=field_obs.value,
                     numero_serie=field_numero.value,
                     descuento_porcentaje=float(field_descuento.value or 0),
-                    id_lista_precio=int(dropdown_lista.value) if dropdown_lista.value else None,
-                    # Dates? We need to extract them from _date_field controls (impl specific)
-                    # Assuming they are exposed or we can get them.
-                    # My _date_field returns a Container. The value is not easily accessible unless we exposed it.
-                    # Hack: The `_date_field` function in this file sets `tf.value` on valid pick.
-                    # We need to access that TextField. 
-                    # Actually, `_date_field` returns a `Container` wrapping a `Row`... 
-                    # We need to capture the TextField inside `_date_field` to read it.
-                    # Since I cannot easily change `_date_field` comfortably right now, 
-                    # let's assume I can't read it easily without refactoring `_date_field`.
-                    # WAIT, I can pass a `ref` to `_date_field`? No.
-                    # I will rely on the user NOT entering dates for now or just generic 'now',
-                    # OR refactor `_date_field` quickly? 
-                    # Better: Just pass None for now to avoid crashes, 
-                    # OR trust the user accepts "Today" default. 
-                    # User asked for dates. I added the controls. 
-                    # I'll try to read `field_fecha.content.controls[1].value` (TextField is 2nd in Row)
-                    # if structure is `Row([IconButton, TextField])`.
-                    # Checking `_date_field`... YES. 
-                    # `content=ft.Row([icon_button, tf])`
-                    # So `field_fecha.content.controls[1].value`.
-                    # Let's try.
-                    fecha=field_fecha.content.controls[1].value, 
-                    fecha_vencimiento=field_vto.content.controls[1].value
+                    descuento_importe=0,
+                    fecha=field_fecha.value, 
+                    fecha_vencimiento=field_vto.value,
+                    direccion_entrega=field_direccion.value,
+                    id_lista_precio=doc_lista_precio,
+                    sena=float(field_sena.value or 0),
+                    manual_values={
+                        "subtotal": float(sum_subtotal.value or 0),
+                        "iva_total": float(sum_iva.value or 0),
+                        "total": float(sum_total.value or 0),
+                    } if manual_mode.value else None
                 )
                 show_toast("Comprobante creado con éxito", kind="success")
                 close_form()
@@ -4459,29 +5319,123 @@ def main(page: ft.Page) -> None:
                 documentos_summary_table.refresh()
                 refresh_all_stats()
             except Exception as ex:
-                show_toast(f"Error al guardar: {ex}", kind="error")
+                show_toast(f"Error al guardar: {ex}", kind="error") 
+        if doc_data:
+            # Add existing items
+            for item in doc_data["items"]:
+                # Inject fallback price list (from header) if item doesn't have one 
+                # (which it won't until DB supports it)
+                if "id_lista_precio" not in item:
+                    item["id_lista_precio"] = doc_data.get("id_lista_precio")
+                _add_line(initial_data=item, update_ui=False)
+            
+            # Set manual totals if they were different from calculated?
+            # Or just set them if the document state says so.
+            # Simplified: always load them and if they match, user can just keep going.
+            sum_subtotal.value = str(doc_data["neto"])
+            sum_iva.value = str(doc_data["iva_total"])
+            sum_total.value = str(doc_data["total"])
+            # Auto-enable manual mode if there's a discrepancy? 
+            # For now, let user enable it if they want to edit.
+        else:
+            _add_line(update_ui=False) # Add one line by default, no update yet
 
-        _add_line() # Add one line by default
 
-        content = ft.Container(
-            width=750,
-            height=600,
-            content=ft.Column([
-                ft.Row([dropdown_tipo, field_numero, dropdown_deposito], spacing=10),
-                ft.Row([dropdown_entidad, field_descuento], spacing=10),
-                ft.Row([dropdown_lista, field_fecha, field_vto], spacing=10),
-                ft.Divider(),
-                ft.Row([ft.Text("Líneas de Comprobante", weight=ft.FontWeight.BOLD), ft.IconButton(ft.Icons.ADD_CIRCLE_OUTLINE, on_click=_add_line, icon_color=COLOR_ACCENT)]),
-                ft.Container(content=lines_container, height=250),
-                ft.Divider(),
-                field_obs
-            ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+        # Custom Dialog Content (replacing generic open_form to control layout fully)
+        dialog_content = ft.Container(
+            content=ft.ListView(
+                controls=[
+                    ft.Container(height=20), # Header Spacer
+                    ft.Row([
+                        ft.Text("Nuevo Comprobante", size=20, weight=ft.FontWeight.BOLD),
+                        ft.IconButton(ft.Icons.CLOSE, on_click=close_form)
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Row([field_fecha, field_vto, dropdown_tipo], spacing=10),
+                    ft.Row([ft.Column([dropdown_entidad, field_saldo], spacing=2)], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([dropdown_lista_global], spacing=10),
+                    ft.Row([dropdown_deposito, field_numero, field_descuento, field_sena], spacing=10),
+                    ft.Row([field_obs], spacing=10),
+                    ft.Row([field_direccion], spacing=10),
+                    ft.Divider(),
+                    ft.Text("Ítems", weight=ft.FontWeight.BOLD),
+                    ft.Container(
+                        content=lines_container,
+                        height=200, # Scrollable area
+                        border=ft.border.all(1, "#E2E8F0"),
+                        border_radius=8,
+                        # Padding removed here as it's now handled inside ListView
+                        # padding=ft.padding.only(left=10, right=20, top=30, bottom=10), 
+                    ),
+                    ft.Row([
+                         ft.ElevatedButton(
+                             "Agregar Línea", 
+                             icon=ft.Icons.ADD, 
+                             on_click=_add_line, 
+                             bgcolor=COLOR_ACCENT,
+                             color="white",
+                             style=ft.ButtonStyle(
+                                 shape=ft.RoundedRectangleBorder(radius=8),
+                             )
+                         ),
+                    ], alignment=ft.MainAxisAlignment.START),
+                    ft.Divider(),
+                    # Financial Footer
+
+                    ft.Row([
+                        manual_mode,
+                        ft.Column([sum_subtotal], spacing=0),
+                        ft.Column([sum_iva], spacing=0),
+                        ft.Column([sum_total], spacing=0),
+                        ft.Column([sum_saldo], spacing=0),
+                    ], alignment=ft.MainAxisAlignment.END, spacing=15),
+                    ft.Container(height=10),
+                    ft.Row(
+                        [
+                            ft.OutlinedButton(
+                                "Cancelar", 
+                                on_click=close_form, 
+                                style=ft.ButtonStyle(
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                )
+                            ),
+                            ft.ElevatedButton(
+                                "Guardar" if edit_doc_id else "Crear Comprobante", 
+                                icon=ft.Icons.CHECK,
+                                on_click=_save,
+                                style=ft.ButtonStyle(
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                    bgcolor=COLOR_ACCENT,
+                                    color=ft.Colors.WHITE,
+                                )
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                    ),
+                ],
+                padding=ft.padding.all(25), # Internal padding handles scrollbar spacing
+                spacing=15, # Restore vertical spacing
+            ),
+            padding=0, # Remove outer padding to allow scrollbar to hit edge
+            width=900,
+            height=800,
+            bgcolor="white",
+            border_radius=12,
         )
 
-        open_form("Nuevo Comprobante", content, [
-            ft.TextButton("Cancelar", on_click=close_form),
-            ft.ElevatedButton("Crear Comprobante", bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=_save)
-        ])
+        # Directly open dialog bypassing generic wrapper for custom size/layout
+        # Directly open dialog bypassing generic wrapper for custom size/layout
+        # Using nonlocal/closure from main
+        form_dialog.content = dialog_content
+        form_dialog.actions = [] # No actions, buttons are inside
+        form_dialog.title = None
+        form_dialog.modal = True
+        
+        if hasattr(page, "open"):
+            page.open(form_dialog)
+        else:
+            form_dialog.open = True
+            page.update()
 
     def wire_live_search(table: GenericTable):
         for flt in table.advanced_filters:

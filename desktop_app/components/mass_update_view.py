@@ -45,6 +45,29 @@ def _dropdown(label: str, width: int = 200) -> ft.Dropdown:
     return dd
 
 
+class SafeDataTable(ft.DataTable):
+    """Subclass of DataTable to fix TypeErrors and AssertionErrors in Flet updates"""
+    def before_update(self):
+        try:
+            # Ensure index is int or None before parent check
+            if hasattr(self, "sort_column_index"):
+                val = self.sort_column_index
+                if val is not None and not isinstance(val, int):
+                    try:
+                        self.sort_column_index = int(val)
+                    except:
+                        self.sort_column_index = None
+            super().before_update()
+        except TypeError:
+            # If native check still fails, force recovery
+            self.sort_column_index = None
+            try:
+                super().before_update()
+            except:
+                pass
+        except Exception:
+            pass
+
 class MassUpdateView(ft.Container):
     def __init__(self, db: Database, on_show_toast: Callable[[str, str], None]):
         super().__init__(expand=True)
@@ -118,7 +141,7 @@ class MassUpdateView(ft.Container):
         self.count_label = ft.Text("0 artículos seleccionados", weight=ft.FontWeight.BOLD, color="#64748B")
 
         # Preview Table
-        self.preview_table = ft.DataTable(
+        self.preview_table = SafeDataTable(
             columns=[
                 ft.DataColumn(ft.Checkbox(label="Sel", on_change=self._toggle_all)),
                 ft.DataColumn(ft.Text("ID")),

@@ -225,14 +225,17 @@ class Database:
                 # 3. Stock Stats
                 stats["stock"] = self._get_stats_stock_extended(cur, role)
                 
-                # 4. Entities (Clients/Providers)
+                # 5. Entities (Clients/Providers)
                 stats["entidades"] = self._get_stats_entidades_extended(cur, role)
+
+                # 6. Movement Stats (Today summary)
+                stats["movimientos"] = self._get_stats_movimientos_extended(cur, role)
                 
-                # 5. Financial Stats (Restricted)
+                # 7. Financial Stats (Restricted)
                 if role in ("ADMIN", "GERENTE"):
                     stats["finanzas"] = self._get_stats_finanzas_extended(cur, role)
                 
-                # 6. Technical/System Stats (Admin only)
+                # 8. Technical/System Stats (Admin only)
                 if role == "ADMIN":
                     stats["sistema"] = self._get_stats_sistema_extended(cur, role)
                     
@@ -259,7 +262,7 @@ class Database:
                 (SELECT SUM(total) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('week', now()) AND estado != 'ANULADO') as semana_total,
                 (SELECT SUM(total) FROM monthly_ventas) as mes_total,
                 (SELECT SUM(total) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('year', now()) AND estado != 'ANULADO') as anio_total,
-                (SELECT COUNT(*) FROM app.v_documento_resumen WHERE tipo_documento = 'PRESUPUESTO' AND estado = 'BORRADOR') as presupuestos_pend,
+                (SELECT COUNT(*) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND estado = 'CONFIRMADO') as docs_pendientes,
                 (SELECT COUNT(*) FROM app.v_documento_resumen WHERE estado = 'ANULADO' AND fecha >= date_trunc('month', now())) as anulados_mes
         """)
         row = cur.fetchone()
@@ -271,7 +274,8 @@ class Database:
             "semana_total": float(row[3] or 0) if show_money else "—",
             "mes_total": float(row[4] or 0) if show_money else "—",
             "anio_total": float(row[5] or 0) if role == "ADMIN" else "—",
-            "presupuestos_pend": row[6] or 0,
+            "docs_pendientes": row[6] or 0,
+            "presupuestos_pend": row[6] or 0, # compatibility
             "anulados_mes": row[7] or 0
         }
         
@@ -324,6 +328,23 @@ class Database:
             "entradas_mes": row[5] or 0,
             "salidas_mes": row[6] or 0,
             "stock_unidades": row[7] or 0
+        }
+
+    def _get_stats_movimientos_extended(self, cur, role) -> Dict[str, Any]:
+        """Movement statistics for today (3 metrics)"""
+        cur.execute("""
+            SELECT 
+                COALESCE(SUM(CASE WHEN signo_stock > 0 THEN 1 ELSE 0 END), 0) as ingresos,
+                COALESCE(SUM(CASE WHEN signo_stock < 0 THEN 1 ELSE 0 END), 0) as salidas,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE id_documento IS NULL AND fecha >= current_date) as ajustes
+            FROM app.v_movimientos_full 
+            WHERE fecha >= current_date
+        """)
+        row = cur.fetchone()
+        return {
+            "ingresos": row[0] or 0,
+            "salidas": row[1] or 0,
+            "ajustes": row[2] or 0
         }
 
     def _get_stats_entidades_extended(self, cur, role) -> Dict[str, Any]:
@@ -2538,6 +2559,15 @@ class Database:
                 cur.execute(query, params)
                 return _rows_to_dicts(cur)
 
+    def get_lista_precio_simple(self, lista_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single price list by ID, regardless of active status."""
+        query = "SELECT id, nombre, activa, orden FROM ref.lista_precio WHERE id = %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (lista_id,))
+                rows = _rows_to_dicts(cur)
+                return rows[0] if rows else None
+
     def count_listas_precio(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
         where_clause, params = self._build_catalog_filters(search)
         query = f"SELECT COUNT(*) AS total FROM ref.lista_precio WHERE {where_clause}"
@@ -3184,7 +3214,7 @@ class Database:
             params.append(f"%{ent.lower().strip()}%")
         
         tipo = advanced.get("tipo")
-        if tipo:
+        if tipo and tipo not in ("Todos", "Todas", "---"):
             filters.append("lower(tipo_documento) LIKE %s")
             params.append(f"%{tipo.lower().strip()}%")
             
@@ -3197,9 +3227,49 @@ class Database:
         if hasta:
             filters.append("fecha <= %s")
             params.append(hasta)
+            
+        estado = advanced.get("estado")
+        if estado and estado not in ("Todos", "Todas", "---"):
+            filters.append("estado = %s")
+            params.append(estado)
+            
+        total_min = advanced.get("total_min")
+        if total_min is not None:
+             filters.append("total >= %s")
+             params.append(float(total_min))
+        total_max = advanced.get("total_max")
+        if total_max is not None:
+             filters.append("total <= %s")
+             params.append(float(total_max))
+
+        letra = advanced.get("letra")
+        if letra and letra not in ("Todos", "Todas", "---"):
+            filters.append("letra = %s")
+            params.append(letra)
+
+        numero = advanced.get("numero")
+        if numero:
+            filters.append("numero_serie LIKE %s")
+            params.append(f"%{numero.strip()}%")
+
+        id_entidad = _to_id(advanced.get("id_entidad"))
+        if id_entidad:
+            filters.append("id_entidad = %s")
+            params.append(id_entidad)
 
         where_clause = " AND ".join(filters)
-        sort_columns = {"id": "id", "fecha": "fecha", "tipo_documento": "tipo_documento", "entidad": "entidad", "total": "total", "estado": "estado"}
+        sort_columns = {
+        "id": "id", 
+        "fecha": "fecha", 
+        "tipo_documento": "tipo_documento", 
+        "numero_serie": "CASE WHEN numero_serie ~ '^[0-9]+$' THEN LPAD(numero_serie, 20, '0') ELSE numero_serie END",
+        "entidad": "entidad", 
+        "total": "total", 
+        "estado": "estado",
+        "usuario": "usuario",
+        "letra": "letra",
+        "forma_pago": "forma_pago"
+    }
         order_by = self._build_order_by(sorts, sort_columns, default="fecha DESC")
         query = f"SELECT * FROM app.v_documento_resumen WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -3222,7 +3292,7 @@ class Database:
             params.append(f"%{ent.lower().strip()}%")
         
         tipo = advanced.get("tipo")
-        if tipo:
+        if tipo and tipo not in ("Todos", "Todas", "---"):
             filters.append("lower(tipo_documento) LIKE %s")
             params.append(f"%{tipo.lower().strip()}%")
             
@@ -3235,6 +3305,36 @@ class Database:
         if hasta:
             filters.append("fecha <= %s")
             params.append(hasta)
+            
+        estado = advanced.get("estado")
+        if estado and estado not in ("Todos", "Todas", "---"):
+            filters.append("estado = %s")
+            params.append(estado)
+            
+        total_min = advanced.get("total_min")
+        if total_min is not None:
+             filters.append("total >= %s")
+             params.append(float(total_min))
+             
+        total_max = advanced.get("total_max")
+        if total_max is not None:
+             filters.append("total <= %s")
+             params.append(float(total_max))
+
+        letra = advanced.get("letra")
+        if letra and letra not in ("Todos", "Todas", "---"):
+            filters.append("letra = %s")
+            params.append(letra)
+
+        numero = advanced.get("numero")
+        if numero:
+            filters.append("numero_serie LIKE %s")
+            params.append(f"%{numero.strip()}%")
+
+        id_entidad = _to_id(advanced.get("id_entidad"))
+        if id_entidad:
+            filters.append("id_entidad = %s")
+            params.append(id_entidad)
 
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) as total FROM app.v_documento_resumen WHERE {where_clause}"
@@ -3245,8 +3345,46 @@ class Database:
                 if res is None: return 0
                 return res.get("total", 0) if isinstance(res, dict) else res[0]
 
+    def list_tipos_documento(self) -> List[Dict[str, Any]]:
+        query = "SELECT id, nombre, clase, letra FROM ref.tipo_documento ORDER BY nombre"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return _rows_to_dicts(cur)
+
+    def get_max_document_total(self) -> float:
+        query = "SELECT MAX(total) FROM app.documento"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                res = cur.fetchone()
+                val = res.get("max") if isinstance(res, dict) else (res[0] if res else None)
+                return float(val) if val is not None else 1000000.0
+
     # Stock Movements
     def fetch_movimientos_stock(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
+        # Ensure view is updated (to support new traceability columns)
+        with self.pool.connection() as conn:
+            with conn.cursor() as vcur:
+                vcur.execute("""
+                    CREATE OR REPLACE VIEW app.v_movimientos_full AS
+                    SELECT 
+                      m.id, m.fecha, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
+                      m.cantidad, tm.signo_stock, d.nombre AS deposito, u.nombre AS usuario,
+                      m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
+                      doc.numero_serie AS nro_comprobante,
+                      COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
+                    FROM app.movimiento_articulo m
+                    JOIN app.articulo a ON m.id_articulo = a.id
+                    JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
+                    JOIN ref.deposito d ON m.id_deposito = d.id
+                    LEFT JOIN app.documento doc ON m.id_documento = doc.id
+                    LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
+                    LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
+                    LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
+                """)
+                conn.commit()
+
         filters = ["1=1"]
         params = []
         advanced = advanced or {}
@@ -3254,23 +3392,46 @@ class Database:
             filters.append("(lower(articulo) LIKE %s OR lower(tipo_movimiento) LIKE %s)")
             params.extend([f"%{search.lower().strip()}%"] * 2)
         
+        # Advanced Filters
         art = advanced.get("articulo")
-        if art:
+        if art and art not in ("Todos", "Todas", ""):
             filters.append("lower(articulo) LIKE %s")
             params.append(f"%{art.lower().strip()}%")
         
-        tipo = advanced.get("tipo")
-        if tipo:
-            filters.append("lower(tipo_movimiento) LIKE %s")
-            params.append(f"%{tipo.lower().strip()}%")
+        tipo_mov = advanced.get("tipo_movimiento") or advanced.get("tipo")
+        if tipo_mov and tipo_mov not in ("Todos", "Todas", ""):
+            filters.append("tipo_movimiento = %s")
+            params.append(tipo_mov)
             
         desde = advanced.get("desde")
         if desde:
             filters.append("fecha >= %s")
             params.append(desde)
+            
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("fecha < %s::timestamp + interval '1 day'")
+            params.append(hasta)
+
+        deposito = advanced.get("deposito")
+        if deposito and deposito not in ("Todos", "Todas", ""):
+            filters.append("deposito = %s")
+            params.append(deposito)
+
+        usuario = advanced.get("usuario")
+        if usuario and usuario not in ("Todos", "Todas", ""):
+            filters.append("usuario = %s")
+            params.append(usuario)
 
         where_clause = " AND ".join(filters)
-        sort_columns = {"id": "id", "fecha": "fecha", "articulo": "articulo", "cantidad": "cantidad", "deposito": "deposito"}
+        sort_columns = {
+            "id": "id", 
+            "fecha": "fecha", 
+            "articulo": "articulo", 
+            "cantidad": "cantidad", 
+            "deposito": "deposito",
+            "comprobante": "CASE WHEN nro_comprobante ~ '^[0-9]+$' THEN LPAD(nro_comprobante, 20, '0') ELSE nro_comprobante END"
+        }
         order_by = self._build_order_by(sorts, sort_columns, default="fecha DESC")
         query = f"SELECT * FROM app.v_movimientos_full WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -3287,20 +3448,36 @@ class Database:
             filters.append("(lower(articulo) LIKE %s OR lower(tipo_movimiento) LIKE %s)")
             params.extend([f"%{search.lower().strip()}%"] * 2)
             
+        # Advanced Filters
         art = advanced.get("articulo")
-        if art:
+        if art and art not in ("Todos", "Todas", ""):
             filters.append("lower(articulo) LIKE %s")
             params.append(f"%{art.lower().strip()}%")
         
-        tipo = advanced.get("tipo")
-        if tipo:
-            filters.append("lower(tipo_movimiento) LIKE %s")
-            params.append(f"%{tipo.lower().strip()}%")
+        tipo_mov = advanced.get("tipo_movimiento") or advanced.get("tipo")
+        if tipo_mov and tipo_mov not in ("Todos", "Todas", ""):
+            filters.append("tipo_movimiento = %s")
+            params.append(tipo_mov)
             
         desde = advanced.get("desde")
         if desde:
             filters.append("fecha >= %s")
             params.append(desde)
+            
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("fecha < %s::timestamp + interval '1 day'")
+            params.append(hasta)
+
+        deposito = advanced.get("deposito")
+        if deposito and deposito not in ("Todos", "Todas", ""):
+            filters.append("deposito = %s")
+            params.append(deposito)
+
+        usuario = advanced.get("usuario")
+        if usuario and usuario not in ("Todos", "Todas", ""):
+            filters.append("usuario = %s")
+            params.append(usuario)
 
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) as total FROM app.v_movimientos_full WHERE {where_clause}"
@@ -3387,9 +3564,10 @@ class Database:
 
     def fetch_documento_detalle(self, documento_id: int) -> List[Dict[str, Any]]:
         query = """
-            SELECT dd.*, a.nombre as articulo
+            SELECT dd.*, a.nombre as articulo, a.id as codigo_art, lp.nombre as lista_nombre
             FROM app.documento_detalle dd
             JOIN app.articulo a ON dd.id_articulo = a.id
+            LEFT JOIN ref.lista_precio lp ON dd.id_lista_precio = lp.id
             WHERE dd.id_documento = %s
             ORDER BY dd.nro_linea
         """
@@ -3490,42 +3668,54 @@ class Database:
     def create_document(self, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
                         numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
+                        descuento_importe: float = 0,
                         fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
-                        id_lista_precio: Optional[int] = None) -> int:
+                        id_lista_precio: Optional[int] = None,
+                        direccion_entrega: Optional[str] = None,
+                        sena: float = 0,
+                        manual_values: Optional[Dict[str, float]] = None) -> int:
         """
         items: list of {id_articulo, cantidad, precio_unitario, porcentaje_iva}
         """
         header_query = """
             INSERT INTO app.documento (
                 id_tipo_documento, id_entidad_comercial, id_deposito, 
-                observacion, numero_serie, descuento_porcentaje, id_usuario,
-                neto, subtotal, iva_total, total, fecha, fecha_vencimiento, id_lista_precio
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                observacion, numero_serie, descuento_porcentaje, descuento_importe, id_usuario,
+                neto, subtotal, iva_total, total, sena, fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
 
         detail_query = """
             INSERT INTO app.documento_detalle (
                 id_documento, nro_linea, id_articulo, cantidad, 
-                precio_unitario, porcentaje_iva, total_linea
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                precio_unitario, porcentaje_iva, total_linea, id_lista_precio, observacion
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
         if not items:
             raise ValueError("El comprobante debe tener al menos un item.")
 
-        # Calculate totals
-        neto_total = 0
+        # Calculate totals - apply discount before IVA
+        neto_bruto = 0
+        for item in items:
+            sub = float(item["cantidad"]) * float(item["precio_unitario"])
+            neto_bruto += sub
+        
+        # Apply discount to neto before IVA calculation
+        desc_factor = 1 - (float(descuento_porcentaje) / 100.0)
+        neto_descontado = neto_bruto * desc_factor
+        subtotal = neto_bruto  # Keep original for reference
+        
+        # Calculate IVA on discounted amount
         iva_total = 0
         for item in items:
             sub = float(item["cantidad"]) * float(item["precio_unitario"])
-            neto_total += sub
-            iva_total += sub * (float(item["porcentaje_iva"]) / 100.0)
+            sub_discounted = sub * desc_factor
+            iva_total += sub_discounted * (float(item["porcentaje_iva"]) / 100.0)
         
-        # Apply header discount to NETO? Usually it's on subtotal. Let's keep it simple for now.
-        subtotal = neto_total
-        desc_val = subtotal * (float(descuento_porcentaje) / 100.0)
-        total = (subtotal - desc_val) + iva_total
+        neto_total = neto_descontado
+        total = neto_descontado + iva_total
         
         # Default dates if not provided
         if not fecha:
@@ -3538,13 +3728,23 @@ class Database:
             
         final_fecha = fecha if fecha else datetime.now()
 
+        # Override totals if manual values provided (User Manual Edit)
+        if manual_values:
+            # Map UI 'subtotal' (which is net after discount) to DB 'neto'
+            if "subtotal" in manual_values:
+                neto_total = manual_values["subtotal"]
+            if "iva_total" in manual_values:
+                iva_total = manual_values["iva_total"]
+            if "total" in manual_values:
+                total = manual_values["total"]
+
         with self._transaction() as cur:
             # Header
             cur.execute(header_query, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
-                observacion, numero_serie, descuento_porcentaje, self.current_user_id,
-                neto_total, subtotal, iva_total, total, 
-                final_fecha, fecha_vencimiento, id_lista_precio
+                observacion, numero_serie, descuento_porcentaje, descuento_importe, self.current_user_id,
+                neto_total, subtotal, iva_total, total, sena,
+                final_fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
             ))
             res = cur.fetchone()
             doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]
@@ -3562,13 +3762,63 @@ class Database:
                         item["precio_unitario"],
                         item["porcentaje_iva"],
                         line_total,
+                        item.get("id_lista_precio"),
+                        item.get("observacion")
                     )
                 )
             cur.executemany(detail_query, detail_rows)
             return doc_id
 
-    def list_entidades_simple(self) -> List[Dict[str, Any]]:
-        query = "SELECT id, nombre_completo, tipo FROM app.v_entidad_detallada WHERE activo = True ORDER BY nombre_completo ASC"
+    def get_entity_balance(self, entity_id: int) -> float:
+        """Returns the current balance from app.lista_cliente."""
+        query = "SELECT saldo_cuenta FROM app.lista_cliente WHERE id_entidad_comercial = %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (entity_id,))
+                res = cur.fetchone()
+                return float(res[0]) if res else 0.0
+
+    def list_entidades_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
+        query = f"SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada WHERE activo = True ORDER BY nombre_completo ASC LIMIT {limit}"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return _rows_to_dicts(cur)
+
+    def get_entity_simple(self, entity_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single entity by ID, regardless of active status."""
+        query = "SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada WHERE id = %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (entity_id,))
+                rows = _rows_to_dicts(cur)
+                return rows[0] if rows else None
+
+    def list_articulos_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
+        query = f"SELECT id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return _rows_to_dicts(cur)
+
+    def get_article_simple(self, article_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single article by ID, regardless of active status."""
+        query = "SELECT id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE id = %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (article_id,))
+                rows = _rows_to_dicts(cur)
+                return rows[0] if rows else None
+
+    def list_usuarios_simple(self, limit: int = 100) -> List[Dict[str, Any]]:
+        query = f"SELECT id, nombre FROM seguridad.usuario WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return _rows_to_dicts(cur)
+
+    def list_tipos_movimiento_simple(self) -> List[Dict[str, Any]]:
+        query = "SELECT id, nombre, signo_stock FROM ref.tipo_movimiento_articulo ORDER BY nombre ASC"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
@@ -3580,6 +3830,28 @@ class Database:
         1. Updates status to 'CONFIRMADO'.
         2. Generates stock movements if the document type affects stock.
         """
+        # Ensure view is updated (Idempotent)
+        with self.pool.connection() as conn:
+            with conn.cursor() as vcur:
+                vcur.execute("""
+                    CREATE OR REPLACE VIEW app.v_movimientos_full AS
+                    SELECT 
+                      m.id, m.fecha, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
+                      m.cantidad, tm.signo_stock, d.nombre AS deposito, u.nombre AS usuario,
+                      m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
+                      doc.numero_serie AS nro_comprobante,
+                      COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
+                    FROM app.movimiento_articulo m
+                    JOIN app.articulo a ON m.id_articulo = a.id
+                    JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
+                    JOIN ref.deposito d ON m.id_deposito = d.id
+                    LEFT JOIN app.documento doc ON m.id_documento = doc.id
+                    LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
+                    LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
+                    LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
+                """)
+                conn.commit()
+
         with self._transaction() as cur:
             cur.execute(
                 """
@@ -3608,12 +3880,12 @@ class Database:
                 id_tipo_mov = 2 if clase == "VENTA" else 1
                 cur.execute(
                     """
-                    INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion)
-                    SELECT id_articulo, %s, cantidad, %s, %s, 'Confirmación de ' || %s
+                    INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion, id_usuario)
+                    SELECT id_articulo, %s, cantidad, %s, %s, 'Confirmación de ' || %s, %s
                     FROM app.documento_detalle
                     WHERE id_documento = %s
                     """,
-                    (id_tipo_mov, depo_id, doc_id, clase, doc_id),
+                    (id_tipo_mov, depo_id, doc_id, clase, self.current_user_id, doc_id),
                 )
 
     def update_document_afip_data(self, doc_id: int, cae: str, cae_vencimiento: str, punto_venta: int, tipo_comprobante_afip: int):
@@ -3643,5 +3915,181 @@ class Database:
             detalle={"cae": cae, "punto_venta": punto_venta},
         )
 
+    def anular_documento(self, doc_id: int) -> bool:
+        """
+        Anula un comprobante y revierte movimientos de stock si corresponde.
+        """
+        with self._transaction() as cur:
+             cur.execute("SELECT estado, id_tipo_documento FROM app.documento WHERE id = %s FOR UPDATE", (doc_id,))
+             res = cur.fetchone()
+             if not res: raise ValueError("Documento no encontrado")
+             estado, id_tipo_doc = res
+             
+             if estado == 'ANULADO': return True
 
+             # Set status
+             cur.execute("UPDATE app.documento SET estado = 'ANULADO' WHERE id = %s", (doc_id,))
+             
+             # Revert stock movements
+             cur.execute("""
+                SELECT m.id_articulo, m.cantidad, tm.nombre as tipo_mov, m.id_deposito
+                FROM app.movimiento_articulo m
+                JOIN ref.tipo_movimiento_articulo tm ON tm.id = m.id_tipo_movimiento
+                WHERE m.id_documento = %s
+             """, (doc_id,))
+             movs = cur.fetchall()
+             
+             # Get reverse types
+             cur.execute("SELECT id, nombre FROM ref.tipo_movimiento_articulo WHERE nombre IN ('Devolución Cliente', 'Devolución Proveedor')")
+             type_map = {row[1]: row[0] for row in cur.fetchall()}
+             
+             for mov in movs:
+                 art_id, cant, tipo_nombre, dep_id = mov
+                 new_tipo_id = None
+                 
+                 if "Venta" in tipo_nombre:
+                      new_tipo_id = type_map.get('Devolución Cliente')
+                 elif "Compra" in tipo_nombre:
+                      new_tipo_id = type_map.get('Devolución Proveedor')
+                 
+                 if new_tipo_id:
+                     cur.execute("""
+                        INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion, id_usuario)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                     """, (art_id, new_tipo_id, cant, dep_id, doc_id, "Anulación de Comprobante", self.current_user_id))
+        return True
+
+    def get_article_stock(self, article_id: int) -> float:
+        query = "SELECT stock_total FROM app.v_stock_total WHERE id_articulo = %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (article_id,))
+                res = cur.fetchone()
+                return float(res[0]) if res else 0.0
+
+    def get_next_number(self, id_tipo_documento: int) -> int:
+        """Get the next serial number for a document type."""
+        query = "SELECT MAX(numero_serie::integer) FROM app.documento WHERE id_tipo_documento = %s AND numero_serie ~ '^[0-9]+$'"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (id_tipo_documento,))
+                res = cur.fetchone()
+                current_max = res[0] if res and res[0] is not None else 0
+                return current_max + 1
+
+    def get_document_full(self, doc_id: int) -> Optional[Dict[str, Any]]:
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT d.id, d.id_tipo_documento, d.id_entidad_comercial, d.id_deposito, 
+                           d.observacion, d.numero_serie, d.descuento_porcentaje, d.descuento_importe,
+                           d.fecha::text, d.fecha_vencimiento::text, d.id_lista_precio,
+                           d.neto, d.subtotal, d.iva_total, d.total, d.sena, d.estado, d.cae,
+                           d.direccion_entrega
+                    FROM app.documento d WHERE d.id = %s
+                """, (doc_id,))
+                head = cur.fetchone()
+                if not head: return None
+                
+                doc = {
+                    "id": head[0], "id_tipo_documento": head[1], "id_entidad_comercial": head[2],
+                    "id_deposito": head[3], "observacion": head[4], "numero_serie": head[5],
+                    "descuento_porcentaje": float(head[6]), "descuento_importe": float(head[7]),
+                    "fecha": head[8], "fecha_vencimiento": head[9],
+                    "id_lista_precio": head[10], "neto": float(head[11]), "subtotal": float(head[12]),
+                    "iva_total": float(head[13]), "total": float(head[14]), "sena": float(head[15]),
+                    "estado": head[16], "cae": head[17], "direccion_entrega": head[18]
+                }
+                
+                cur.execute("""
+                    SELECT id_articulo, cantidad, precio_unitario, porcentaje_iva, id_lista_precio, observacion
+                    FROM app.documento_detalle WHERE id_documento = %s ORDER BY nro_linea
+                """, (doc_id,))
+                items = []
+                for row in cur.fetchall():
+                    items.append({
+                        "id_articulo": row[0], "cantidad": float(row[1]), 
+                        "precio_unitario": float(row[2]), "porcentaje_iva": float(row[3]),
+                        "id_lista_precio": row[4], "observacion": row[5]
+                    })
+                doc["items"] = items
+                return doc
+
+    def update_document(self, doc_id: int, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
+                        items: List[Dict[str, Any]], observacion: Optional[str] = None, 
+                        numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
+                        descuento_importe: float = 0,
+                        fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
+                        id_lista_precio: Optional[int] = None,
+                        direccion_entrega: Optional[str] = None,
+                        sena: float = 0,
+                        manual_values: Optional[Dict[str, float]] = None) -> bool:
+        
+        neto_bruto = 0
+        for item in items:
+            sub = float(item["cantidad"]) * float(item["precio_unitario"])
+            neto_bruto += sub
+        
+        desc_factor = 1 - (float(descuento_porcentaje) / 100.0)
+        neto_descontado = neto_bruto * desc_factor
+        subtotal = neto_bruto
+        
+        iva_total = 0
+        for item in items:
+            sub = float(item["cantidad"]) * float(item["precio_unitario"])
+            sub_discounted = sub * desc_factor
+            iva_total += sub_discounted * (float(item["porcentaje_iva"]) / 100.0)
+        
+        neto_total = neto_descontado
+        total = neto_descontado + iva_total
+        
+        if manual_values:
+            if "subtotal" in manual_values:
+                neto_total = manual_values["subtotal"]
+            if "iva_total" in manual_values:
+                iva_total = manual_values["iva_total"]
+            if "total" in manual_values:
+                total = manual_values["total"]
+
+        final_fecha = fecha if fecha else datetime.now()
+
+        with self._transaction() as cur:
+            cur.execute("""
+                UPDATE app.documento
+                SET id_tipo_documento=%s, id_entidad_comercial=%s, id_deposito=%s,
+                    observacion=%s, numero_serie=%s, descuento_porcentaje=%s, descuento_importe=%s,
+                    neto=%s, subtotal=%s, iva_total=%s, total=%s, sena=%s,
+                    fecha=%s, fecha_vencimiento=%s, id_lista_precio=%s,
+                    direccion_entrega=%s, id_usuario=%s
+                WHERE id=%s
+            """, (
+                id_tipo_documento, id_entidad_comercial, id_deposito,
+                observacion, numero_serie, descuento_porcentaje, descuento_importe,
+                neto_total, subtotal, iva_total, total, sena,
+                final_fecha, fecha_vencimiento, id_lista_precio,
+                direccion_entrega, self.current_user_id,
+                doc_id
+            ))
+            
+            cur.execute("DELETE FROM app.documento_detalle WHERE id_documento = %s", (doc_id,))
+            
+            detail_query = ("""
+                INSERT INTO app.documento_detalle (
+                    id_documento, nro_linea, id_articulo, cantidad, 
+                    precio_unitario, porcentaje_iva, total_linea, id_lista_precio, observacion
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """)
+            
+            detail_rows = []
+            for i, item in enumerate(items, 1):
+                line_total = float(item["cantidad"]) * float(item["precio_unitario"])
+                detail_rows.append((
+                    doc_id, i, item["id_articulo"], item["cantidad"],
+                    item["precio_unitario"], item["porcentaje_iva"], line_total,
+                    item.get("id_lista_precio"), item.get("observacion")
+                ))
+            
+            cur.executemany(detail_query, detail_rows)
+            
+            return True
 

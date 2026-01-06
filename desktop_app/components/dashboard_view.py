@@ -88,7 +88,9 @@ class DashboardView(ft.Container):
             self.stats = self.db.get_full_dashboard_stats(self.role)
             self.last_updated_text.value = f"Última actualización: {datetime.datetime.now().strftime('%H:%M:%S')}"
         except Exception as e:
-            print(f"Error loading dashboard stats: {e}")
+            err_msg = str(e).lower()
+            if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
+                print(f"Error loading dashboard stats: {e}")
             self.stats = {} # Fallback
             
         # 3. Show Content

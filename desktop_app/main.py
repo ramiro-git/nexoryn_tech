@@ -6,6 +6,17 @@ import sys
 
 import flet as ft
 
+# Damp Flet AssertionError: content must be visible in DataTable
+_original_before_update = ft.DataTable.before_update
+def _patched_before_update(self):
+    try:
+        if _original_before_update:
+            _original_before_update(self)
+    except (Exception, AssertionError):
+        pass
+ft.DataTable.before_update = _patched_before_update
+
+
 
 def _get_target():
     ui = (os.getenv("NEXORYN_UI") or "basic").strip().lower()

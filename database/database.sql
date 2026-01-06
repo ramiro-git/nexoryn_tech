@@ -253,13 +253,16 @@ CREATE TABLE IF NOT EXISTS app.documento (
   estado                  VARCHAR(12) NOT NULL DEFAULT 'BORRADOR',
   id_lista_precio         BIGINT REFERENCES ref.lista_precio(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   descuento_porcentaje    NUMERIC(6,2) NOT NULL DEFAULT 0,
+  descuento_importe       NUMERIC(14,4) NOT NULL DEFAULT 0,
   observacion             TEXT,
+  direccion_entrega       TEXT,
   fecha_vencimiento       DATE,
   id_deposito             BIGINT REFERENCES ref.deposito(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   neto                    NUMERIC(14,4) NOT NULL DEFAULT 0,
   subtotal                NUMERIC(14,4) NOT NULL DEFAULT 0,
   iva_total               NUMERIC(14,4) NOT NULL DEFAULT 0,
   total                   NUMERIC(14,4) NOT NULL DEFAULT 0,
+  sena                    NUMERIC(14,4) NOT NULL DEFAULT 0,
   id_usuario              BIGINT REFERENCES seguridad.usuario(id) ON UPDATE CASCADE ON DELETE SET NULL,
   -- ARCA/AFIP Fields for Electronic Invoicing
   punto_venta             INTEGER,
@@ -284,6 +287,8 @@ CREATE TABLE IF NOT EXISTS app.documento_detalle (
   descuento_porcentaje   NUMERIC(6,2) NOT NULL DEFAULT 0,
   porcentaje_iva         NUMERIC(6,2) NOT NULL DEFAULT 0,
   total_linea            NUMERIC(14,4) NOT NULL DEFAULT 0,
+  id_lista_precio        BIGINT REFERENCES ref.lista_precio(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  observacion            TEXT,
   PRIMARY KEY (id_documento, nro_linea),
   CONSTRAINT ck_det_cant CHECK (TRUE), -- Relaxed to allow legacy negative values
   CONSTRAINT ck_det_precio CHECK (TRUE),
@@ -386,7 +391,6 @@ SELECT
 FROM app.articulo a
 LEFT JOIN app.articulo_stock_resumen sr ON a.id = sr.id_articulo;
 
-DROP VIEW IF EXISTS app.v_movimientos_full CASCADE;
 CREATE OR REPLACE VIEW app.v_movimientos_full AS
 SELECT 
   m.id,
@@ -399,13 +403,16 @@ SELECT
   u.nombre AS usuario,
   m.observacion,
   doc.id AS id_documento,
-  td.nombre AS tipo_documento
+  td.nombre AS tipo_documento,
+  doc.numero_serie AS nro_comprobante,
+  COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
 FROM app.movimiento_articulo m
 JOIN app.articulo a ON m.id_articulo = a.id
 JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
 JOIN ref.deposito d ON m.id_deposito = d.id
 LEFT JOIN app.documento doc ON m.id_documento = doc.id
 LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
+LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
 LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
 
 DROP VIEW IF EXISTS app.v_documento_resumen CASCADE;
@@ -420,13 +427,21 @@ SELECT
   doc.numero_serie,
   doc.estado,
   doc.total,
+  doc.neto,
+  doc.subtotal,
+  doc.iva_total,
+  doc.sena,
+  doc.descuento_porcentaje,
+  doc.descuento_importe,
   doc.cae,
   doc.cae_vencimiento,
+  doc.observacion,
   ec.id AS id_entidad,
   COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
   ec.cuit AS cuit_receptor,
   u.nombre AS usuario,
-  doc.id_usuario
+  doc.id_usuario,
+  (SELECT fp.descripcion FROM app.pago p JOIN ref.forma_pago fp ON fp.id = p.id_forma_pago WHERE p.id_documento = doc.id ORDER BY p.id LIMIT 1) as forma_pago
 FROM app.documento doc
 JOIN ref.tipo_documento td ON td.id = doc.id_tipo_documento
 JOIN app.entidad_comercial ec ON ec.id = doc.id_entidad_comercial
@@ -763,25 +778,25 @@ ON CONFLICT (codigo) DO NOTHING;
 
 -- Payment methods
 INSERT INTO ref.forma_pago(descripcion) VALUES 
-  ('Efectivo'), ('Cheque'), ('Cuenta Corriente'), 
+  ('Efectivo / Contado'), ('Cheque'), ('Cuenta Corriente'), 
   ('Tarjeta de Crédito'), ('Tarjeta de Débito'),
   ('Transferencia Bancaria'), ('MercadoPago')
 ON CONFLICT (descripcion) DO NOTHING;
 
 -- Document types (with AFIP codes)
 INSERT INTO ref.tipo_documento(nombre, clase, afecta_stock, afecta_cuenta_corriente, codigo_afip, letra) VALUES 
-  ('PRESUPUESTO', 'VENTA', FALSE, FALSE, NULL, NULL),
+  ('PRESUPUESTO', 'VENTA', TRUE, FALSE, NULL, NULL),
   ('FACTURA A', 'VENTA', TRUE, TRUE, 1, 'A'),
   ('FACTURA B', 'VENTA', TRUE, TRUE, 6, 'B'),
   ('FACTURA C', 'VENTA', TRUE, TRUE, 11, 'C'),
   ('NOTA CREDITO A', 'VENTA', TRUE, TRUE, 3, 'A'),
   ('NOTA CREDITO B', 'VENTA', TRUE, TRUE, 8, 'B'),
   ('NOTA CREDITO C', 'VENTA', TRUE, TRUE, 13, 'C'),
-  ('NOTA DEBITO A', 'VENTA', FALSE, TRUE, 2, 'A'),
-  ('NOTA DEBITO B', 'VENTA', FALSE, TRUE, 7, 'B'),
-  ('ORDEN COMPRA', 'COMPRA', FALSE, FALSE, NULL, NULL),
+  ('NOTA DEBITO A', 'VENTA', TRUE, TRUE, 2, 'A'),
+  ('NOTA DEBITO B', 'VENTA', TRUE, TRUE, 7, 'B'),
+  ('ORDEN COMPRA', 'COMPRA', TRUE, FALSE, NULL, NULL),
   ('FACTURA COMPRA', 'COMPRA', TRUE, TRUE, NULL, NULL)
-ON CONFLICT (nombre) DO NOTHING;
+ON CONFLICT (nombre) DO UPDATE SET afecta_stock = EXCLUDED.afecta_stock;
 
 -- Movement types
 INSERT INTO ref.tipo_movimiento_articulo(nombre, signo_stock) VALUES 
