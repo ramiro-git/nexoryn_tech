@@ -376,7 +376,8 @@ class Database:
                 (SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE fecha >= current_date) as ingresos_hoy,
                 (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= date_trunc('month', now())) as egresos_mes,
                 (SELECT COALESCE(SUM(p.monto), 0) FROM app.pago p JOIN app.v_documento_resumen d ON p.id_documento = d.id WHERE d.clase = 'VENTA' AND p.fecha >= date_trunc('month', now())) as ingresos_mes,
-                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())) as iva_estimado_mes
+                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())) as iva_estimado_mes,
+                (SELECT COUNT(*) FROM app.pago WHERE fecha >= now() - interval '7 days') as pagos_recientes
         """)
         row = cur.fetchone()
         
@@ -385,7 +386,8 @@ class Database:
             "egresos_mes": float(row[1] or 0),
             "ingresos_mes": float(row[2] or 0),
             "balance_mes": float(row[2] or 0) - float(row[1] or 0),
-            "iva_estimado": float(row[3] or 0)
+            "iva_estimado": float(row[3] or 0),
+            "pagos_recientes": int(row[4] or 0)
         }
 
     def _get_stats_operativas(self, cur, role) -> Dict[str, Any]:
@@ -959,6 +961,22 @@ class Database:
         except Exception:
             pass
 
+        # Range Stock filter
+        stock_min = advanced.get("stock_min")
+        stock_max = advanced.get("stock_max")
+        try:
+            if stock_min is not None and stock_min != "":
+                filters.append("COALESCE(stock_actual, 0) >= %s")
+                params.append(float(stock_min))
+        except:
+            pass
+        try:
+            if stock_max is not None and stock_max != "":
+                filters.append("COALESCE(stock_actual, 0) <= %s")
+                params.append(float(stock_max))
+        except:
+            pass
+
         stock_bajo = advanced.get("stock_bajo_minimo")
         if stock_bajo is True:
             filters.append("COALESCE(stock_actual, 0) < COALESCE(stock_minimo, 0)")
@@ -986,7 +1004,7 @@ class Database:
             params.append(prov_id)
 
         ubicacion = advanced.get("ubicacion_exacta")
-        if ubicacion not in (None, ""):
+        if ubicacion not in (None, "", "Todas", "Todas/os"):
             filters.append("ubicacion = %s")
             params.append(str(ubicacion))
 
@@ -997,8 +1015,6 @@ class Database:
             filters.append("redondeo = FALSE")
 
         return " AND ".join(filters), params
-
-
 
     def _get_target_columns(self, target: str, list_id: Optional[int]) -> Tuple[str, str]:
         """Returns (table, column_to_update)"""
@@ -3494,8 +3510,8 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 4)
         
         ref = advanced.get("referencia")
         if ref:
@@ -3503,23 +3519,60 @@ class Database:
             params.append(f"%{ref.lower().strip()}%")
         
         forma = advanced.get("forma")
-        if forma:
-            filters.append("lower(fp.descripcion) LIKE %s")
-            params.append(f"%{forma.lower().strip()}%")
+        if forma and str(forma) not in ("0", "Todos", "Todas", "---"):
+            if str(forma).isdigit():
+                filters.append("p.id_forma_pago = %s")
+                params.append(int(forma))
+            else:
+                filters.append("lower(fp.descripcion) LIKE %s")
+                params.append(f"%{forma.lower().strip()}%")
             
         desde = advanced.get("desde")
         if desde:
             filters.append("p.fecha >= %s")
             params.append(desde)
 
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("p.fecha <= %s")
+            params.append(hasta)
+
+        entidad = advanced.get("entidad")
+        if entidad and str(entidad) not in ("0", "Todos", "Todas", "---"):
+            # If it's a digit, it's an ID
+            if str(entidad).isdigit():
+                filters.append("d.id_entidad_comercial = %s")
+                params.append(int(entidad))
+            else:
+                filters.append("lower(ec.apellido || ' ' || ec.nombre) LIKE %s")
+                params.append(f"%{entidad.lower().strip()}%")
+
+        m_min = advanced.get("monto_min")
+        if m_min is not None:
+            filters.append("p.monto >= %s")
+            params.append(float(m_min))
+
+        m_max = advanced.get("monto_max")
+        if m_max is not None:
+            filters.append("p.monto <= %s")
+            params.append(float(m_max))
+
         where_clause = " AND ".join(filters)
-        sort_columns = {"id": "p.id", "fecha": "p.fecha", "monto": "p.monto", "forma": "fp.descripcion"}
+        sort_columns = {
+            "id": "p.id", 
+            "fecha": "p.fecha", 
+            "monto": "p.monto", 
+            "forma": "fp.descripcion",
+            "entidad": "ec.apellido"
+        }
         order_by = self._build_order_by(sorts, sort_columns, default="p.fecha DESC")
         query = f"""
-            SELECT p.*, fp.descripcion as forma, d.numero_serie as documento
+            SELECT p.*, fp.descripcion as forma, d.numero_serie as documento,
+                   COALESCE(ec.apellido || ' ' || ec.nombre, ec.razon_social) as entidad
             FROM app.pago p
             JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
             JOIN app.documento d ON p.id_documento = d.id
+            LEFT JOIN app.entidad_comercial ec ON d.id_entidad_comercial = ec.id
             WHERE {where_clause}
             ORDER BY {order_by}
             LIMIT %s OFFSET %s
@@ -3535,8 +3588,8 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 4)
             
         ref = advanced.get("referencia")
         if ref:
@@ -3544,17 +3597,52 @@ class Database:
             params.append(f"%{ref.lower().strip()}%")
         
         forma = advanced.get("forma")
-        if forma:
-            filters.append("lower(fp.descripcion) LIKE %s")
-            params.append(f"%{forma.lower().strip()}%")
+        if forma and str(forma) not in ("0", "Todos", "Todas", "---"):
+            if str(forma).isdigit():
+                filters.append("p.id_forma_pago = %s")
+                params.append(int(forma))
+            else:
+                filters.append("lower(fp.descripcion) LIKE %s")
+                params.append(f"%{forma.lower().strip()}%")
             
         desde = advanced.get("desde")
         if desde:
             filters.append("p.fecha >= %s")
             params.append(desde)
 
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("p.fecha <= %s")
+            params.append(hasta)
+
+        entidad = advanced.get("entidad")
+        if entidad and str(entidad) not in ("0", "Todos", "Todas", "---"):
+            if str(entidad).isdigit():
+                filters.append("d.id_entidad_comercial = %s")
+                params.append(int(entidad))
+            else:
+                filters.append("lower(ec.apellido || ' ' || ec.nombre) LIKE %s")
+                params.append(f"%{entidad.lower().strip()}%")
+
+        m_min = advanced.get("monto_min")
+        if m_min is not None:
+            filters.append("p.monto >= %s")
+            params.append(float(m_min))
+
+        m_max = advanced.get("monto_max")
+        if m_max is not None:
+            filters.append("p.monto <= %s")
+            params.append(float(m_max))
+
         where_clause = " AND ".join(filters)
-        query = f"SELECT COUNT(*) as total FROM app.pago p JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id WHERE {where_clause}"
+        query = f"""
+            SELECT COUNT(*) as total 
+            FROM app.pago p 
+            JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id 
+            JOIN app.documento d ON p.id_documento = d.id
+            LEFT JOIN app.entidad_comercial ec ON d.id_entidad_comercial = ec.id
+            WHERE {where_clause}
+        """
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)

@@ -391,25 +391,101 @@ def main(page: ft.Page) -> None:
     
         # Initialize Backup Service & Scheduler
         backup_service = BackupService(pg_bin_path=config.pg_bin_path)
-        scheduler = BackgroundScheduler()
-        
-        # Schedule automated backups
-        def run_scheduled_backup(btype):
-            try:
-                # Run the actual backup
-                backup_service.create_backup(btype)
-                # Record it in the DB so detecting missed ones works
-                if db:
-                    backup_service.record_backup_execution(db, btype)
-            except Exception as e:
-                logger.error(f"Scheduled {btype} backup failed: {e}")
 
-        scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
-        scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
-        scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
-        scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
-        
-        scheduler.start()
+        # Initialize Professional Backup System Scheduler
+        professional_scheduler = None
+        try:
+            # Import and initialize professional backup system
+            from services.backup_manager import BackupManager
+            from apscheduler.schedulers.background import BackgroundScheduler as ProScheduler
+            from apscheduler.triggers.cron import CronTrigger as ProCronTrigger
+
+            professional_backup_manager = BackupManager(db)
+            professional_scheduler = ProScheduler(timezone='America/Argentina/Buenos_Aires')
+
+            # Schedule professional backups: FULL, DIFERENCIAL, INCREMENTAL
+            def run_professional_backup(backup_type):
+                try:
+                    resultado = professional_backup_manager.execute_scheduled_backup(backup_type)
+                    if resultado['exitoso']:
+                        logger.info(f"Professional {backup_type} backup completed successfully")
+                    else:
+                        logger.error(f"Professional {backup_type} backup failed: {resultado['mensaje']}")
+                except Exception as e:
+                    logger.error(f"Error in professional {backup_type} backup: {e}")
+
+            # FULL backup: Día 1 de cada mes a las 00:00
+            professional_scheduler.add_job(
+                lambda: run_professional_backup('FULL'),
+                ProCronTrigger(day=1, hour=0, minute=0),
+                id='professional_backup_full',
+                name='Backup FULL (Mensual)',
+                max_instances=1,
+                replace_existing=True
+            )
+
+            # DIFERENCIAL backup: Domingo a las 23:30
+            professional_scheduler.add_job(
+                lambda: run_professional_backup('DIFERENCIAL'),
+                ProCronTrigger(day_of_week='sun', hour=23, minute=30),
+                id='professional_backup_diferencial',
+                name='Backup DIFERENCIAL (Semanal)',
+                max_instances=1,
+                replace_existing=True
+            )
+
+            # INCREMENTAL backup: Diario a las 23:00
+            professional_scheduler.add_job(
+                lambda: run_professional_backup('INCREMENTAL'),
+                ProCronTrigger(hour=23, minute=0),
+                id='professional_backup_incremental',
+                name='Backup INCREMENTAL (Diario)',
+                max_instances=1,
+                replace_existing=True
+            )
+
+            # Validación diaria de backups
+            def run_backup_validation():
+                try:
+                    resultado = professional_backup_manager.validate_all_backups()
+                    logger.info(f"Backup validation completed: {resultado['validos']}/{resultado['total']} valid")
+                except Exception as e:
+                    logger.error(f"Error in backup validation: {e}")
+
+            professional_scheduler.add_job(
+                run_backup_validation,
+                ProCronTrigger(hour=1, minute=0),
+                id='backup_validation',
+                name='Validación de Backups',
+                max_instances=1,
+                replace_existing=True
+            )
+
+            professional_scheduler.start()
+            logger.info("Professional backup system scheduler started successfully")
+
+        except Exception as e:
+            logger.warning(f"Could not initialize professional backup system: {e}")
+            # Fallback to legacy system
+            professional_scheduler = BackgroundScheduler()
+
+            def run_scheduled_backup(btype):
+                try:
+                    backup_service.create_backup(btype)
+                    if db:
+                        backup_service.record_backup_execution(db, btype)
+                except Exception as e:
+                    logger.error(f"Scheduled {btype} backup failed: {e}")
+
+            professional_scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
+            professional_scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
+            professional_scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
+            professional_scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
+
+            professional_scheduler.start()
+
+        # Use professional scheduler as main scheduler
+        scheduler = professional_scheduler
         
         afip: Optional[AfipService] = None
         if config.afip_cuit and config.afip_cert and config.afip_key:
@@ -527,6 +603,10 @@ def main(page: ft.Page) -> None:
         try: refresh_articles_catalogs()
         except: pass
         try: refresh_movimientos_catalogs()
+        except: pass
+        try: refresh_documentos_catalogs()
+        except: pass
+        try: refresh_pagos_catalogs()
         except: pass
 
     # reload_catalogs() will be called at the end of main after all controls are defined
@@ -646,7 +726,7 @@ def main(page: ft.Page) -> None:
     def _art_slider_change(e):
         # Update label real-time
         s = articulos_advanced_costo_slider
-        articulos_advanced_costo_label.value = f"Costo: Filas entre ${int(s.start_value):,} y ${int(s.end_value):,}"
+        articulos_advanced_costo_label.value = f"Costo: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
         try: articulos_advanced_costo_label.update()
         except: pass
 
@@ -654,7 +734,7 @@ def main(page: ft.Page) -> None:
         s = articulos_advanced_costo_slider
         s.start_value = s.min
         s.end_value = s.max
-        articulos_advanced_costo_label.value = f"Costo: Filas entre ${int(s.min):,} y ${int(s.max):,}"
+        articulos_advanced_costo_label.value = f"Costo: entre {_format_money(s.min)} y {_format_money(s.max)}"
         try: 
             s.update()
             articulos_advanced_costo_label.update()
@@ -681,10 +761,44 @@ def main(page: ft.Page) -> None:
         on_change_end=_art_live,
     )
     
-    articulos_advanced_costo_label = ft.Text("Filtro de Costo ($)", size=12, weight=ft.FontWeight.BOLD)
+    articulos_advanced_costo_label = ft.Text("Filtro de Costo", size=12, weight=ft.FontWeight.BOLD)
     articulos_advanced_costo_ctrl = ft.Column([
         articulos_advanced_costo_label,
         articulos_advanced_costo_slider
+    ], spacing=0, width=350)
+
+    # Stock range filter
+    def _art_stock_slider_change(e):
+        s = articulos_advanced_stock_slider
+        articulos_advanced_stock_label.value = f"Stock: entre {int(s.start_value)} y {int(s.end_value)} un."
+        try: articulos_advanced_stock_label.update()
+        except: pass
+
+    def _reset_stock_filter(ctrl, val):
+        s = articulos_advanced_stock_slider
+        s.start_value = s.min
+        s.end_value = s.max
+        articulos_advanced_stock_label.value = f"Stock: entre {int(s.min)} y {int(s.max)} un."
+        try:
+            s.update()
+            articulos_advanced_stock_label.update()
+        except: pass
+
+    articulos_advanced_stock_slider = ft.RangeSlider(
+        min=-1000, max=10000,
+        start_value=-1000, end_value=10000,
+        divisions=200,
+        width=300,
+        inactive_color="#E2E8F0",
+        active_color=COLOR_ACCENT,
+        label="{value}",
+        on_change=_art_stock_slider_change,
+        on_change_end=_art_live,
+    )
+    articulos_advanced_stock_label = ft.Text("Filtro de Stock", size=12, weight=ft.FontWeight.BOLD)
+    articulos_advanced_stock_ctrl = ft.Column([
+        articulos_advanced_stock_label,
+        articulos_advanced_stock_slider
     ], spacing=0, width=350)
 
     articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo (stock)", value=False, on_change=_art_live)
@@ -1189,8 +1303,10 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("id_rubro", articulos_advanced_rubro),
             AdvancedFilterControl("id_proveedor", articulos_advanced_proveedor),
             AdvancedFilterControl("ubicacion_exacta", articulos_advanced_ubicacion),
-            AdvancedFilterControl("costo_min", articulos_advanced_costo_slider, getter=lambda s: s.start_value, setter=_reset_cost_filter),
+            AdvancedFilterControl("costo_min", articulos_advanced_costo_ctrl, getter=lambda _: articulos_advanced_costo_slider.start_value, setter=_reset_cost_filter),
             AdvancedFilterControl("costo_max", ft.Container(), getter=lambda _: articulos_advanced_costo_slider.end_value),
+            AdvancedFilterControl("stock_min", articulos_advanced_stock_ctrl, getter=lambda _: articulos_advanced_stock_slider.start_value, setter=_reset_stock_filter),
+            AdvancedFilterControl("stock_max", ft.Container(), getter=lambda _: articulos_advanced_stock_slider.end_value),
             AdvancedFilterControl("stock_bajo_minimo", articulos_advanced_stock_bajo),
             AdvancedFilterControl("id_lista_precio", articulos_advanced_lista_precio),
             AdvancedFilterControl("activo", articulos_advanced_estado),
@@ -3375,6 +3491,38 @@ def main(page: ft.Page) -> None:
     mov_adv_desde = _date_field(page, "Desde", width=140); mov_adv_desde.on_submit = _mov_live
     mov_adv_hasta = _date_field(page, "Hasta", width=140); mov_adv_hasta.on_submit = _mov_live
 
+    def refresh_documentos_catalogs():
+        if not db: return
+        try:
+            tipos_doc = db.list_tipos_documento()
+            doc_adv_tipo.options = [ft.dropdown.Option("Todos", "Todos")] + [
+                ft.dropdown.Option(t["nombre"], t["nombre"]) for t in tipos_doc
+            ]
+            
+            ent_list = db.list_entidades_simple()
+            shared_ent_options = [ft.dropdown.Option("0", "Todas")] + [
+                ft.dropdown.Option(str(e["id"]), f"{e['nombre_completo']} ({e['tipo']})") for e in ent_list
+            ]
+            
+            doc_adv_entidad.options = shared_ent_options
+            pago_adv_entidad.options = shared_ent_options
+            
+            for ctrl in [doc_adv_tipo, doc_adv_entidad, pago_adv_entidad]:
+                try:
+                    if ctrl.page: ctrl.update()
+                except: pass
+        except: pass
+
+    def refresh_pagos_catalogs():
+        if not db: return
+        try:
+            formas = db.fetch_formas_pago(limit=100)
+            pago_adv_forma.options = [ft.dropdown.Option("0", "Todas")] + [
+                ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas
+            ]
+            if pago_adv_forma.page: pago_adv_forma.update()
+        except: pass
+
     def refresh_movimientos_catalogs():
         if not db: return
         try:
@@ -3454,7 +3602,7 @@ def main(page: ft.Page) -> None:
     
     def on_range_change(e):
         s = e.control
-        range_label.value = f"Total: entre ${_format_money(s.start_value)} y ${_format_money(s.end_value)}"
+        range_label.value = f"Total: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
         try: range_label.update()
         except: pass
 
@@ -3652,6 +3800,59 @@ def main(page: ft.Page) -> None:
 
     # Payments View
     # Payments View
+    pago_adv_ref = ft.TextField(label="Referencia", width=200, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_ref)
+    pago_adv_desde = _date_field(page, "Desde", width=140); pago_adv_desde.on_submit = lambda _: pagos_table.trigger_refresh()
+    pago_adv_hasta = _date_field(page, "Hasta", width=140); pago_adv_hasta.on_submit = lambda _: pagos_table.trigger_refresh()
+    pago_adv_entidad = ft.Dropdown(label="Entidad", options=ent_options, width=280, value="0", enable_search=True, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_entidad)
+    
+    # Forma de pago filter
+    try:
+        fp_list = db.fetch_formas_pago(limit=100)
+        fp_options = [ft.dropdown.Option("0", "Todas")] + [ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in fp_list]
+    except: fp_options = [ft.dropdown.Option("0", "Todas")]
+    pago_adv_forma = ft.Dropdown(label="Forma Pago", options=fp_options, width=200, value="0", on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_forma)
+
+    # Range slider for Monto
+    max_monto = 500000.0
+    try:
+        # We don't have a direct get_max_monto_pago, using a safe default or querying later
+        pass
+    except: pass
+    
+    monto_range_label = ft.Text(f"Monto: entre $0 y ${max_monto:,.0f}", size=12, weight=ft.FontWeight.BOLD)
+    
+    def on_pago_monto_change(e):
+        s = e.control
+        monto_range_label.value = f"Monto: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
+        try: monto_range_label.update()
+        except: pass
+
+    pago_adv_monto = ft.RangeSlider(
+        min=0, max=max_monto,
+        start_value=0, end_value=max_monto,
+        divisions=100,
+        inactive_color="#E2E8F0",
+        active_color=COLOR_ACCENT,
+        label="{value}",
+        width=300,
+        on_change=on_pago_monto_change,
+        on_change_end=lambda _: pagos_table.trigger_refresh()
+    )
+    
+    pago_adv_monto_container = ft.Column([
+        monto_range_label,
+        pago_adv_monto
+    ], spacing=0, width=320)
+
+    def reset_pago_monto(container, _):
+        pago_adv_monto.start_value = 0
+        pago_adv_monto.end_value = max_monto
+        monto_range_label.value = f"Monto: entre $0 y ${max_monto:,.0f}"
+        try:
+            pago_adv_monto.update()
+            monto_range_label.update()
+        except: pass
+
     pagos_table = GenericTable(
         columns=[
             ColumnConfig(key="fecha", label="Fecha", width=120),
@@ -3659,14 +3860,22 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="forma", label="Forma Pago", width=120),
             ColumnConfig(key="documento", label="Comprobante", width=120),
             ColumnConfig(key="entidad", label="Entidad", width=200),
-            ColumnConfig(key="referencia", label="Referencia", width=150),
+            ColumnConfig(key="referencia", label="Referencia", width=150, renderer=lambda row: ft.Text(row.get("referencia") or "---", tooltip="Dato adicional del pago (ej. nro cheque, banco, etc.)")),
         ],
         data_provider=create_catalog_provider(db.fetch_pagos, db.count_pagos),
         advanced_filters=[
-            AdvancedFilterControl("referencia", ft.TextField(label="Referencia", width=200)),
-            # AdvancedFilterControl("desde", pago_adv_desde), # Re-enable if needed
+            AdvancedFilterControl("referencia", pago_adv_ref),
+            AdvancedFilterControl("entidad", pago_adv_entidad),
+            AdvancedFilterControl("forma", pago_adv_forma),
+            AdvancedFilterControl("desde", pago_adv_desde),
+            AdvancedFilterControl("hasta", pago_adv_hasta),
+            AdvancedFilterControl("monto_min", pago_adv_monto_container, getter=lambda _: pago_adv_monto.start_value, setter=reset_pago_monto),
+            AdvancedFilterControl("monto_max", pago_adv_monto_container, getter=lambda _: pago_adv_monto.end_value, setter=reset_pago_monto),
         ],
-        show_inline_controls=False, auto_load=True, page_size=20,
+        show_inline_controls=False,
+        show_mass_actions=False, # Deshabilitar acciones masivas
+        auto_load=True, 
+        page_size=20,
     )
 
     def open_nuevo_pago(_=None):
@@ -3768,8 +3977,18 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Nuevo Pago", content, [
-            ft.TextButton("Cancelar", on_click=close_form),
-            ft.ElevatedButton("Registrar Pago", bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=_save_pago)
+            ft.TextButton(
+                "Cancelar", 
+                on_click=close_form,
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+            ),
+            ft.ElevatedButton(
+                "Registrar Pago", 
+                bgcolor=COLOR_ACCENT, 
+                color="#FFFFFF", 
+                on_click=_save_pago,
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+            )
         ])
 
     pagos_view = ft.Column([
@@ -3784,7 +4003,14 @@ def main(page: ft.Page) -> None:
             "Registro de ingresos y egresos de caja.", 
             pagos_table.build(),
             actions=[
-                 ft.ElevatedButton("Nuevo Pago", icon=ft.Icons.ADD, bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=open_nuevo_pago)
+                 ft.ElevatedButton(
+                     "Nuevo Pago", 
+                     icon=ft.Icons.ADD_ROUNDED, 
+                     bgcolor=COLOR_ACCENT, 
+                     color="#FFFFFF", 
+                     on_click=open_nuevo_pago,
+                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+                 )
             ]
         )
     ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
@@ -4122,6 +4348,7 @@ def main(page: ft.Page) -> None:
                     sf = stats["finanzas"]
                     if "docs_compras" in card_registry: card_registry["docs_compras"].value = _format_money(sf.get('egresos_mes', 0))
                     if "pagos_hoy" in card_registry: card_registry["pagos_hoy"].value = _format_money(sf.get('ingresos_hoy', 0))
+                    if "pagos_recientes" in card_registry: card_registry["pagos_recientes"].value = f"{sf.get('pagos_recientes', 0):,}"
                 
                 # Usuarios
                 so = stats.get("sistema", {})

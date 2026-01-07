@@ -1035,3 +1035,273 @@ CREATE INDEX IF NOT EXISTS idx_log_accion_lower_trgm ON seguridad.log_actividad 
 
 -- Fast adjustments lookup (movimientos sin documento)
 CREATE INDEX IF NOT EXISTS idx_mov_ajuste_fecha ON app.movimiento_articulo (fecha DESC) WHERE id_documento IS NULL;
+
+
+-- ============================================================================
+-- NEXORYN TECH - Sistema de Backups Profesionales (Incremental/Diferencial)
+-- Versión: 1.0
+-- Descripción: Sistema de tracking para backups concatenable FULL + DIF + INC
+-- ============================================================================
+
+-- Tabla de manifiesto de backups
+CREATE TABLE IF NOT EXISTS seguridad.backup_manifest (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tipo_backup           VARCHAR(20) NOT NULL,
+    backup_base_id        BIGINT, -- ID del backup base (para incremental/diferencial)
+    archivo_nombre        VARCHAR(255) NOT NULL,
+    archivo_ruta          TEXT NOT NULL,
+    fecha_inicio          TIMESTAMPTZ NOT NULL,
+    fecha_fin             TIMESTAMPTZ NOT NULL,
+    tamano_bytes          BIGINT,
+    checksum_sha256       CHAR(64),
+    wal_inicio            TEXT,
+    wal_fin               TEXT,
+    lsn_inicio            TEXT,
+    lsn_fin               TEXT,
+    comprimido            BOOLEAN DEFAULT TRUE,
+    nube_subido           BOOLEAN DEFAULT FALSE,
+    nube_url              TEXT,
+    nube_proveedor        VARCHAR(50),
+    estado                VARCHAR(20) NOT NULL DEFAULT 'COMPLETADO',
+    error_mensaje         TEXT,
+    metadata              JSONB,
+    creado_por            VARCHAR(100),
+    CONSTRAINT ck_tipo_backup CHECK (tipo_backup IN ('FULL', 'DIFERENCIAL', 'INCREMENTAL', 'MANUAL')),
+    CONSTRAINT ck_estado_backup CHECK (estado IN ('PENDIENTE', 'EN_PROGRESO', 'COMPLETADO', 'FALLIDO', 'VALIDANDO')),
+    CONSTRAINT uq_backup_archivo UNIQUE (archivo_nombre)
+);
+
+-- Índices
+CREATE INDEX IF NOT EXISTS idx_backup_fecha ON seguridad.backup_manifest (fecha_inicio DESC);
+CREATE INDEX IF NOT EXISTS idx_backup_tipo ON seguridad.backup_manifest (tipo_backup);
+CREATE INDEX IF NOT EXISTS idx_backup_estado ON seguridad.backup_manifest (estado);
+CREATE INDEX IF NOT EXISTS idx_backup_base_id ON seguridad.backup_manifest (backup_base_id);
+CREATE INDEX IF NOT EXISTS idx_backup_fecha_fin ON seguridad.backup_manifest (fecha_fin DESC);
+CREATE INDEX IF NOT EXISTS idx_backup_nube ON seguridad.backup_manifest (nube_subido) WHERE nube_subido = TRUE;
+
+-- Tabla de relaciones de backup (cadenas de restauración)
+CREATE TABLE IF NOT EXISTS seguridad.backup_chain (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    full_backup_id        BIGINT NOT NULL REFERENCES seguridad.backup_manifest(id),
+    diferencial_id        BIGINT REFERENCES seguridad.backup_manifest(id),
+    incremental_ids       BIGINT[],
+    fecha_ultima_actualizacion TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT fk_chain_full FOREIGN KEY (full_backup_id) REFERENCES seguridad.backup_manifest(id),
+    CONSTRAINT fk_chain_dif FOREIGN KEY (diferencial_id) REFERENCES seguridad.backup_manifest(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backup_chain_full ON seguridad.backup_chain (full_backup_id);
+
+-- Tabla de historial de validaciones
+CREATE TABLE IF NOT EXISTS seguridad.backup_validation (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    backup_id             BIGINT NOT NULL REFERENCES seguridad.backup_manifest(id),
+    fecha_validacion      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tipo_validacion       VARCHAR(50) NOT NULL,
+    resultado             VARCHAR(20) NOT NULL,
+    checksum_calculado    CHAR(64),
+    checksum_esperado     CHAR(64),
+    tiempo_segundos       NUMERIC(10,2),
+    detalles              JSONB,
+    validado_por          VARCHAR(100),
+    CONSTRAINT ck_validacion_resultado CHECK (resultado IN ('EXITOSO', 'FALLIDO', 'ADVERTENCIA'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_validacion_backup ON seguridad.backup_validation (backup_id);
+CREATE INDEX IF NOT EXISTS idx_validacion_fecha ON seguridad.backup_validation (fecha_validacion DESC);
+
+-- Tabla de políticas de retención
+CREATE TABLE IF NOT EXISTS seguridad.backup_retention_policy (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nombre                VARCHAR(50) NOT NULL UNIQUE,
+    descripcion           TEXT,
+    retencion_full_meses  INTEGER NOT NULL DEFAULT 12,
+    retencion_diferencial_semanas INTEGER NOT NULL DEFAULT 8,
+    retencion_incremental_dias INTEGER NOT NULL DEFAULT 7,
+    min_cadenas_activas   INTEGER NOT NULL DEFAULT 2,
+    activa                BOOLEAN DEFAULT TRUE,
+    fecha_creacion        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Insertar política por defecto
+INSERT INTO seguridad.backup_retention_policy (nombre, descripcion, retencion_full_meses, retencion_diferencial_semanas, retencion_incremental_dias)
+VALUES ('ESTANDAR', 'Política de retención estándar: 12 meses full, 8 semanas diferenciales, 7 días incrementales', 12, 8, 7)
+ON CONFLICT (nombre) DO NOTHING;
+
+-- Tabla de eventos de backup (para auditoría)
+CREATE TABLE IF NOT EXISTS seguridad.backup_event (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tipo_evento           VARCHAR(50) NOT NULL,
+    backup_id             BIGINT REFERENCES seguridad.backup_manifest(id),
+    fecha_hora            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    detalle               JSONB,
+    nivel_log             VARCHAR(20) DEFAULT 'INFO',
+    CONSTRAINT ck_nivel_log CHECK (nivel_log IN ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_backup_event_fecha ON seguridad.backup_event (fecha_hora DESC);
+CREATE INDEX IF NOT EXISTS idx_backup_event_backup ON seguridad.backup_event (backup_id);
+CREATE INDEX IF NOT EXISTS idx_backup_event_tipo ON seguridad.backup_event (tipo_evento);
+
+-- Vista de resumen de backups
+CREATE OR REPLACE VIEW seguridad.v_backup_resumen AS
+SELECT
+    id,
+    tipo_backup,
+    archivo_nombre,
+    fecha_inicio,
+    fecha_fin,
+    fecha_fin - fecha_inicio as duracion,
+    tamano_bytes,
+    ROUND(tamano_bytes / 1024.0 / 1024.0, 2) as tamano_mb,
+    comprimido,
+    nube_subido,
+    estado,
+    CASE
+        WHEN tipo_backup = 'FULL' THEN 'Backup completo mensual'
+        WHEN tipo_backup = 'DIFERENCIAL' THEN 'Backup diferencial semanal'
+        WHEN tipo_backup = 'INCREMENTAL' THEN 'Backup incremental diario'
+        ELSE 'Backup manual'
+    END as descripcion
+FROM seguridad.backup_manifest
+ORDER BY fecha_inicio DESC;
+
+-- Vista de cadenas de backup concatenables
+CREATE OR REPLACE VIEW seguridad.v_backup_cadenas AS
+SELECT
+    c.id as chain_id,
+    f.id as full_id,
+    f.archivo_nombre as full_archivo,
+    f.fecha_inicio as full_fecha,
+    d.archivo_nombre as diferencial_archivo,
+    d.fecha_inicio as diferencial_fecha,
+    COUNT(i.id) as cantidad_incrementales,
+    MIN(i.fecha_inicio) as inc_inicio,
+    MAX(i.fecha_inicio) as inc_fin
+FROM seguridad.backup_chain c
+JOIN seguridad.backup_manifest f ON c.full_backup_id = f.id
+LEFT JOIN seguridad.backup_manifest d ON c.diferencial_id = d.id
+LEFT JOIN LATERAL unnest(c.incremental_ids) WITH ORDINALITY AS inc(backup_id, ord)
+    JOIN seguridad.backup_manifest i ON i.id = inc.backup_id ON TRUE
+GROUP BY c.id, f.id, d.id
+ORDER BY f.fecha_inicio DESC;
+
+-- Función auxiliar: Obtener último backup FULL
+CREATE OR REPLACE FUNCTION seguridad.get_last_full_backup()
+RETURNS TABLE (
+    backup_id BIGINT,
+    archivo_nombre VARCHAR(255),
+    fecha_inicio TIMESTAMPTZ,
+    lsn_inicio TEXT,
+    lsn_fin TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        bm.id,
+        bm.archivo_nombre,
+        bm.fecha_inicio,
+        bm.lsn_inicio,
+        bm.lsn_fin
+    FROM seguridad.backup_manifest bm
+    WHERE bm.tipo_backup = 'FULL'
+      AND bm.estado = 'COMPLETADO'
+    ORDER BY bm.fecha_inicio DESC
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función auxiliar: Obtener último backup DIFERENCIAL
+CREATE OR REPLACE FUNCTION seguridad.get_last_differential_backup(p_full_id BIGINT DEFAULT NULL)
+RETURNS TABLE (
+    backup_id BIGINT,
+    archivo_nombre VARCHAR(255),
+    fecha_inicio TIMESTAMPTZ,
+    lsn_inicio TEXT,
+    lsn_fin TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        bm.id,
+        bm.archivo_nombre,
+        bm.fecha_inicio,
+        bm.lsn_inicio,
+        bm.lsn_fin
+    FROM seguridad.backup_manifest bm
+    WHERE bm.tipo_backup = 'DIFERENCIAL'
+      AND bm.estado = 'COMPLETADO'
+      AND (p_full_id IS NULL OR bm.backup_base_id = p_full_id)
+    ORDER BY bm.fecha_inicio DESC
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función auxiliar: Obtener último backup INCREMENTAL
+CREATE OR REPLACE FUNCTION seguridad.get_last_incremental_backup(p_base_id BIGINT DEFAULT NULL)
+RETURNS TABLE (
+    backup_id BIGINT,
+    archivo_nombre VARCHAR(255),
+    fecha_inicio TIMESTAMPTZ,
+    lsn_inicio TEXT,
+    lsn_fin TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        bm.id,
+        bm.archivo_nombre,
+        bm.fecha_inicio,
+        bm.lsn_inicio,
+        bm.lsn_fin
+    FROM seguridad.backup_manifest bm
+    WHERE bm.tipo_backup = 'INCREMENTAL'
+      AND bm.estado = 'COMPLETADO'
+      AND (p_base_id IS NULL OR bm.backup_base_id = p_base_id)
+    ORDER BY bm.fecha_inicio DESC
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función para calcular espacio total de backups
+CREATE OR REPLACE FUNCTION seguridad.get_backup_space_usage()
+RETURNS TABLE (
+    tipo_backup VARCHAR(20),
+    total_bytes BIGINT,
+    total_mb NUMERIC,
+    cantidad INTEGER
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        tipo_backup,
+        SUM(tamano_bytes) as total_bytes,
+        ROUND(SUM(tamano_bytes) / 1024.0 / 1024.0, 2) as total_mb,
+        COUNT(*) as cantidad
+    FROM seguridad.backup_manifest
+    WHERE estado = 'COMPLETADO'
+    GROUP BY tipo_backup
+    ORDER BY tipo_backup;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger para actualizar fecha de actualización en backup_chain
+CREATE OR REPLACE FUNCTION seguridad.trg_backup_chain_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.fecha_ultima_actualizacion = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_backup_chain_update ON seguridad.backup_chain;
+CREATE TRIGGER trg_backup_chain_update
+    BEFORE UPDATE ON seguridad.backup_chain
+    FOR EACH ROW
+    EXECUTE FUNCTION seguridad.trg_backup_chain_update();
+
+COMMENT ON TABLE seguridad.backup_manifest IS 'Registro de todos los backups realizados';
+COMMENT ON TABLE seguridad.backup_chain IS 'Relaciones entre backups para formar cadenas concatenables';
+COMMENT ON TABLE seguridad.backup_validation IS 'Historial de validaciones de backups';
+COMMENT ON TABLE seguridad.backup_retention_policy IS 'Políticas de retención de backups';
+COMMENT ON TABLE seguridad.backup_event IS 'Eventos del sistema de backups';
