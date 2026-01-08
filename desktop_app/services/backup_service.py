@@ -58,17 +58,12 @@ class BackupService:
         self._ensure_directories()
     
     def _ensure_directories(self):
-        """Create backup subdirectories if they don't exist."""
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Subdirectories for organized backups
+        """Standard backup directory creation is disabled to favor incremental system."""
+        # Definitions are kept for compatibility with listing methods, but creation is disabled.
         self.daily_dir = self.backup_dir / "daily"
         self.weekly_dir = self.backup_dir / "weekly"
         self.monthly_dir = self.backup_dir / "monthly"
         self.manual_dir = self.backup_dir / "manual"
-        
-        for d in [self.daily_dir, self.weekly_dir, self.monthly_dir, self.manual_dir]:
-            d.mkdir(parents=True, exist_ok=True)
     
     def set_backup_dir(self, new_path: str) -> bool:
         """Change the backup directory to a new location."""

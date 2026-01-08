@@ -3510,8 +3510,8 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 4)
+            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s OR lower(d.numero_serie) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 5)
         
         ref = advanced.get("referencia")
         if ref:
@@ -3563,7 +3563,8 @@ class Database:
             "fecha": "p.fecha", 
             "monto": "p.monto", 
             "forma": "fp.descripcion",
-            "entidad": "ec.apellido"
+            "entidad": "ec.apellido",
+            "documento": "CASE WHEN d.numero_serie ~ '^[0-9]+$' THEN LPAD(d.numero_serie, 20, '0') ELSE d.numero_serie END"
         }
         order_by = self._build_order_by(sorts, sort_columns, default="p.fecha DESC")
         query = f"""
@@ -3588,8 +3589,8 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 4)
+            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s OR lower(d.numero_serie) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 5)
             
         ref = advanced.get("referencia")
         if ref:
@@ -3738,6 +3739,7 @@ class Database:
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 self._setup_session(cur)
+                # 1. Insert Payment
                 cur.execute(
                     query,
                     (
@@ -3750,8 +3752,24 @@ class Database:
                     )
                 )
                 res = cur.fetchone()
+                payment_id = res.get("id") if isinstance(res, dict) else res[0]
+
+                # 2. Check balance and update status if fully paid
+                cur.execute("SELECT total FROM app.documento WHERE id = %s", (id_documento,))
+                doc_res = cur.fetchone()
+                if doc_res:
+                    doc_total = float(doc_res.get("total") if isinstance(doc_res, dict) else doc_res[0])
+                    
+                    cur.execute("SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE id_documento = %s", (id_documento,))
+                    pay_res = cur.fetchone()
+                    total_paid = float(pay_res.get("coalesce") if isinstance(pay_res, dict) else (pay_res[0] or 0))
+                    
+                    # Use a small epsilon for float comparison
+                    if total_paid >= (doc_total - 0.01):
+                        cur.execute("UPDATE app.documento SET estado = 'PAGADO' WHERE id = %s", (id_documento,))
+
                 conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+                return payment_id
 
     def create_document(self, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
@@ -3866,8 +3884,9 @@ class Database:
                 res = cur.fetchone()
                 return float(res[0]) if res else 0.0
 
-    def list_entidades_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
-        query = f"SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada WHERE activo = True ORDER BY nombre_completo ASC LIMIT {limit}"
+    def list_entidades_simple(self, limit: int = 200, only_active: bool = True) -> List[Dict[str, Any]]:
+        where = "WHERE activo = True" if only_active else ""
+        query = f"SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada {where} ORDER BY nombre_completo ASC LIMIT {limit}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
@@ -4180,4 +4199,361 @@ class Database:
             cur.executemany(detail_query, detail_rows)
             
             return True
+
+    # =========================================================================
+    # CUENTAS CORRIENTES
+    # =========================================================================
+
+    def registrar_movimiento_cc(
+        self,
+        id_entidad: int,
+        tipo: str,
+        concepto: str,
+        monto: float,
+        id_documento: Optional[int] = None,
+        id_pago: Optional[int] = None,
+        observacion: Optional[str] = None
+    ) -> int:
+        """
+        Registra un movimiento de cuenta corriente.
+        tipo: 'DEBITO' (aumenta deuda), 'CREDITO' (reduce deuda), 
+              'AJUSTE_DEBITO', 'AJUSTE_CREDITO', 'ANULACION'
+        """
+        query = "SELECT app.registrar_movimiento_cc(%s, %s, %s, %s, %s, %s, %s, %s)"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                self._setup_session(cur)
+                cur.execute(query, (
+                    id_entidad, tipo, concepto, monto,
+                    id_documento, id_pago, observacion, self.current_user_id
+                ))
+                res = cur.fetchone()
+                conn.commit()
+                return res[0] if res else 0
+
+    def get_saldo_entidad(self, id_entidad: int) -> Dict[str, Any]:
+        """Obtiene el saldo actual y detalles de cuenta corriente de una entidad."""
+        query = """
+            SELECT id_entidad_comercial, saldo_actual, limite_credito, 
+                   ultimo_movimiento, tipo_entidad
+            FROM app.saldo_cuenta_corriente
+            WHERE id_entidad_comercial = %s
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (id_entidad,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id_entidad": row[0],
+                        "saldo": float(row[1]),
+                        "limite_credito": float(row[2]),
+                        "ultimo_movimiento": row[3],
+                        "tipo_entidad": row[4]
+                    }
+                return {"id_entidad": id_entidad, "saldo": 0.0, "limite_credito": 0.0}
+
+    def fetch_cuentas_corrientes(
+        self,
+        search: Optional[str] = None,
+        simple: Optional[str] = None,
+        advanced: Optional[Dict[str, Any]] = None,
+        sorts: Optional[Sequence[Tuple[str, str]]] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Lista resumen de cuentas corrientes con saldos."""
+        filters = ["1=1"]
+        params = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(entidad) LIKE %s OR lower(cuit) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 2)
+
+        # Filtro tipo entidad
+        tipo = advanced.get("tipo_entidad") or simple
+        if tipo and tipo not in ("", "Todos", "Todas"):
+            filters.append("tipo_entidad = %s")
+            params.append(tipo.upper())
+
+        # Filtro estado
+        estado = advanced.get("estado")
+        if estado == "DEUDOR":
+            filters.append("saldo_actual > 0")
+        elif estado == "A_FAVOR":
+            filters.append("saldo_actual < 0")
+        elif estado == "AL_DIA":
+            filters.append("saldo_actual = 0")
+
+        # Solo con saldo
+        if advanced.get("solo_con_saldo"):
+            filters.append("saldo_actual != 0")
+
+        where_clause = " AND ".join(filters)
+        sort_cols = {
+            "entidad": "entidad",
+            "saldo_actual": "saldo_actual",
+            "ultimo_movimiento": "ultimo_movimiento",
+            "tipo_entidad": "tipo_entidad",
+        }
+        order_by = self._build_order_by(sorts, sort_cols, default="saldo_actual DESC")
+
+        query = f"""
+            SELECT * FROM app.v_cuenta_corriente_resumen
+            WHERE {where_clause}
+            ORDER BY {order_by}
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return _rows_to_dicts(cur)
+
+    def count_cuentas_corrientes(
+        self,
+        search: Optional[str] = None,
+        simple: Optional[str] = None,
+        advanced: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Cuenta registros de cuentas corrientes."""
+        filters = ["1=1"]
+        params = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(entidad) LIKE %s OR lower(cuit) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 2)
+
+        tipo = advanced.get("tipo_entidad") or simple
+        if tipo and tipo not in ("", "Todos", "Todas"):
+            filters.append("tipo_entidad = %s")
+            params.append(tipo.upper())
+
+        estado = advanced.get("estado")
+        if estado == "DEUDOR":
+            filters.append("saldo_actual > 0")
+        elif estado == "A_FAVOR":
+            filters.append("saldo_actual < 0")
+        elif estado == "AL_DIA":
+            filters.append("saldo_actual = 0")
+
+        if advanced.get("solo_con_saldo"):
+            filters.append("saldo_actual != 0")
+
+        where_clause = " AND ".join(filters)
+        query = f"SELECT COUNT(*) as total FROM app.v_cuenta_corriente_resumen WHERE {where_clause}"
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                res = cur.fetchone()
+                return res[0] if res else 0
+
+    def fetch_movimientos_cc(
+        self,
+        search: Optional[str] = None,
+        simple: Optional[str] = None,
+        advanced: Optional[Dict[str, Any]] = None,
+        sorts: Optional[Sequence[Tuple[str, str]]] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Lista movimientos de cuenta corriente."""
+        filters = ["anulado = FALSE"]
+        params = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(entidad) LIKE %s OR lower(concepto) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 2)
+
+        # Filtro por entidad específica
+        entidad = advanced.get("id_entidad") or advanced.get("entidad")
+        if entidad and str(entidad) not in ("", "0", "Todos"):
+            if str(entidad).isdigit():
+                filters.append("id_entidad_comercial = %s")
+                params.append(int(entidad))
+            else:
+                filters.append("lower(entidad) LIKE %s")
+                params.append(f"%{entidad.lower().strip()}%")
+
+        # Tipo movimiento
+        tipo = advanced.get("tipo_movimiento")
+        if tipo and tipo not in ("", "Todos"):
+            filters.append("tipo_movimiento = %s")
+            params.append(tipo)
+
+        # Fechas
+        desde = advanced.get("desde")
+        if desde:
+            filters.append("fecha >= %s")
+            params.append(desde)
+
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("fecha <= %s")
+            params.append(hasta)
+
+        where_clause = " AND ".join(filters)
+        sort_cols = {
+            "fecha": "fecha",
+            "monto": "monto",
+            "entidad": "entidad",
+            "tipo_movimiento": "tipo_movimiento",
+        }
+        order_by = self._build_order_by(sorts, sort_cols, default="fecha DESC")
+
+        query = f"""
+            SELECT * FROM app.v_movimiento_cc_full
+            WHERE {where_clause}
+            ORDER BY {order_by}
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return _rows_to_dicts(cur)
+
+    def count_movimientos_cc(
+        self,
+        search: Optional[str] = None,
+        simple: Optional[str] = None,
+        advanced: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Cuenta movimientos de cuenta corriente."""
+        filters = ["anulado = FALSE"]
+        params = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(entidad) LIKE %s OR lower(concepto) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 2)
+
+        entidad = advanced.get("id_entidad") or advanced.get("entidad")
+        if entidad and str(entidad) not in ("", "0", "Todos"):
+            if str(entidad).isdigit():
+                filters.append("id_entidad_comercial = %s")
+                params.append(int(entidad))
+            else:
+                filters.append("lower(entidad) LIKE %s")
+                params.append(f"%{entidad.lower().strip()}%")
+
+        tipo = advanced.get("tipo_movimiento")
+        if tipo and tipo not in ("", "Todos"):
+            filters.append("tipo_movimiento = %s")
+            params.append(tipo)
+
+        desde = advanced.get("desde")
+        if desde:
+            filters.append("fecha >= %s")
+            params.append(desde)
+
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("fecha <= %s")
+            params.append(hasta)
+
+        where_clause = " AND ".join(filters)
+        query = f"SELECT COUNT(*) FROM app.v_movimiento_cc_full WHERE {where_clause}"
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                res = cur.fetchone()
+                return res[0] if res else 0
+
+    def get_stats_cuenta_corriente(self) -> Dict[str, Any]:
+        """Obtiene estadísticas de cuentas corrientes."""
+        query = "SELECT * FROM app.v_stats_cuenta_corriente"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "deuda_clientes": float(row[0] or 0),
+                        "clientes_deudores": int(row[1] or 0),
+                        "deuda_proveedores": float(row[2] or 0),
+                        "proveedores_acreedores": int(row[3] or 0),
+                        "movimientos_hoy": int(row[4] or 0),
+                        "cobros_hoy": float(row[5] or 0),
+                        "facturacion_hoy": float(row[6] or 0),
+                    }
+                return {}
+
+    def registrar_pago_cuenta_corriente(
+        self,
+        id_entidad: int,
+        id_forma_pago: int,
+        monto: float,
+        concepto: str = "Pago recibido",
+        referencia: Optional[str] = None,
+        observacion: Optional[str] = None
+    ) -> int:
+        """
+        Registra un pago/cobro directo a cuenta corriente sin documento asociado.
+        """
+        # Primero crear el pago (sin documento)
+        pago_query = """
+            INSERT INTO app.pago (id_documento, id_forma_pago, monto, referencia, observacion)
+            VALUES (NULL, %s, %s, %s, %s)
+            RETURNING id
+        """
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                self._setup_session(cur)
+                
+                # Insertar el pago
+                # Nota: id_documento puede ser NULL para pagos a cuenta
+                # Si la restricción actual no lo permite, registramos solo el movimiento
+                
+                # Registrar movimiento de cuenta corriente como CREDITO (reduce deuda)
+                cur.execute(
+                    "SELECT app.registrar_movimiento_cc(%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (id_entidad, 'CREDITO', concepto, monto, None, None, 
+                     f"{observacion or ''} Ref: {referencia or 'N/A'}".strip(), 
+                     self.current_user_id)
+                )
+                res = cur.fetchone()
+                mov_id = res[0] if res else 0
+                
+                conn.commit()
+                self.log_activity("CUENTA_CORRIENTE", "PAGO_RECIBIDO", id_entidad, 
+                                  detalle={"monto": monto, "forma_pago": id_forma_pago})
+                return mov_id
+
+    def ajustar_saldo_cc(
+        self,
+        id_entidad: int,
+        tipo: str,  # 'AJUSTE_DEBITO' o 'AJUSTE_CREDITO'
+        monto: float,
+        concepto: str,
+        observacion: Optional[str] = None
+    ) -> int:
+        """Realiza un ajuste manual de saldo."""
+        if tipo not in ('AJUSTE_DEBITO', 'AJUSTE_CREDITO'):
+            raise ValueError("Tipo debe ser 'AJUSTE_DEBITO' o 'AJUSTE_CREDITO'")
+        
+        mov_id = self.registrar_movimiento_cc(
+            id_entidad, tipo, concepto, monto, 
+            id_documento=None, id_pago=None, observacion=observacion
+        )
+        
+        self.log_activity("CUENTA_CORRIENTE", "AJUSTE", id_entidad,
+                          detalle={"tipo": tipo, "monto": monto, "concepto": concepto})
+        return mov_id
+
+    def get_movimientos_entidad(self, id_entidad: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """Obtiene los últimos movimientos de una entidad específica."""
+        return self.fetch_movimientos_cc(
+            advanced={"id_entidad": id_entidad},
+            limit=limit,
+            sorts=[("fecha", "DESC")]
+        )
 

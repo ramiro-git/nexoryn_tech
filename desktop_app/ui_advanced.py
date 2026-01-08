@@ -86,33 +86,32 @@ def main(page: ft.Page) -> None:
     )
     is_closing = False
     
-    # Initialize Backup Service & Scheduler
-    backup_service = BackupService()
+    # Old standard backup system disabled
+    # backup_service = BackupService()
     scheduler = BackgroundScheduler()
     
-    # Schedule automated backups
-    # Adjust times as needed. Here: Daily @ 23:00, Weekly (Sun) @ 23:30, Monthly (1st) @ 00:00
-    scheduler.add_job(
-        lambda: backup_service.create_backup("daily"), 
-        CronTrigger(hour=23, minute=0),
-        id="backup_daily"
-    )
-    scheduler.add_job(
-        lambda: backup_service.create_backup("weekly"), 
-        CronTrigger(day_of_week="sun", hour=23, minute=30),
-        id="backup_weekly"
-    )
-    scheduler.add_job(
-        lambda: backup_service.create_backup("monthly"), 
-        CronTrigger(day=1, hour=0, minute=0),
-        id="backup_monthly"
-    )
-    # Prune old backups daily at 01:00
-    scheduler.add_job(
-        lambda: backup_service.prune_backups(), 
-        CronTrigger(hour=1, minute=0),
-        id="backup_prune"
-    )
+    # Automated backups disabled
+    # scheduler.add_job(
+    #     lambda: backup_service.create_backup("daily"), 
+    #     CronTrigger(hour=23, minute=0),
+    #     id="backup_daily"
+    # )
+    # scheduler.add_job(
+    #     lambda: backup_service.create_backup("weekly"), 
+    #     CronTrigger(day_of_week="sun", hour=23, minute=30),
+    #     id="backup_weekly"
+    # )
+    # scheduler.add_job(
+    #     lambda: backup_service.create_backup("monthly"), 
+    #     CronTrigger(day=1, hour=0, minute=0),
+    #     id="backup_monthly"
+    # )
+    # # Prune old backups daily at 01:00
+    # scheduler.add_job(
+    #     lambda: backup_service.prune_backups(), 
+    #     CronTrigger(hour=1, minute=0),
+    #     id="backup_prune"
+    # )
     
     scheduler.start()
 

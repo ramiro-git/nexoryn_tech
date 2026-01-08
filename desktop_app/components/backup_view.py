@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import List, Optional, Dict, Any, Callable
+from typing import List, Optional, Dict, Any, Callable, Tuple
 from datetime import datetime, timedelta
 import flet as ft
 from pathlib import Path
@@ -10,6 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
+except ImportError:
+    # Adjust import based on environment
+    from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
 
 class BackupView:
     def __init__(self, page: ft.Page, backup_service, show_message_callback: Callable, set_connection_callback: Callable):
@@ -66,7 +71,9 @@ class BackupView:
             size_bytes /= 1024
         return f"{size_bytes:.2f} TB"
 
-    def _format_datetime(self, dt: datetime) -> str:
+    def _format_datetime(self, dt: Any) -> str:
+        if isinstance(dt, str): return dt
+        if not dt: return ""
         return dt.strftime("%Y-%m-%d %H:%M:%S")
 
     def _format_time_until(self, dt: datetime) -> str:
@@ -84,53 +91,210 @@ class BackupView:
         else:
             return "próximamente"
 
+    def _backup_provider(self, offset: int, limit: int, search: Optional[str], simple: Optional[str], advanced: Dict[str, Any], sorts: List[Tuple[str, str]]) -> Tuple[List[Dict[str, Any]], int]:
+        # Always fetch fresh data to ensure we are up to date with FS
+        all_data = self.backup_service.list_backups()
+        self.data = all_data # Keep a reference for metrics
+
+        filtered = all_data
+
+        # Filter by search (Name)
+        if search:
+            s = search.lower()
+            filtered = [b for b in filtered if s in b['name'].lower()]
+
+        # Filter by simple (Type)
+        if simple and simple != "Todos" and simple is not None:
+             filtered = [b for b in filtered if b.get('type') == simple]
+
+        # Filter by date range
+        if advanced:
+            date_from = advanced.get("date_from")
+            date_to = advanced.get("date_to")
+            
+            def parse_date(d_str):
+                try:
+                    return datetime.strptime(d_str, "%Y-%m-%d")
+                except:
+                    return None
+
+            if date_from or date_to:
+                d_from = parse_date(date_from) if date_from else None
+                d_to = parse_date(date_to) if date_to else None
+                
+                new_filtered = []
+                for b in filtered:
+                    created = b.get('created')
+                    if not isinstance(created, datetime):
+                        new_filtered.append(b)
+                        continue
+                        
+                    # Normalize to date for comparison
+                    b_date = created.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    if d_from and b_date < d_from:
+                        continue
+                    if d_to and b_date > d_to:
+                        continue
+                    new_filtered.append(b)
+                filtered = new_filtered
+
+        # Sort
+        if sorts:
+            key, direction = sorts[0]
+            reverse = (direction == "desc")
+            # Handle specific keys if needed, assuming keys match data dict
+            filtered.sort(key=lambda x: x.get(key, ""), reverse=reverse)
+        else:
+            # Default sort desc by date
+            filtered.sort(key=lambda x: x.get('created', datetime.min), reverse=True)
+
+        # Paginate
+        total = len(filtered)
+        paged = filtered[offset : offset + limit]
+        
+        return paged, total
+
+    def _create_date_input(self, label: str) -> ft.TextField:
+        tf = ft.TextField(
+            label=label, 
+            width=180, 
+            dense=True,
+            filled=True,
+            bgcolor="#F8FAFC",
+            border_color="#475569",
+            text_size=14,
+            border_radius=12,
+            content_padding=ft.padding.all(12)
+        )
+        
+        def on_date_change(e):
+            if e.control.value:
+                tf.value = e.control.value.strftime("%Y-%m-%d")
+                tf.update()
+                # Trigger table refresh
+                if hasattr(self, "backups_table"):
+                    self.backups_table.refresh()
+
+        dp = ft.DatePicker(
+            on_change=on_date_change,
+            cancel_text="CANCELAR",
+            confirm_text="ACEPTAR",
+            error_format_text="Formato inválido",
+            error_invalid_text="Fecha fuera de rango",
+            help_text="SELECCIONAR FECHA"
+        )
+        
+        # Add to overlay safely
+        if self.page:
+            self.page.overlay.append(dp)
+
+        def open_picker(_):
+            if hasattr(self.page, "open"):
+                self.page.open(dp)
+            else:
+                dp.open = True
+                self.page.update()
+
+        tf.suffix = ft.IconButton(
+            ft.Icons.CALENDAR_MONTH_ROUNDED,
+            on_click=open_picker,
+            icon_size=18,
+            tooltip="Seleccionar fecha"
+        )
+        return tf
+
     def _setup_view(self):
         # Tarjetas de programación
         self.schedule_cards_container = ft.Column([], spacing=12)
 
-        # Tabla de backups
-        self.backups_table = ft.DataTable(
+        # Filtros avanzados
+        self.date_from_input = self._create_date_input("Desde")
+        self.date_to_input = self._create_date_input("Hasta")
+        
+        # Tabla de backups con GenericTable
+        self.backups_table = GenericTable(
             columns=[
-                ft.DataColumn(ft.Text("Tipo", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Archivo", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Tamaño", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Fecha", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Estado", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Acciones", size=12, weight=ft.FontWeight.BOLD)),
+                ColumnConfig(
+                    key="type", 
+                    label="Tipo", 
+                    width=120,
+                    renderer=lambda row: self._get_backup_type_badge(row.get('type', 'manual'))
+                ),
+                ColumnConfig(key="name", label="Archivo", width=300),
+                ColumnConfig(
+                    key="size", 
+                    label="Tamaño", 
+                    width=100,
+                    formatter=lambda v, _: self._format_size(v)
+                ),
+                ColumnConfig(
+                    key="created", 
+                    label="Fecha", 
+                    width=180,
+                    formatter=lambda v, _: self._format_datetime(v)
+                ),
+                ColumnConfig(
+                    key="status",
+                    label="Estado",
+                    width=100,
+                    renderer=lambda row: self._get_status_badge('COMPLETADO') # Assuming listed are complete
+                ),
+                ColumnConfig(
+                    key="_actions",
+                    label="Acciones",
+                    width=120,
+                    sortable=False,
+                    renderer=lambda row: ft.Row([
+                        ft.IconButton(
+                            ft.Icons.RESTORE,
+                            icon_color=self.COLOR_WARNING,
+                            tooltip="Restaurar backup",
+                            on_click=lambda e: self._confirm_restore(row['path'])
+                        ),
+                        ft.IconButton(
+                            ft.Icons.DELETE,
+                            icon_color=self.COLOR_ERROR,
+                            tooltip="Eliminar backup",
+                            on_click=lambda e: self._delete_backup(row['path'])
+                        ),
+                    ], spacing=0)
+                )
             ],
-            rows=[],
-            border_radius=10,
-            border=ft.border.all(1, self.COLOR_BORDER),
-            heading_row_color=ft.Colors.with_opacity(0.05, self.COLOR_PRIMARY),
-            data_row_max_height=60,
-        )
-
-        # Tabs para diferentes secciones
-        self.tabs = ft.Tabs(
-            selected_index=0,
-            animation_duration=300,
-            tabs=[
-                ft.Tab(
-                    text="Dashboard",
-                    icon=ft.Icons.DASHBOARD_ROUNDED,
-                    content=self._build_dashboard_tab()
-                ),
-                ft.Tab(
-                    text="Configuración",
-                    icon=ft.Icons.SETTINGS_ROUNDED,
-                    content=self._build_config_tab()
-                ),
-                ft.Tab(
-                    text="Historial",
-                    icon=ft.Icons.HISTORY_ROUNDED,
-                    content=self._build_history_tab()
-                ),
+            data_provider=self._backup_provider,
+            simple_filter=SimpleFilterConfig(
+                label="Tipo",
+                options=[
+                    (None, "Todos"),
+                    ("FULL", "FULL"),
+                    ("DIFERENCIAL", "DIFERENCIAL"),
+                    ("INCREMENTAL", "INCREMENTAL"),
+                    ("MANUAL", "Manual"),
+                ]
+            ),
+            advanced_filters=[
+                AdvancedFilterControl(name="date_from", control=self.date_from_input),
+                AdvancedFilterControl(name="date_to", control=self.date_to_input),
             ],
-            expand=1
+            show_mass_actions=False, # Mass actions disabled as per request
+            auto_load=True,
+            page_size=10,
+            id_field="path"
         )
+        self.backups_table.search_field.hint_text = "Buscar por nombre..."
 
-    def _build_dashboard_tab(self) -> ft.Control:
-        return ft.Column([
+
+        # Contenido principal
+        self.main_content = ft.ListView([
+            # Dashboard content
+            *self._build_dashboard_content(),
+            ft.Divider(height=20),
+            # History content
+            *self._build_history_content(),
+        ], spacing=12)
+
+    def _build_dashboard_content(self):
+        return [
             # Header
             ft.Row([
                 ft.Column([
@@ -187,74 +351,30 @@ class BackupView:
                 border_radius=12,
                 border=ft.border.all(1, self.COLOR_BORDER),
             ),
+        ]
 
-            # Tabla de backups recientes
-            ft.Container(
-                content=ft.Column([
-                    ft.Text("Backups Recientes", size=16, weight=ft.FontWeight.BOLD),
-                    self.backups_table,
-                ], spacing=12),
-                expand=True,
-                padding=16,
-                bgcolor=self.COLOR_CARD,
-                border_radius=12,
-                border=ft.border.all(1, self.COLOR_BORDER),
-            ),
-        ], expand=True, spacing=12)
 
-    def _build_config_tab(self) -> ft.Control:
-        return ft.Column([
-            ft.Text("Configuración de Backups", size=18, weight=ft.FontWeight.BOLD),
-            ft.Divider(),
 
-            ft.Container(
-                content=ft.Column([
-                    ft.Text("Sistema de Backups Profesionales Activado", size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_SUCCESS),
-                    ft.Text("• Backup FULL: Día 1 de cada mes a las 00:00", size=12),
-                    ft.Text("• Backup DIFERENCIAL: Domingos a las 23:30", size=12),
-                    ft.Text("• Backup INCREMENTAL: Diariamente a las 23:00", size=12),
-                    ft.Text("• Validación automática: Diariamente a las 01:00", size=12),
-                ], spacing=8),
-                padding=16,
-                bgcolor=self.COLOR_CARD,
-                border_radius=12,
-                border=ft.border.all(1, self.COLOR_BORDER),
-            ),
-
-            ft.Container(
-                content=ft.Column([
-                    ft.Text("Configuración de Nube", size=16, weight=ft.FontWeight.BOLD),
-                    ft.Text("Para configurar sincronización con Google Drive o S3, contactar al administrador.", size=12, color=self.COLOR_TEXT_MUTED),
-                ], spacing=8),
-                padding=16,
-                bgcolor=self.COLOR_CARD,
-                border_radius=12,
-                border=ft.border.all(1, self.COLOR_BORDER),
-            ),
-        ], expand=True, spacing=12)
-
-    def _build_history_tab(self) -> ft.Control:
-        return ft.Column([
+    def _build_history_content(self):
+        return [
             ft.Text("Historial Completo de Backups", size=18, weight=ft.FontWeight.BOLD),
             ft.Divider(),
-
+            # Generic Table component wrapped in limited height
             ft.Container(
-                content=self.backups_table,
-                expand=True,
-                padding=16,
-                bgcolor=self.COLOR_CARD,
+                content=self.backups_table.build(),
+                height=500,
+                # border=ft.border.all(1, self.COLOR_BORDER), # Removed border
                 border_radius=12,
-                border=ft.border.all(1, self.COLOR_BORDER),
-            ),
-        ], expand=True, spacing=12)
+            )
+        ]
 
     def load_data(self):
         try:
             self.data_loaded = False
-
-            # Cargar datos del sistema existente
+            
+            # The provider fetches data, but we can also fetch here for metrics
             self.data = self.backup_service.list_backups()
-
+            
             if self.data:
                 self.total_backups_text.value = str(len(self.data))
                 latest = self.data[0]['created'].strftime("%Y-%m-%d %H:%M")
@@ -263,11 +383,15 @@ class BackupView:
                 self.total_backups_text.value = "0"
                 self.last_backup_text.value = "N/A"
 
-            # Próximo backup (simulado)
-            self.next_backup_text.value = "Sistema automático"
+            # Próximo backup
+            next_times = self._get_next_backup_times()
+            if next_times:
+                closest_type = min(next_times.keys(), key=lambda k: next_times[k]['next_run'])
+                closest = next_times[closest_type]
+                self.next_backup_text.value = f"{closest_type} {self._format_time_until(closest['next_run'])}"
 
-            # Cargar tabla
-            self._load_backups_table()
+            # Refresh table
+            self.backups_table.refresh()
 
             # Cargar tarjetas de programación
             self._update_schedule_cards()
@@ -279,47 +403,48 @@ class BackupView:
         finally:
             self.page.update()
 
-    def _load_backups_table(self):
-        rows = []
-        for backup in self.data[:50]:
-            tipo_badge = self._get_backup_type_badge(backup.get('type', 'manual'))
-            estado_badge = self._get_status_badge('COMPLETADO')
+    def _get_next_backup_times(self):
+        now = datetime.now()
+        next_times = {}
 
-            row = ft.DataRow(
-                cells=[
-                    ft.DataCell(tipo_badge),
-                    ft.DataCell(ft.Text(backup['name'], size=12)),
-                    ft.DataCell(ft.Text(self._format_size(backup['size']), size=12)),
-                    ft.DataCell(ft.Text(self._format_datetime(backup['created']), size=12)),
-                    ft.DataCell(estado_badge),
-                    ft.DataCell(
-                        ft.Row([
-                            ft.IconButton(
-                                ft.Icons.RESTORE,
-                                icon_color=self.COLOR_WARNING,
-                                tooltip="Restaurar backup",
-                                on_click=lambda e, p=backup['path']: self._confirm_restore(p)
-                            ),
-                            ft.IconButton(
-                                ft.Icons.DELETE,
-                                icon_color=self.COLOR_ERROR,
-                                tooltip="Eliminar backup",
-                                on_click=lambda e, p=backup['path']: self._delete_backup(p)
-                            ),
-                        ], spacing=4)
-                    ),
-                ]
-            )
-            rows.append(row)
+        # FULL: Día 1 de cada mes a las 00:00
+        if now.day == 1 and now.hour == 0 and now.minute < 1:
+            next_full = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            # Próximo mes
+            if now.month == 12:
+                next_month = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                next_month = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            next_full = next_month
 
-        self.backups_table.rows = rows
+        next_times['FULL'] = {'next_run': next_full, 'schedule': 'Dia 1 a las 00:00'}
+
+        # DIFERENCIAL: Domingos a las 23:30
+        days_until_sunday = (6 - now.weekday()) % 7
+        if days_until_sunday == 0 and (now.hour < 23 or (now.hour == 23 and now.minute < 30)):
+            next_dif = now.replace(hour=23, minute=30, second=0, microsecond=0)
+        else:
+            if days_until_sunday == 0:
+                days_until_sunday = 7
+            next_dif = (now + timedelta(days=days_until_sunday)).replace(hour=23, minute=30, second=0, microsecond=0)
+
+        next_times['DIFERENCIAL'] = {'next_run': next_dif, 'schedule': 'Domingos a las 23:30'}
+
+        # INCREMENTAL: Diario a las 23:00
+        if now.hour < 23 or (now.hour == 23 and now.minute < 1):
+            next_inc = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        else:
+            next_inc = (now + timedelta(days=1)).replace(hour=23, minute=0, second=0, microsecond=0)
+
+        next_times['INCREMENTAL'] = {'next_run': next_inc, 'schedule': 'Diario a las 23:00'}
+
+        return next_times
 
     def _update_schedule_cards(self):
-        # Tarjetas simuladas para el sistema profesional
+        next_times = self._get_next_backup_times()
         cards = []
-        for backup_type, info in [("FULL", {"schedule": "Dia 1 a las 00:00", "next_run": datetime.now() + timedelta(days=1)}),
-                                  ("DIFERENCIAL", {"schedule": "Domingos a las 23:30", "next_run": datetime.now() + timedelta(hours=2)}),
-                                  ("INCREMENTAL", {"schedule": "Diario a las 23:00", "next_run": datetime.now() + timedelta(hours=1)})]:
+        for backup_type, info in next_times.items():
             color = self.TYPE_COLORS.get(backup_type, self.COLOR_PRIMARY)
             labels = {"FULL": "FULL", "DIFERENCIAL": "DIFERENCIAL", "INCREMENTAL": "INCREMENTAL"}
             icons = {"FULL": ft.Icons.CALENDAR_MONTH_ROUNDED, "DIFERENCIAL": ft.Icons.DATE_RANGE_ROUNDED, "INCREMENTAL": ft.Icons.TODAY_ROUNDED}
@@ -425,10 +550,24 @@ class BackupView:
         def on_cancel(e):
             self.page.close(dlg)
 
+        # Obtener info del backup
+        backup = next((b for b in self.data if b['path'] == path), None)
+        if backup:
+            content = ft.Column([
+                ft.Text("Resumen de Restauración", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(f"Archivo: {backup['name']}", size=12),
+                ft.Text(f"Tipo: {backup.get('type', 'manual').upper()}", size=12),
+                ft.Text(f"Tamaño: {self._format_size(backup['size'])}", size=12),
+                ft.Text(f"Fecha: {self._format_datetime(backup['created'])}", size=12),
+                ft.Text("¿Estás seguro? Esto SOBREESCRIBIRÁ la base de datos actual.\nEsta acción no se puede deshacer.", size=12, color=self.COLOR_WARNING),
+            ], spacing=8)
+        else:
+            content = ft.Text("¿Estás seguro? Esto SOBREESCRIBIRÁ la base de datos actual.\nEsta acción no se puede deshacer.")
+
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text("Confirmar Restauración"),
-            content=ft.Text("¿Estás seguro? Esto SOBREESCRIBIRÁ la base de datos actual.\nEsta acción no se puede deshacer."),
+            content=content,
             actions=[
                 ft.TextButton("Cancelar", on_click=on_cancel),
                 ft.ElevatedButton("Restaurar", on_click=on_confirm, bgcolor=self.COLOR_WARNING, color=ft.Colors.WHITE),
@@ -517,9 +656,10 @@ class BackupView:
                 self.show_message("No se pudo configurar la carpeta de sincronización", "error")
 
     def build(self) -> ft.Control:
-        return ft.Column([
-            self.tabs,
-        ], expand=True, spacing=0)
+        return ft.Container(
+            content=self.main_content,
+            expand=True
+        )
 
     def _metric_card(self, title: str, value_text: ft.Text, icon: str, color: Optional[str] = None) -> ft.Container:
         if color is None:

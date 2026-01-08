@@ -477,7 +477,9 @@ class GenericTable:
         if hasattr(self.table, "data_row_color"):
             self.table.data_row_color = "#FFFFFF"  # type: ignore[attr-defined]
         if hasattr(self.table, "divider_thickness"):
-            self.table.divider_thickness = 1  # type: ignore[attr-defined]
+            self.table.divider_thickness = 0  # type: ignore[attr-defined]
+        if hasattr(self.table, "border"):
+            self.table.border = ft.border.all(0, ft.Colors.TRANSPARENT)
         if hasattr(self.table, "heading_text_style"):
             self.table.heading_text_style = ft.TextStyle(  # type: ignore[attr-defined]
                 size=12,

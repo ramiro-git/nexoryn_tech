@@ -2,6 +2,11 @@ import flet as ft
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime, timedelta
 
+try:
+    from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
+except ImportError:
+    from components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
+
 
 class BackupProfessionalView:
     def __init__(self, page: ft.Page, db, show_message: Callable):
@@ -15,11 +20,20 @@ class BackupProfessionalView:
         self.COLOR_WARNING = "#F59E0B"
         self.COLOR_ERROR = "#EF4444"
         self.COLOR_INFO = "#3B82F6"
+
+        # Colores por tipo de backup profesional
+        self.TYPE_COLORS = {
+            "FULL": "#10B981",        # Green
+            "DIFERENCIAL": "#3B82F6", # Blue
+            "INCREMENTAL": "#F59E0B", # Amber
+            "MANUAL": "#8B5CF6",      # Purple
+        }
         self.COLOR_CARD = "#FFFFFF"
         self.COLOR_BORDER = "#E2E8F0"
         self.COLOR_TEXT = "#0F172A"
         self.COLOR_TEXT_MUTED = "#64748B"
         
+
         # Importar servicios con lazy loading
         self._backup_manager = None
         self._cloud_service = None
@@ -57,7 +71,7 @@ class BackupProfessionalView:
     def _format_time_ago(self, dt: datetime) -> str:
         now = datetime.now()
         diff = now - dt
-        
+
         if diff.days > 0:
             return f"hace {diff.days} días"
         elif diff.seconds > 3600:
@@ -68,6 +82,21 @@ class BackupProfessionalView:
             return f"hace {minutes} minutos"
         else:
             return "hace segundos"
+
+    def _format_time_until(self, dt: datetime) -> str:
+        now = datetime.now()
+        diff = dt - now
+
+        if diff.days > 0:
+            return f"en {diff.days} días"
+        elif diff.seconds > 3600:
+            hours = diff.seconds // 3600
+            return f"en {hours} horas"
+        elif diff.seconds > 60:
+            minutes = diff.seconds // 60
+            return f"en {minutes} minutos"
+        else:
+            return "próximamente"
     
     def _setup_view(self):
         # Metricas
@@ -78,22 +107,92 @@ class BackupProfessionalView:
         # Tarjetas de programación
         self.schedule_cards_container = ft.Column([], spacing=12)
         
-        # Tabla de backups
-        self.backups_table = ft.DataTable(
+        # Filtros avanzados
+        self.date_from_input = self._create_date_input("Desde")
+        self.date_to_input = self._create_date_input("Hasta")
+
+        # Tabla de backups con GenericTable
+        self.backups_table = GenericTable(
             columns=[
-                ft.DataColumn(ft.Text("Tipo", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Archivo", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Tamaño", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Fecha", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Estado", size=12, weight=ft.FontWeight.BOLD)),
-                ft.DataColumn(ft.Text("Acciones", size=12, weight=ft.FontWeight.BOLD)),
+                ColumnConfig(
+                    key="tipo", 
+                    label="Tipo", 
+                    width=100,
+                    renderer=lambda row: self._get_backup_type_badge(row.get('tipo', 'MANUAL'))
+                ),
+                ColumnConfig(key="archivo", label="Archivo", width=350),
+                ColumnConfig(
+                    key="tamano", 
+                    label="Tamaño", 
+                    width=100,
+                    formatter=lambda v, _: self._format_size(v) if v else "0 B"
+                ),
+                ColumnConfig(
+                    key="fecha_inicio", 
+                    label="Fecha", 
+                    width=160,
+                    formatter=lambda v, _: self._format_datetime(v)
+                ),
+                ColumnConfig(
+                    key="estado",
+                    label="Estado",
+                    width=100,
+                    renderer=lambda row: self._get_status_badge(row.get('estado', 'PENDIENTE'))
+                ),
+                ColumnConfig(
+                    key="_actions",
+                    label="Acciones",
+                    width=180,
+                    sortable=False,
+                    renderer=lambda row: ft.Row([
+                        ft.IconButton(
+                            ft.Icons.CHECK_CIRCLE,
+                            icon_color=self.COLOR_SUCCESS,
+                            tooltip="Validar backup",
+                            on_click=lambda e: self._validate_backup(row)
+                        ),
+                        ft.IconButton(
+                            ft.Icons.CLOUD_UPLOAD,
+                            icon_color=self.COLOR_INFO,
+                            tooltip="Subir a la nube",
+                            on_click=lambda e: self._upload_to_cloud(row)
+                        ),
+                        ft.IconButton(
+                            ft.Icons.RESTORE,
+                            icon_color=self.COLOR_WARNING,
+                            tooltip="Restaurar backup",
+                            on_click=lambda e: self._confirm_restore(row)
+                        ),
+                        ft.IconButton(
+                            ft.Icons.DELETE,
+                            icon_color=self.COLOR_ERROR,
+                            tooltip="Eliminar backup",
+                            on_click=lambda e: self._delete_backup(row)
+                        ),
+                    ], spacing=0)
+                )
             ],
-            rows=[],
-            border_radius=10,
-            border=ft.border.all(1, self.COLOR_BORDER),
-            heading_row_color=ft.Colors.with_opacity(0.05, self.COLOR_PRIMARY),
-            data_row_max_height=60,
+            data_provider=self._backups_provider,
+            simple_filter=SimpleFilterConfig(
+                label="Tipo",
+                options=[
+                    (None, "Todos"),
+                    ("FULL", "FULL"),
+                    ("DIFERENCIAL", "DIFERENCIAL"),
+                    ("INCREMENTAL", "INCREMENTAL"),
+                    ("MANUAL", "Manual"),
+                ]
+            ),
+            advanced_filters=[
+                AdvancedFilterControl(name="date_from", control=self.date_from_input),
+                AdvancedFilterControl(name="date_to", control=self.date_to_input),
+            ],
+            show_mass_actions=False,
+            auto_load=True,
+            page_size=10,
+            id_field="id"
         )
+        self.backups_table.search_field.hint_text = "Buscar por nombre..."
         
         # Configuración de horarios
         self.full_schedule_day = ft.Dropdown(
@@ -176,7 +275,7 @@ class BackupProfessionalView:
         self.sync_dir = ft.TextField(
             label="Carpeta de sincronización",
             width=300,
-            hint="Ruta a carpeta para sincronizar backups"
+            hint_text="Ruta a carpeta para sincronizar backups"
         )
         
         self.enable_sync = ft.Switch(
@@ -217,10 +316,10 @@ class BackupProfessionalView:
             
             # Próximo backup
             next_times = self.backup_manager.get_next_backup_times()
-            closest_type = min(next_times.keys(), 
-                             key=lambda k: next_times[k]['next_run'])
+            closest_type = min(next_times.keys(),
+                              key=lambda k: next_times[k]['next_run'])
             closest = next_times[closest_type]
-            self.next_backup_text.value = f"{closest_type} en {self._format_time_ago(closest['next_run'])}"
+            self.next_backup_text.value = f"{closest_type} en {self._format_time_until(closest['next_run'])}"
             
             # Cargar tabla de backups
             self._load_backups_table()
@@ -235,59 +334,122 @@ class BackupProfessionalView:
         finally:
             self.loading = False
             self.page.update()
+
+    def _create_date_input(self, label: str) -> ft.TextField:
+        tf = ft.TextField(
+            label=label, 
+            width=180, 
+            dense=True,
+            filled=True,
+            bgcolor="#F8FAFC",
+            border_color="#475569",
+            text_size=14,
+            border_radius=12,
+            content_padding=ft.padding.all(12)
+        )
+        
+        def on_date_change(e):
+            if e.control.value:
+                tf.value = e.control.value.strftime("%Y-%m-%d")
+                tf.update()
+                # Trigger table refresh
+                if hasattr(self, "backups_table"):
+                    self.backups_table.refresh()
+
+        dp = ft.DatePicker(
+            on_change=on_date_change,
+            cancel_text="CANCELAR",
+            confirm_text="ACEPTAR",
+            error_format_text="Formato inválido",
+            error_invalid_text="Fecha fuera de rango",
+            help_text="SELECCIONAR FECHA"
+        )
+        
+        # Add to overlay safely
+        if self.page:
+            self.page.overlay.append(dp)
+
+        def open_picker(_):
+            if hasattr(self.page, "open"):
+                self.page.open(dp)
+            else:
+                dp.open = True
+                self.page.update()
+
+        tf.suffix = ft.IconButton(
+            ft.Icons.CALENDAR_MONTH_ROUNDED,
+            on_click=open_picker,
+            icon_size=18,
+            tooltip="Seleccionar fecha"
+        )
+        return tf
+
+    def _backups_provider(self, offset: int, limit: int, search: Optional[str], simple: Optional[str], advanced: Dict[str, Any], sorts: List[Tuple[str, str]]) -> Tuple[List[Dict[str, Any]], int]:
+        # Fetch fresh data (using a high limit to allow in-memory filtering for now, or updating service)
+        # Using 500 limit as a reasonable cap for in-memory filtering of recent backups
+        all_data = self.backup_manager.backup_incremental_service.list_backups(limit=500)
+        
+        filtered = all_data
+
+        # Filter by search (Name)
+        if search:
+            s = search.lower()
+            filtered = [b for b in filtered if s in str(b.get('archivo', '')).lower()]
+
+        # Filter by simple (Type)
+        if simple and simple != "Todos" and simple is not None:
+             filtered = [b for b in filtered if b.get('tipo') == simple]
+
+        # Filter by date range
+        if advanced:
+            date_from = advanced.get("date_from")
+            date_to = advanced.get("date_to")
+            
+            def parse_date(d_str):
+                try:
+                    return datetime.strptime(d_str, "%Y-%m-%d")
+                except:
+                    return None
+
+            if date_from or date_to:
+                d_from = parse_date(date_from) if date_from else None
+                d_to = parse_date(date_to) if date_to else None
+                
+                new_filtered = []
+                for b in filtered:
+                    created = b.get('fecha_inicio')
+                    if not isinstance(created, datetime):
+                        new_filtered.append(b)
+                        continue
+                        
+                    # Normalize to date for comparison
+                    b_date = created.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    if d_from and b_date < d_from:
+                        continue
+                    if d_to and b_date > d_to:
+                        continue
+                    new_filtered.append(b)
+                filtered = new_filtered
+
+        # Sort
+        if sorts:
+            key, direction = sorts[0]
+            reverse = (direction == "desc")
+            filtered.sort(key=lambda x: x.get(key, ""), reverse=reverse)
+        else:
+            # Default sort desc by date
+            filtered.sort(key=lambda x: x.get('fecha_inicio', datetime.min), reverse=True)
+
+        # Paginate
+        total = len(filtered)
+        paged = filtered[offset : offset + limit]
+        
+        return paged, total
     
     def _load_backups_table(self):
-        try:
-            backups = self.backup_manager.backup_incremental_service.list_backups(limit=50)
-            
-            rows = []
-            for backup in backups:
-                tipo_badge = self._get_backup_type_badge(backup['tipo'])
-                estado_badge = self._get_status_badge(backup['estado'])
-                
-                row = ft.DataRow(
-                    cells=[
-                        ft.DataCell(tipo_badge),
-                        ft.DataCell(ft.Text(backup['archivo'], size=12)),
-                        ft.DataCell(ft.Text(self._format_size(backup['tamano'] or 0), size=12)),
-                        ft.DataCell(ft.Text(self._format_datetime(backup['fecha_inicio']), size=12)),
-                        ft.DataCell(estado_badge),
-                        ft.DataCell(
-                            ft.Row([
-                                ft.IconButton(
-                                    ft.Icons.CHECK_CIRCLE,
-                                    icon_color=self.COLOR_SUCCESS,
-                                    tooltip="Validar backup",
-                                    on_click=lambda e, b=backup: self._validate_backup(b)
-                                ),
-                                ft.IconButton(
-                                    ft.Icons.CLOUD_UPLOAD,
-                                    icon_color=self.COLOR_INFO,
-                                    tooltip="Subir a la nube",
-                                    on_click=lambda e, b=backup: self._upload_to_cloud(b)
-                                ),
-                                ft.IconButton(
-                                    ft.Icons.RESTORE,
-                                    icon_color=self.COLOR_WARNING,
-                                    tooltip="Restaurar backup",
-                                    on_click=lambda e, b=backup: self._confirm_restore(b)
-                                ),
-                                ft.IconButton(
-                                    ft.Icons.DELETE,
-                                    icon_color=self.COLOR_ERROR,
-                                    tooltip="Eliminar backup",
-                                    on_click=lambda e, b=backup: self._delete_backup(b)
-                                ),
-                            ], spacing=4)
-                        ),
-                    ]
-                )
-                rows.append(row)
-            
-            self.backups_table.rows = rows
-            
-        except Exception as e:
-            self.show_message(f"Error cargando tabla de backups: {str(e)}", "error")
+         # Logic moved to generic table provider
+         self.backups_table.refresh()
     
     def _load_logs(self):
         try:
@@ -397,7 +559,7 @@ class BackupProfessionalView:
                         f"Backup {backup_type} creado exitosamente en {resultado['duracion_segundos']:.2f}s",
                         "success"
                     )
-                    self._load_backups_table()
+                    self.backups_table.refresh()
                 else:
                     self.show_message(f"Error en backup {backup_type}: {resultado['mensaje']}", "error")
                     
@@ -590,7 +752,7 @@ class BackupProfessionalView:
                     if backup_file.exists():
                         backup_file.unlink()
                         self.show_message("Backup eliminado exitosamente", "success")
-                        self._load_backups_table()
+                        self.backups_table.refresh()
                     else:
                         self.show_message("El archivo de backup no existe", "warning")
                         
@@ -660,247 +822,268 @@ class BackupProfessionalView:
                 if not self.sync_dir.value:
                     self.show_message("Especifica la carpeta de sincronización", "warning")
                     return
-                
+
                 # Actualizar configuración de nube
                 cloud_config = {
                     'sync_dir': self.sync_dir.value,
                     'provider': self.cloud_provider.value
                 }
-                
+
                 self.show_message(f"Configuración de nube guardada: {self.cloud_provider.value}", "success")
             else:
                 self.show_message("Sincronización en la nube desactivada", "info")
-                
+
         except Exception as e:
             self.show_message(f"Error guardando configuración de nube: {str(e)}", "error")
+
+    def _trigger_backup(self, e):
+        def create_backup_option(backup_type: str, label: str, icon: str):
+            color = self.TYPE_COLORS.get(backup_type, self.COLOR_PRIMARY)
+            return ft.ListTile(
+                leading=ft.Icon(icon, color=color),
+                title=ft.Text(label),
+                on_click=lambda e, t=backup_type: (self.page.close(bottom_sheet), self._execute_backup(t))
+            )
+
+        bottom_sheet = ft.BottomSheet(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Seleccionar tipo de backup", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Divider(),
+                    create_backup_option("FULL", "Backup FULL (Completo)", ft.Icons.CALENDAR_MONTH_ROUNDED),
+                    create_backup_option("DIFERENCIAL", "Backup DIFERENCIAL (Semanal)", ft.Icons.DATE_RANGE_ROUNDED),
+                    create_backup_option("INCREMENTAL", "Backup INCREMENTAL (Diario)", ft.Icons.TODAY_ROUNDED),
+                    create_backup_option("MANUAL", "Backup Manual", ft.Icons.SAVE_ROUNDED),
+                ], tight=True),
+                padding=20,
+            ),
+        )
+        self.page.open(bottom_sheet)
     
     def build(self) -> ft.Control:
-        tabs = ft.Tabs(
-            selected_index=0,
-            animation_duration=300,
-            tabs=[
-                # Tab 1: Dashboard y Acciones
-                ft.Tab(
-                    text="Dashboard",
-                    icon=ft.Icons.DASHBOARD_ROUNDED,
-                    content=ft.Column([
-                        # Métricas
-                        ft.Row([
-                            self._metric_card(
-                                "Total Backups",
-                                self.total_backups_text,
-                                ft.Icons.FOLDER_SPECIAL_ROUNDED,
-                                self.COLOR_PRIMARY
-                            ),
-                            self._metric_card(
-                                "Último Backup",
-                                self.last_backup_text,
-                                ft.Icons.ACCESS_TIME_ROUNDED,
-                                self.COLOR_SUCCESS
-                            ),
-                            self._metric_card(
-                                "Próximo Backup",
-                                self.next_backup_text,
-                                ft.Icons.SCHEDULE_ROUNDED,
-                                self.COLOR_INFO
-                            ),
-                        ], spacing=12),
-                        
-                        ft.Divider(height=20),
-                        
-                        # Acciones rápidas
-                        ft.Container(
-                            content=ft.Column([
-                                ft.Text("Ejecutar Backup Ahora", size=16, weight=ft.FontWeight.BOLD),
-                                ft.Row([
-                                    self._action_button(
-                                        "FULL",
-                                        ft.Icons.CALENDAR_MONTH_ROUNDED,
-                                        self.COLOR_SUCCESS,
-                                        lambda e: self._execute_backup('FULL')
-                                    ),
-                                    self._action_button(
-                                        "DIFERENCIAL",
-                                        ft.Icons.DATE_RANGE_ROUNDED,
-                                        self.COLOR_INFO,
-                                        lambda e: self._execute_backup('DIFERENCIAL')
-                                    ),
-                                    self._action_button(
-                                        "INCREMENTAL",
-                                        ft.Icons.TODAY_ROUNDED,
-                                        self.COLOR_WARNING,
-                                        lambda e: self._execute_backup('INCREMENTAL')
-                                    ),
-                                ], spacing=8),
-                            ], spacing=12),
-                            padding=16,
-                            bgcolor=self.COLOR_CARD,
-                            border_radius=12,
-                            border=ft.border.all(1, self.COLOR_BORDER),
-                        ),
-                        
-                        ft.Divider(height=20),
-                        
-                        # Tabla de backups
-                        ft.Text("Historial de Backups", size=16, weight=ft.FontWeight.BOLD),
-                        ft.Container(
-                            content=ft.Column([
-                                self.backups_table,
-                            ], scroll=ft.ScrollMode.AUTO),
-                            expand=True,
-                            bgcolor=self.COLOR_CARD,
-                            border_radius=12,
-                            border=ft.border.all(1, self.COLOR_BORDER),
-                        ),
-                    ], expand=True, spacing=12)
-                ),
-                
-                # Tab 2: Configuración
-                ft.Tab(
-                    text="Configuración",
-                    icon=ft.Icons.SETTINGS_ROUNDED,
-                    content=ft.Column([
-                        ft.Text("Horarios de Backups Automáticos", size=16, weight=ft.FontWeight.BOLD),
-                        ft.Divider(),
-                        
-                        # Configuración FULL
-                        ft.Container(
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, color=self.COLOR_SUCCESS, size=24),
-                                    ft.Column([
-                                        ft.Text("Backup FULL (Mensual)", size=14, weight=ft.FontWeight.BOLD),
-                                        ft.Text("Backup completo mensual - base de todos los backups", size=12, color=self.COLOR_TEXT_MUTED),
-                                    ], spacing=2)
-                                ], spacing=12),
-                                ft.Row([
-                                    self.full_schedule_day,
-                                    self.full_schedule_hour,
-                                    ft.Text("a las", size=12),
-                                ], spacing=8),
-                            ], spacing=12),
-                            padding=16,
-                            bgcolor=self.COLOR_CARD,
-                            border_radius=12,
-                            border=ft.border.all(1, self.COLOR_BORDER),
-                        ),
-                        
-                        ft.Container(height=12),
-                        
-                        # Configuración DIFERENCIAL
-                        ft.Container(
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Icon(ft.Icons.DATE_RANGE_ROUNDED, color=self.COLOR_INFO, size=24),
-                                    ft.Column([
-                                        ft.Text("Backup DIFERENCIAL (Semanal)", size=14, weight=ft.FontWeight.BOLD),
-                                        ft.Text("Cambios desde el último backup FULL", size=12, color=self.COLOR_TEXT_MUTED),
-                                    ], spacing=2)
-                                ], spacing=12),
-                                ft.Row([
-                                    self.dif_schedule_weekday,
-                                    self.dif_schedule_hour,
-                                    ft.Text("a las", size=12),
-                                ], spacing=8),
-                            ], spacing=12),
-                            padding=16,
-                            bgcolor=self.COLOR_CARD,
-                            border_radius=12,
-                            border=ft.border.all(1, self.COLOR_BORDER),
-                        ),
-                        
-                        ft.Container(height=12),
-                        
-                        # Configuración INCREMENTAL
-                        ft.Container(
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Icon(ft.Icons.TODAY_ROUNDED, color=self.COLOR_WARNING, size=24),
-                                    ft.Column([
-                                        ft.Text("Backup INCREMENTAL (Diario)", size=14, weight=ft.FontWeight.BOLD),
-                                        ft.Text("Cambios desde el último backup", size=12, color=self.COLOR_TEXT_MUTED),
-                                    ], spacing=2)
-                                ], spacing=12),
-                                ft.Row([
-                                    self.inc_schedule_hour,
-                                    ft.Text("todos los días", size=12),
-                                ], spacing=8),
-                            ], spacing=12),
-                            padding=16,
-                            bgcolor=self.COLOR_CARD,
-                            border_radius=12,
-                            border=ft.border.all(1, self.COLOR_BORDER),
-                        ),
-                        
-                        ft.Container(height=20),
-                        
+        return ft.Container(
+            content=ft.Column([
+                # Header
+                ft.Row([
+                    ft.Column([
+                        ft.Text("Sistema de Backups Profesionales", size=24, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
+                        ft.Text("FULL + DIFERENCIAL + INCREMENTAL - Restauración concatenable", size=12, color=self.COLOR_TEXT_MUTED),
+                    ], spacing=2),
+                    ft.Row([
                         ft.ElevatedButton(
-                            "Guardar Horarios",
-                            icon=ft.Icons.SAVE_ROUNDED,
+                            "Crear Backup",
+                            icon=ft.Icons.ADD_ROUNDED,
                             bgcolor=self.COLOR_PRIMARY,
                             color=ft.Colors.WHITE,
                             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-                            on_click=lambda e: self._save_schedule()
+                            on_click=self._trigger_backup
                         ),
-                        
-                        ft.Divider(height=20),
-                        
-                        # Configuración de retención
-                        ft.Text("Política de Retención", size=16, weight=ft.FontWeight.BOLD),
-                        ft.Divider(),
-                        
-                        ft.Row([
-                            self.retention_full,
-                            self.retention_dif,
-                            self.retention_inc,
-                        ], spacing=12),
-                        
-                        ft.Divider(height=20),
-                        
-                        # Configuración de nube
-                        ft.Text("Sincronización en la Nube", size=16, weight=ft.FontWeight.BOLD),
-                        ft.Divider(),
-                        
-                        ft.Column([
-                            self.enable_sync,
-                            self.cloud_provider,
-                            self.sync_dir,
-                        ], spacing=12),
-                        
-                        ft.Container(height=12),
-                        
-                        ft.ElevatedButton(
-                            "Guardar Configuración de Nube",
-                            icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
-                            bgcolor=self.COLOR_INFO,
-                            color=ft.Colors.WHITE,
-                            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-                            on_click=lambda e: self._save_cloud_config()
-                        ),
-                    ], expand=True, spacing=12, scroll=ft.ScrollMode.AUTO)
-                ),
-                
-                # Tab 3: Logs
-                ft.Tab(
-                    text="Logs",
-                    icon=ft.Icons.HISTORY_ROUNDED,
+                    ], spacing=8)
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+
+                # Métricas
+                ft.Row([
+                    self._metric_card(
+                        "Total Backups",
+                        self.total_backups_text,
+                        ft.Icons.FOLDER_SPECIAL_ROUNDED,
+                        self.COLOR_PRIMARY
+                    ),
+                    self._metric_card(
+                        "Último Backup",
+                        self.last_backup_text,
+                        ft.Icons.ACCESS_TIME_ROUNDED,
+                        self.COLOR_SUCCESS
+                    ),
+                    self._metric_card(
+                        "Próximo Backup",
+                        self.next_backup_text,
+                        ft.Icons.SCHEDULE_ROUNDED,
+                        self.COLOR_INFO
+                    ),
+                ], spacing=12),
+
+                # Acciones rápidas
+                ft.Container(
                     content=ft.Column([
-                        ft.Text("Eventos del Sistema de Backups", size=16, weight=ft.FontWeight.BOLD),
-                        ft.Divider(),
-                        ft.Container(
-                            content=self.logs_table,
-                            expand=True,
-                            scroll=ft.ScrollMode.AUTO,
-                        ),
-                    ], expand=True, spacing=12)
+                        ft.Text("Ejecutar Backup Ahora", size=16, weight=ft.FontWeight.BOLD),
+                        ft.Row([
+                            self._action_button(
+                                "FULL",
+                                ft.Icons.CALENDAR_MONTH_ROUNDED,
+                                self.COLOR_SUCCESS,
+                                lambda e: self._execute_backup('FULL')
+                            ),
+                            self._action_button(
+                                "DIFERENCIAL",
+                                ft.Icons.DATE_RANGE_ROUNDED,
+                                self.COLOR_INFO,
+                                lambda e: self._execute_backup('DIFERENCIAL')
+                            ),
+                            self._action_button(
+                                "INCREMENTAL",
+                                ft.Icons.TODAY_ROUNDED,
+                                self.COLOR_WARNING,
+                                lambda e: self._execute_backup('INCREMENTAL')
+                            ),
+                        ], spacing=8),
+                    ], spacing=12),
+                    padding=16,
+                    bgcolor=self.COLOR_CARD,
+                    border_radius=12,
+                    border=ft.border.all(1, self.COLOR_BORDER),
                 ),
-            ],
-            expand=1
+
+                # Programación automática
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.EVENT_ROUNDED, color=self.COLOR_PRIMARY, size=20),
+                            ft.Text("Programación Automática", size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
+                        ], spacing=8),
+                        ft.Container(height=8),
+                        self.schedule_cards_container,
+                    ]),
+                    padding=16,
+                    bgcolor=self.COLOR_CARD,
+                    border_radius=12,
+                    border=ft.border.all(1, self.COLOR_BORDER),
+                ),
+
+                # Configuración
+                ft.Text("Configuración de Backups", size=16, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+
+                # Configuración FULL
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, color=self.COLOR_SUCCESS, size=24),
+                            ft.Column([
+                                ft.Text("Backup FULL (Mensual)", size=14, weight=ft.FontWeight.BOLD),
+                                ft.Text("Backup completo mensual - base de todos los backups", size=12, color=self.COLOR_TEXT_MUTED),
+                            ], spacing=2)
+                        ], spacing=12),
+                        ft.Row([
+                            self.full_schedule_day,
+                            self.full_schedule_hour,
+                            ft.Text("a las", size=12),
+                        ], spacing=8),
+                    ], spacing=12),
+                    padding=16,
+                    bgcolor=self.COLOR_CARD,
+                    border_radius=12,
+                    border=ft.border.all(1, self.COLOR_BORDER),
+                ),
+
+                ft.Container(height=12),
+
+                # Configuración DIFERENCIAL
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.DATE_RANGE_ROUNDED, color=self.COLOR_INFO, size=24),
+                            ft.Column([
+                                ft.Text("Backup DIFERENCIAL (Semanal)", size=14, weight=ft.FontWeight.BOLD),
+                                ft.Text("Cambios desde el último backup FULL", size=12, color=self.COLOR_TEXT_MUTED),
+                            ], spacing=2)
+                        ], spacing=12),
+                        ft.Row([
+                            self.dif_schedule_weekday,
+                            self.dif_schedule_hour,
+                            ft.Text("a las", size=12),
+                        ], spacing=8),
+                    ], spacing=12),
+                    padding=16,
+                    bgcolor=self.COLOR_CARD,
+                    border_radius=12,
+                    border=ft.border.all(1, self.COLOR_BORDER),
+                ),
+
+                ft.Container(height=12),
+
+                # Configuración INCREMENTAL
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.TODAY_ROUNDED, color=self.COLOR_WARNING, size=24),
+                            ft.Column([
+                                ft.Text("Backup INCREMENTAL (Diario)", size=14, weight=ft.FontWeight.BOLD),
+                                ft.Text("Cambios desde el último backup", size=12, color=self.COLOR_TEXT_MUTED),
+                            ], spacing=2)
+                        ], spacing=12),
+                        ft.Row([
+                            self.inc_schedule_hour,
+                            ft.Text("todos los días", size=12),
+                        ], spacing=8),
+                    ], spacing=12),
+                    padding=16,
+                    bgcolor=self.COLOR_CARD,
+                    border_radius=12,
+                    border=ft.border.all(1, self.COLOR_BORDER),
+                ),
+
+                ft.Container(height=20),
+
+                ft.ElevatedButton(
+                    "Guardar Horarios",
+                    icon=ft.Icons.SAVE_ROUNDED,
+                    bgcolor=self.COLOR_PRIMARY,
+                    color=ft.Colors.WHITE,
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                    on_click=lambda e: self._save_schedule()
+                ),
+
+                ft.Divider(height=20),
+
+                # Configuración de retención
+                ft.Text("Política de Retención", size=16, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+
+                ft.Row([
+                    self.retention_full,
+                    self.retention_dif,
+                    self.retention_inc,
+                ], spacing=12),
+
+                ft.Divider(height=20),
+
+                # Configuración de nube
+                ft.Text("Sincronización en la Nube", size=16, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+
+                ft.Column([
+                    self.enable_sync,
+                    self.cloud_provider,
+                    self.sync_dir,
+                ], spacing=12),
+
+                ft.Container(height=12),
+
+                ft.ElevatedButton(
+                    "Guardar Configuración de Nube",
+                    icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
+                    bgcolor=self.COLOR_INFO,
+                    color=ft.Colors.WHITE,
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                    on_click=lambda e: self._save_cloud_config()
+                ),
+
+                ft.Divider(height=20),
+
+                # Historial de backups
+                ft.Text("Historial de Backups", size=16, weight=ft.FontWeight.BOLD),
+                ft.Container(
+                    content=self.backups_table.build(),
+                    height=400,
+                    padding=16,
+                    bgcolor=self.COLOR_CARD,
+                    border_radius=12,
+                    # border=ft.border.all(1, self.COLOR_BORDER),
+                ),
+            ], spacing=12, scroll=ft.ScrollMode.AUTO),
+            expand=True
         )
-        
-        return ft.Column([
-            tabs,
-        ], expand=True, spacing=0)
     
     def _metric_card(self, title: str, value_text: ft.Text, icon: str, color: str) -> ft.Container:
         return ft.Container(

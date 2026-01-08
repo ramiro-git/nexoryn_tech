@@ -1075,7 +1075,7 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
             pay_df['id_forma_pago'] = 1 # Efectivo / Contado
             pay_df['fecha'] = final_df['fecha']
             pay_df['monto'] = final_df['total']
-            pay_df['referencia'] = "Importacion Legacy"
+            pay_df['referencia'] = "Importación Inicial"
             
             pay_cols = ['id_documento', 'id_forma_pago', 'fecha', 'monto', 'referencia']
             cur.execute("""

@@ -47,7 +47,7 @@ try:
     from desktop_app.database import Database
     from desktop_app.services.afip_service import AfipService
     from desktop_app.services.backup_service import BackupService
-    from desktop_app.components.backup_view import BackupView
+    from desktop_app.components.backup_professional_view import BackupProfessionalView
     from desktop_app.components.dashboard_view import DashboardView
     from desktop_app.components.generic_table import (
         AdvancedFilterControl,
@@ -63,7 +63,7 @@ except ImportError:
     from database import Database  # type: ignore
     from services.afip_service import AfipService # type: ignore
     from services.backup_service import BackupService # type: ignore
-    from components.backup_view import BackupView # type: ignore
+    from components.backup_professional_view import BackupProfessionalView # type: ignore
     from components.dashboard_view import DashboardView # type: ignore
     from components.toast import ToastManager # type: ignore
     from components.generic_table import (  # type: ignore
@@ -80,7 +80,7 @@ except ImportError:
     from services.afip_service import AfipService # type: ignore
     from services.backup_service import BackupService # type: ignore
     from services.print_service import generate_pdf_and_open # type: ignore
-    from components.backup_view import BackupView # type: ignore
+    from components.backup_professional_view import BackupProfessionalView # type: ignore
     from components.dashboard_view import DashboardView # type: ignore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -390,7 +390,8 @@ def main(page: ft.Page) -> None:
         )
     
         # Initialize Backup Service & Scheduler
-        backup_service = BackupService(pg_bin_path=config.pg_bin_path)
+        # Old standard backup system disabled
+        # backup_service = BackupService(pg_bin_path=config.pg_bin_path)
 
         # Initialize Professional Backup System Scheduler
         professional_scheduler = None
@@ -477,10 +478,12 @@ def main(page: ft.Page) -> None:
                 except Exception as e:
                     logger.error(f"Scheduled {btype} backup failed: {e}")
 
-            professional_scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
-            professional_scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
-            professional_scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
-            professional_scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
+            # Old standard backup system disabled (replaced by Professional system)
+            # professional_scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
+            # professional_scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
+            # professional_scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
+            # Legacy pruning disabled
+            # professional_scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
 
             professional_scheduler.start()
 
@@ -3230,7 +3233,7 @@ def main(page: ft.Page) -> None:
         # Actually, let's reuse the logic that exists if we can, or just print log.
         pass
 
-    backup_view_component = BackupView(page, backup_service, show_toast, set_conn_adapter)
+    backup_view_component = BackupProfessionalView(page, db, show_toast)
     
     # Wrap in a container to match layout expectations
     backups_view = ft.Container(
@@ -3853,6 +3856,15 @@ def main(page: ft.Page) -> None:
             monto_range_label.update()
         except: pass
 
+    def show_payment_info(text):
+        if not text: return
+        dlg = ft.AlertDialog(
+            title=ft.Text("Observaciones del Pago"),
+            content=ft.Text(text),
+            actions=[ft.TextButton("Cerrar", on_click=lambda e: page.close(dlg))], # type: ignore
+        )
+        page.open(dlg)
+
     pagos_table = GenericTable(
         columns=[
             ColumnConfig(key="fecha", label="Fecha", width=120),
@@ -3861,6 +3873,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="documento", label="Comprobante", width=120),
             ColumnConfig(key="entidad", label="Entidad", width=200),
             ColumnConfig(key="referencia", label="Referencia", width=150, renderer=lambda row: ft.Text(row.get("referencia") or "---", tooltip="Dato adicional del pago (ej. nro cheque, banco, etc.)")),
+            ColumnConfig(key="observacion", label="Info", width=60, renderer=lambda row: ft.IconButton(ft.Icons.INFO_OUTLINE, tooltip="Ver observaciones", icon_color=COLOR_ACCENT if row.get("observacion") else "grey", on_click=lambda _: show_payment_info(row.get("observacion")))),
         ],
         data_provider=create_catalog_provider(db.fetch_pagos, db.count_pagos),
         advanced_filters=[
@@ -3889,7 +3902,7 @@ def main(page: ft.Page) -> None:
             
             entidades = db.list_proveedores() # Reusing this, returns id/nombre. Actually we need clients too.
             # list_entidades_simple returns all.
-            entidades = db.list_entidades_simple()
+            entidades = db.list_entidades_simple(only_active=False)
             
         except Exception as e:
             show_toast(f"Error cargando datos: {e}", kind="error"); return
@@ -3914,30 +3927,26 @@ def main(page: ft.Page) -> None:
             pago_documento.value = ""
             pago_documento.disabled = True
             if eid:
-                # Fetch pending docs for entity
-                # We don't have a specific filtered fetch, lets use generic doc search or add one?
-                # Using fetch_documentos_resumen has no filters for entity/state exposed easily here.
-                # Let's assume we can get them. For now, show ALL (risky) or implement a fetch.
-                # Better: Add `fetch_pending_documents(entity_id)` to database later.
-                # For now, UI simulation: allow typing generic doc ID or leave blank?
-                # Constraint: `id_documento` is NOT NULL in schema. So we MUST pick one.
-                # Let's try to fetch last 20 docs for this entity.
-                docs = db.fetch_documentos_resumen(limit=50, advanced={"entidad": eid}, sort_by="fecha", sort_asc=False) # Fake signature
-                # fetch_documentos_resumen args: offset, limit, search, simple, advanced, sorts
-                # We can use advanced filter.
-                # But `advanced` is dict. `_build_doc_filters` checks specific keys.
-                # Let's try.
-                docs = db.fetch_documentos_resumen(limit=50, advanced={"entidad": str(eid)}, sorts=[("id", "DESC")]) 
-                # Wait, "entidad" filter in `fetch_documentos_resumen` usually matches TEXT name, not ID.
-                # We need ID filter.
-                # The prompt asked for "Nuevo Pago". I will use a simple workaround: 
-                # Dropdown shows "ID: {id} - Total: {total}" for recent docs.
-                pass 
-                # Due to time, enabling manual entry or fix later. 
-                # Just enabling dropdown if we had data.
-                # Let's keep it disabled and say "Funcionalidad pendientes en desarrollo" or try to fetch.
-                pago_documento.disabled = False
-                pago_documento.options = [ft.dropdown.Option("1", "Simulación Docto 1")] # Placeholder
+                try:
+                    docs = db.fetch_documentos_resumen(
+                        limit=50, 
+                        advanced={"id_entidad": eid}, 
+                        sorts=[("fecha", "DESC")]
+                    )
+                    options = []
+                    for d in docs:
+                         label = f"{d.get('numero_serie', 'N/A')} - ${d.get('total', 0):,.2f} ({d.get('fecha')})"
+                         options.append(ft.dropdown.Option(str(d['id']), label))
+                    
+                    if options:
+                        pago_documento.options = options
+                        pago_documento.disabled = False
+                    else:
+                         pago_documento.disabled = True
+                         pago_documento.options = [ft.dropdown.Option("", "Sin comprobantes recientes")]
+                except Exception as ex:
+                    print(f"Error fetching docs: {ex}")
+                    pago_documento.disabled = True
             pago_documento.update()
 
         pago_entidad.on_change = on_entidad_change
@@ -3952,16 +3961,20 @@ def main(page: ft.Page) -> None:
                 # Need to retrieve value. logic is complex.
                 # Let's assume passed validation.
                 
+                monto_val = pago_monto.value.replace(",", ".")
+                
                 db.create_payment(
                     id_documento=int(pago_documento.value), # This will fail if placeholder
                     id_forma_pago=int(pago_forma.value),
-                    monto=float(pago_monto.value),
+                    monto=float(monto_val),
                     referencia=pago_ref.value,
                     observacion=pago_obs.value
                 )
                 show_toast("Pago registrado", kind="success")
                 close_form()
                 pagos_table.refresh()
+            except ValueError:
+                show_toast("Error: Formato de monto inválido", kind="error")
             except Exception as e:
                 show_toast(f"Error: {e}", kind="error")
 
@@ -4021,7 +4034,352 @@ def main(page: ft.Page) -> None:
         expand=True
     )
 
+    # =========================================================================
+    # CUENTAS CORRIENTES VIEW
+    # =========================================================================
+
+    def _cc_live(e):
+        try:
+            cuentas_table.trigger_refresh()
+        except:
+            pass
+
+    cc_adv_tipo = _dropdown("Tipo", [("", "Todos"), ("CLIENTE", "Clientes"), ("PROVEEDOR", "Proveedores")], value="", width=180, on_change=_cc_live)
+    cc_adv_estado = _dropdown("Estado", [("", "Todos"), ("DEUDOR", "Deudores"), ("A_FAVOR", "A Favor"), ("AL_DIA", "Al Día")], value="", width=180, on_change=_cc_live)
+    cc_adv_solo_saldo = ft.Switch(label="Solo con saldo", value=True, on_change=_cc_live)
+
+    def cuentas_provider(offset, limit, search, simple, advanced, sorts):
+        if db is None:
+            raise provider_error()
+        rows = db.fetch_cuentas_corrientes(search=search, simple=simple, advanced=advanced, sorts=sorts, limit=limit, offset=offset)
+        total = db.count_cuentas_corrientes(search=search, simple=simple, advanced=advanced)
+        return rows, total
+
+    def _saldo_pill(value: Any, row: Optional[Dict[str, Any]] = None) -> ft.Control:
+        saldo = float(value or 0)
+        if saldo > 0:
+            bg, fg, label = "#FEE2E2", "#991B1B", f"Debe {_format_money(saldo)}"
+        elif saldo < 0:
+            bg, fg, label = "#DCFCE7", "#166534", f"A favor {_format_money(abs(saldo))}"
+        else:
+            bg, fg, label = "#F1F5F9", "#475569", "Al día"
+        return ft.Container(
+            padding=ft.padding.symmetric(horizontal=10, vertical=4),
+            border_radius=20,
+            bgcolor=bg,
+            content=ft.Text(label, size=11, weight=ft.FontWeight.W_600, color=fg),
+        )
+
+    def ver_movimientos_entidad(e, entidad_id):
+        """Muestra los movimientos de una entidad específica."""
+        if not db: return
+        try:
+            movimientos = db.get_movimientos_entidad(int(entidad_id), limit=50)
+            
+            mov_rows = []
+            for m in movimientos:
+                tipo = m.get("tipo_movimiento", "")
+                monto = float(m.get("monto", 0))
+                signo = "+" if tipo in ("CREDITO", "AJUSTE_CREDITO", "ANULACION") else "-"
+                color = COLOR_SUCCESS if signo == "+" else COLOR_ERROR
+                
+                mov_rows.append(
+                    ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(str(m.get("fecha", ""))[:10])),
+                        ft.DataCell(ft.Text(m.get("concepto", ""), width=200)),
+                        ft.DataCell(ft.Text(tipo, size=11)),
+                        ft.DataCell(ft.Text(f"{signo}{_format_money(monto)}", color=color)),
+                        ft.DataCell(ft.Text(_format_money(m.get("saldo_nuevo", 0)))),
+                    ])
+                )
+            
+            mov_table = SafeDataTable(
+                columns=[
+                    ft.DataColumn(ft.Text("Fecha")),
+                    ft.DataColumn(ft.Text("Concepto")),
+                    ft.DataColumn(ft.Text("Tipo")),
+                    ft.DataColumn(ft.Text("Monto")),
+                    ft.DataColumn(ft.Text("Saldo")),
+                ],
+                rows=mov_rows[:30],
+                column_spacing=15,
+            )
+            
+            dlg = ft.AlertDialog(
+                title=ft.Text(f"Movimientos de Cuenta Corriente"),
+                content=ft.Container(
+                    content=ft.Column([mov_table], scroll=ft.ScrollMode.ADAPTIVE),
+                    width=700,
+                    height=400,
+                ),
+                actions=[ft.TextButton("Cerrar", on_click=lambda _: page.close(dlg))],
+            )
+            page.open(dlg)
+        except Exception as ex:
+            show_toast(f"Error: {ex}", kind="error")
+
+    def open_pago_cc(_=None):
+        """Abre formulario para registrar pago directo a cuenta corriente."""
+        if not db: return
+        try:
+            entidades = db.list_entidades_simple(only_active=True)
+            formas = db.fetch_formas_pago(limit=100)
+        except Exception as e:
+            show_toast(f"Error cargando datos: {e}", kind="error")
+            return
+
+        pcc_entidad = ft.Dropdown(
+            label="Entidad *",
+            options=[ft.dropdown.Option(str(e["id"]), e["nombre_completo"]) for e in entidades],
+            width=400,
+            enable_search=True
+        )
+        _style_input(pcc_entidad)
+        
+        pcc_saldo = ft.Text("Saldo: $0.00", size=12, color=COLOR_TEXT_MUTED)
+        
+        def on_entidad_change(e):
+            if pcc_entidad.value:
+                info = db.get_saldo_entidad(int(pcc_entidad.value))
+                pcc_saldo.value = f"Saldo actual: {_format_money(info.get('saldo', 0))}"
+                pcc_saldo.update()
+        pcc_entidad.on_change = on_entidad_change
+        
+        pcc_forma = ft.Dropdown(
+            label="Forma de Pago *",
+            options=[ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas],
+            width=250
+        )
+        _style_input(pcc_forma)
+        
+        pcc_monto = _number_field("Monto *", width=180)
+        pcc_concepto = ft.TextField(label="Concepto", width=300, value="Pago recibido")
+        _style_input(pcc_concepto)
+        pcc_referencia = ft.TextField(label="Referencia (Nro cheque, etc)", width=250)
+        _style_input(pcc_referencia)
+        pcc_obs = ft.TextField(label="Observaciones", multiline=True, width=500)
+        _style_input(pcc_obs)
+
+        def _save_pago_cc(_):
+            if not pcc_entidad.value or not pcc_forma.value or not pcc_monto.value:
+                show_toast("Complete los campos obligatorios", kind="warning")
+                return
+            try:
+                monto = float(pcc_monto.value.replace(",", "."))
+                db.registrar_pago_cuenta_corriente(
+                    id_entidad=int(pcc_entidad.value),
+                    id_forma_pago=int(pcc_forma.value),
+                    monto=monto,
+                    concepto=pcc_concepto.value or "Pago recibido",
+                    referencia=pcc_referencia.value,
+                    observacion=pcc_obs.value
+                )
+                show_toast("Pago registrado correctamente", kind="success")
+                close_form()
+                cuentas_table.refresh()
+                refresh_cc_stats()
+            except Exception as ex:
+                show_toast(f"Error: {ex}", kind="error")
+
+        content = ft.Container(
+            width=550,
+            height=400,
+            content=ft.Column([
+                ft.Row([pcc_entidad], spacing=10),
+                pcc_saldo,
+                ft.Row([pcc_forma, pcc_monto], spacing=10),
+                ft.Row([pcc_concepto, pcc_referencia], spacing=10),
+                pcc_obs
+            ], spacing=15, scroll=ft.ScrollMode.ADAPTIVE)
+        )
+
+        open_form("Registrar Pago/Cobro", content, [
+            ft.TextButton("Cancelar", on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.ElevatedButton("Registrar", bgcolor=COLOR_SUCCESS, color="#FFFFFF", on_click=_save_pago_cc, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
+        ])
+
+    def open_ajuste_cc(_=None):
+        """Abre formulario para ajuste manual de saldo."""
+        if not db: return
+        try:
+            entidades = db.list_entidades_simple(only_active=False)
+        except Exception as e:
+            show_toast(f"Error cargando datos: {e}", kind="error")
+            return
+
+        aj_entidad = ft.Dropdown(
+            label="Entidad *",
+            options=[ft.dropdown.Option(str(e["id"]), e["nombre_completo"]) for e in entidades],
+            width=400,
+            enable_search=True
+        )
+        _style_input(aj_entidad)
+        
+        aj_saldo = ft.Text("Saldo actual: $0.00", size=12, color=COLOR_TEXT_MUTED)
+        
+        def on_ent_change(e):
+            if aj_entidad.value:
+                info = db.get_saldo_entidad(int(aj_entidad.value))
+                aj_saldo.value = f"Saldo actual: {_format_money(info.get('saldo', 0))}"
+                aj_saldo.update()
+        aj_entidad.on_change = on_ent_change
+        
+        aj_tipo = _dropdown("Tipo de Ajuste *", [("AJUSTE_CREDITO", "Reducir Deuda (Crédito)"), ("AJUSTE_DEBITO", "Aumentar Deuda (Débito)")], width=280)
+        aj_monto = _number_field("Monto *", width=180)
+        aj_concepto = ft.TextField(label="Concepto/Motivo *", width=400)
+        _style_input(aj_concepto)
+        aj_obs = ft.TextField(label="Observaciones", multiline=True, width=500)
+        _style_input(aj_obs)
+
+        def _save_ajuste(_):
+            if not aj_entidad.value or not aj_tipo.value or not aj_monto.value or not aj_concepto.value:
+                show_toast("Complete todos los campos obligatorios", kind="warning")
+                return
+            try:
+                monto = float(aj_monto.value.replace(",", "."))
+                db.ajustar_saldo_cc(
+                    id_entidad=int(aj_entidad.value),
+                    tipo=aj_tipo.value,
+                    monto=monto,
+                    concepto=aj_concepto.value,
+                    observacion=aj_obs.value
+                )
+                show_toast("Ajuste aplicado correctamente", kind="success")
+                close_form()
+                cuentas_table.refresh()
+                refresh_cc_stats()
+            except Exception as ex:
+                show_toast(f"Error: {ex}", kind="error")
+
+        content = ft.Container(
+            width=550,
+            height=350,
+            content=ft.Column([
+                aj_entidad,
+                aj_saldo,
+                ft.Row([aj_tipo, aj_monto], spacing=10),
+                aj_concepto,
+                aj_obs
+            ], spacing=15, scroll=ft.ScrollMode.ADAPTIVE)
+        )
+
+        open_form("Ajuste de Saldo", content, [
+            ft.TextButton("Cancelar", on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.ElevatedButton("Aplicar Ajuste", bgcolor=COLOR_WARNING, color="#FFFFFF", on_click=_save_ajuste, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
+        ])
+
+    cuentas_table = GenericTable(
+        columns=[
+            ColumnConfig(key="entidad", label="Entidad", width=250),
+            ColumnConfig(key="tipo_entidad", label="Tipo", width=100),
+            ColumnConfig(key="cuit", label="CUIT", width=120),
+            ColumnConfig(key="saldo_actual", label="Saldo", width=150, renderer=lambda row: _saldo_pill(row.get("saldo_actual"))),
+            ColumnConfig(key="limite_credito", label="Límite Créd.", width=120, formatter=_format_money),
+            ColumnConfig(key="ultimo_movimiento", label="Últ. Movimiento", width=150),
+            ColumnConfig(key="total_movimientos", label="Movs.", width=80),
+            ColumnConfig(key="acciones", label="", width=80, renderer=lambda row: ft.IconButton(
+                ft.Icons.HISTORY_ROUNDED, 
+                tooltip="Ver movimientos",
+                icon_color=COLOR_ACCENT,
+                on_click=lambda e, eid=row.get("id_entidad_comercial"): ver_movimientos_entidad(e, eid)
+            )),
+        ],
+        data_provider=cuentas_provider,
+        advanced_filters=[
+            AdvancedFilterControl("tipo_entidad", cc_adv_tipo),
+            AdvancedFilterControl("estado", cc_adv_estado),
+            AdvancedFilterControl("solo_con_saldo", cc_adv_solo_saldo, getter=lambda c: c.value),
+        ],
+        show_inline_controls=False,
+        show_mass_actions=False,
+        auto_load=True,
+        page_size=20,
+    )
+
+    cc_stat_deuda = ft.Text("$0", size=20, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
+    cc_stat_deudores = ft.Text("0", size=20, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
+    cc_stat_cobros = ft.Text("$0", size=20, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
+    cc_stat_movs = ft.Text("0", size=20, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
+
+    def refresh_cc_stats():
+        if not db: return
+        try:
+            stats = db.get_stats_cuenta_corriente()
+            cc_stat_deuda.value = _format_money(stats.get("deuda_clientes", 0))
+            cc_stat_deudores.value = str(stats.get("clientes_deudores", 0))
+            cc_stat_cobros.value = _format_money(stats.get("cobros_hoy", 0))
+            cc_stat_movs.value = str(stats.get("movimientos_hoy", 0))
+            cc_stat_deuda.update()
+            cc_stat_deudores.update()
+            cc_stat_cobros.update()
+            cc_stat_movs.update()
+        except: pass
+
+    cuentas_view = ft.Column([
+        ft.Row([
+            ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_ROUNDED, color=COLOR_ERROR, size=24), bgcolor=f"{COLOR_ERROR}1A", padding=10, border_radius=12),
+                    ft.Column([ft.Text("Deuda Clientes", size=12, color=COLOR_TEXT_MUTED), cc_stat_deuda], spacing=-2),
+                ], spacing=12),
+                padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
+            ),
+            ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(ft.Icons.PEOPLE_ALT_ROUNDED, color=COLOR_WARNING, size=24), bgcolor=f"{COLOR_WARNING}1A", padding=10, border_radius=12),
+                    ft.Column([ft.Text("Clientes Deudores", size=12, color=COLOR_TEXT_MUTED), cc_stat_deudores], spacing=-2),
+                ], spacing=12),
+                padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
+            ),
+            ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(ft.Icons.PAYMENTS_ROUNDED, color=COLOR_SUCCESS, size=24), bgcolor=f"{COLOR_SUCCESS}1A", padding=10, border_radius=12),
+                    ft.Column([ft.Text("Cobros Hoy", size=12, color=COLOR_TEXT_MUTED), cc_stat_cobros], spacing=-2),
+                ], spacing=12),
+                padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
+            ),
+            ft.Container(
+                content=ft.Row([
+                    ft.Container(content=ft.Icon(ft.Icons.SWAP_VERT_ROUNDED, color=COLOR_ACCENT, size=24), bgcolor=f"{COLOR_ACCENT}1A", padding=10, border_radius=12),
+                    ft.Column([ft.Text("Movimientos Hoy", size=12, color=COLOR_TEXT_MUTED), cc_stat_movs], spacing=-2),
+                ], spacing=12),
+                padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
+            ),
+        ], spacing=20),
+        ft.Container(height=10),
+        make_card(
+            "Cuentas Corrientes",
+            "Gestión de saldos de clientes y proveedores.",
+            cuentas_table.build(),
+            actions=[
+                ft.ElevatedButton(
+                    "Registrar Pago",
+                    icon=ft.Icons.ATTACH_MONEY_ROUNDED,
+                    bgcolor=COLOR_SUCCESS,
+                    color="#FFFFFF",
+                    on_click=open_pago_cc,
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+                ),
+                ft.ElevatedButton(
+                    "Ajuste de Saldo",
+                    icon=ft.Icons.TUNE_ROUNDED,
+                    bgcolor=COLOR_WARNING,
+                    color="#FFFFFF",
+                    on_click=open_ajuste_cc,
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+                ),
+            ]
+        )
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    cuentas_view = ft.Container(
+        content=cuentas_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
+
     # Logs View
+
     logs_adv_user = ft.TextField(label="Usuario contiene", width=180); _style_input(logs_adv_user)
     logs_adv_ent = ft.TextField(label="Entidad contiene", width=180); _style_input(logs_adv_ent)
     logs_adv_acc = ft.TextField(label="Acción contiene", width=180); _style_input(logs_adv_acc)
@@ -4471,67 +4829,13 @@ def main(page: ft.Page) -> None:
     )
 
     def handle_missed_backups():
-        """Checks and executes missed backups before showing the main app."""
-        if not db: return
-        
-        # 1. Show overlay
-        backup_overlay.visible = True
-        login_container.disabled = True
-        main_app_container.visible = False
+        """Bypasses legacy backup check and shows main application."""
+        # Just transition smoothly to the app
+        backup_overlay.visible = False
+        login_container.disabled = False
+        login_container.visible = False
+        main_app_container.visible = True
         page.update()
-        
-        try:
-            # 2. Check for missed backups
-            missed = backup_service.check_missed_backups(db)
-            
-            if not missed:
-                # Nothing missed, just a quick hide and continue
-                backup_overlay.visible = False
-                login_container.disabled = False
-                login_container.visible = False
-                main_app_container.visible = True
-                page.update()
-                return
-
-            # 3. Inform user we found missed backups
-            backup_status_title.value = "Ejecutando Respaldos Pendientes"
-            backup_status_detail.value = f"Se detectaron {len(missed)} respaldos que no se pudieron realizar."
-            backup_type_badge.visible = True
-            page.update()
-            
-            # 4. Progress callback for UI updates
-            def update_progress(btype, status, current, total):
-                label_map = {"daily": "DIARIO", "weekly": "SEMANAL", "monthly": "MENSUAL"}
-                backup_type_badge.content.value = label_map.get(btype, btype.upper())
-                
-                if status == "running":
-                    backup_status_detail.value = f"Realizando respaldo {current} de {total}..."
-                    backup_progress_bar.value = (current - 1) / total + 0.1 / total
-                elif status == "completed":
-                    backup_progress_bar.value = current / total
-                
-                page.update()
-
-            # 5. Execute missed backups
-            import time
-            time.sleep(1) # Give user a second to see what's happening
-            
-            results = backup_service.execute_missed_backups(db, missed, progress_callback=update_progress)
-            
-            successful = sum(1 for r in results.values() if r)
-            if successful > 0:
-                show_toast(f"Se completaron {successful} respaldos pendientes exitosamente.", kind="success")
-            
-        except Exception as e:
-            logger.error(f"Error in handle_missed_backups: {e}")
-            show_toast("Error al procesar respaldos pendientes.", kind="error")
-        finally:
-            # 6. Finalize and show app
-            backup_overlay.visible = False
-            login_container.disabled = False
-            login_container.visible = False
-            main_app_container.visible = True
-            page.update()
 
     def do_login(_=None):
         nonlocal CURRENT_USER_ROLE, current_user, logout_logged
@@ -4778,6 +5082,9 @@ def main(page: ft.Page) -> None:
             content_holder.content = movimientos_view
         elif key == "pagos":
             content_holder.content = pagos_view
+        elif key == "cuentas":
+            content_holder.content = cuentas_view
+            refresh_cc_stats()
         elif key == "masivos":
             content_holder.content = ensure_masivos_view()
             try:
@@ -4938,13 +5245,14 @@ def main(page: ft.Page) -> None:
                 ft.Container(
                     content=ft.ListView(
                         controls=[
-                            header_principal := ft.Text("NAVIGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                            header_principal := ft.Text("NAVEGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
                             nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
                             nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
                             nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
                             nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
                             nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
                             nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
+                            nav_item("cuentas", "Cuentas Corrientes", "ACCOUNT_BALANCE_ROUNDED"),
                             nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
                             nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
                             

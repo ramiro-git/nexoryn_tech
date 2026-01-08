@@ -1305,3 +1305,234 @@ COMMENT ON TABLE seguridad.backup_chain IS 'Relaciones entre backups para formar
 COMMENT ON TABLE seguridad.backup_validation IS 'Historial de validaciones de backups';
 COMMENT ON TABLE seguridad.backup_retention_policy IS 'Políticas de retención de backups';
 COMMENT ON TABLE seguridad.backup_event IS 'Eventos del sistema de backups';
+
+-- ============================================================================
+-- SISTEMA DE CUENTAS CORRIENTES
+-- Versión: 1.0
+-- Descripción: Gestión de saldos y movimientos de cuenta corriente para 
+--              clientes y proveedores con auditoría completa
+-- ============================================================================
+
+-- Tabla de saldos de cuenta corriente (unificada para clientes y proveedores)
+-- Esta tabla complementa app.lista_cliente que solo maneja clientes
+CREATE TABLE IF NOT EXISTS app.saldo_cuenta_corriente (
+    id_entidad_comercial  BIGINT PRIMARY KEY REFERENCES app.entidad_comercial(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    saldo_actual          NUMERIC(14,2) NOT NULL DEFAULT 0,
+    limite_credito        NUMERIC(14,2) NOT NULL DEFAULT 0,
+    ultimo_movimiento     TIMESTAMPTZ,
+    tipo_entidad          VARCHAR(10) NOT NULL,
+    fecha_creacion        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_saldo_tipo CHECK (tipo_entidad IN ('CLIENTE', 'PROVEEDOR'))
+);
+
+COMMENT ON TABLE app.saldo_cuenta_corriente IS 'Saldos de cuenta corriente unificados para clientes y proveedores';
+COMMENT ON COLUMN app.saldo_cuenta_corriente.saldo_actual IS 'Positivo = entidad debe dinero. Negativo = entidad tiene saldo a favor';
+
+-- Tabla de movimientos de cuenta corriente (auditoría completa)
+CREATE TABLE IF NOT EXISTS app.movimiento_cuenta_corriente (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id_entidad_comercial  BIGINT NOT NULL REFERENCES app.entidad_comercial(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    fecha                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tipo_movimiento       VARCHAR(20) NOT NULL,
+    concepto              VARCHAR(150) NOT NULL,
+    monto                 NUMERIC(14,4) NOT NULL,
+    saldo_anterior        NUMERIC(14,4) NOT NULL,
+    saldo_nuevo           NUMERIC(14,4) NOT NULL,
+    id_documento          BIGINT REFERENCES app.documento(id) ON UPDATE CASCADE ON DELETE SET NULL,
+    id_pago               BIGINT REFERENCES app.pago(id) ON UPDATE CASCADE ON DELETE SET NULL,
+    observacion           TEXT,
+    id_usuario            BIGINT REFERENCES seguridad.usuario(id) ON UPDATE CASCADE ON DELETE SET NULL,
+    anulado               BOOLEAN NOT NULL DEFAULT FALSE,
+    id_movimiento_anula   BIGINT REFERENCES app.movimiento_cuenta_corriente(id),
+    CONSTRAINT ck_tipo_mov_cc CHECK (tipo_movimiento IN ('DEBITO', 'CREDITO', 'AJUSTE_DEBITO', 'AJUSTE_CREDITO', 'ANULACION'))
+);
+
+COMMENT ON TABLE app.movimiento_cuenta_corriente IS 'Registro detallado de todos los movimientos de cuenta corriente';
+COMMENT ON COLUMN app.movimiento_cuenta_corriente.tipo_movimiento IS 'DEBITO=aumenta deuda, CREDITO=reduce deuda, AJUSTE_*=correcciones manuales, ANULACION=reversión';
+
+-- Índices para movimientos de cuenta corriente
+CREATE INDEX IF NOT EXISTS idx_mov_cc_entidad ON app.movimiento_cuenta_corriente(id_entidad_comercial);
+CREATE INDEX IF NOT EXISTS idx_mov_cc_fecha ON app.movimiento_cuenta_corriente(fecha DESC);
+CREATE INDEX IF NOT EXISTS idx_mov_cc_entidad_fecha ON app.movimiento_cuenta_corriente(id_entidad_comercial, fecha DESC);
+CREATE INDEX IF NOT EXISTS idx_mov_cc_documento ON app.movimiento_cuenta_corriente(id_documento) WHERE id_documento IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mov_cc_pago ON app.movimiento_cuenta_corriente(id_pago) WHERE id_pago IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mov_cc_tipo ON app.movimiento_cuenta_corriente(tipo_movimiento);
+CREATE INDEX IF NOT EXISTS idx_mov_cc_anulado ON app.movimiento_cuenta_corriente(anulado) WHERE anulado = FALSE;
+
+-- Índices para saldo_cuenta_corriente
+CREATE INDEX IF NOT EXISTS idx_saldo_cc_tipo ON app.saldo_cuenta_corriente(tipo_entidad);
+CREATE INDEX IF NOT EXISTS idx_saldo_cc_saldo ON app.saldo_cuenta_corriente(saldo_actual) WHERE saldo_actual != 0;
+CREATE INDEX IF NOT EXISTS idx_saldo_cc_deudores ON app.saldo_cuenta_corriente(saldo_actual DESC) WHERE saldo_actual > 0 AND tipo_entidad = 'CLIENTE';
+CREATE INDEX IF NOT EXISTS idx_saldo_cc_acreedores ON app.saldo_cuenta_corriente(saldo_actual DESC) WHERE saldo_actual > 0 AND tipo_entidad = 'PROVEEDOR';
+
+-- Trigger para mantener sincronizado el saldo
+CREATE OR REPLACE FUNCTION app.fn_sync_saldo_cuenta_corriente()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_saldo NUMERIC(14,2);
+    v_tipo_entidad VARCHAR(10);
+BEGIN
+    -- Obtener tipo de entidad
+    SELECT tipo INTO v_tipo_entidad FROM app.entidad_comercial WHERE id = NEW.id_entidad_comercial;
+    IF v_tipo_entidad IS NULL OR v_tipo_entidad = 'AMBOS' THEN
+        v_tipo_entidad := 'CLIENTE';
+    END IF;
+
+    -- Upsert en saldo_cuenta_corriente
+    INSERT INTO app.saldo_cuenta_corriente (id_entidad_comercial, saldo_actual, tipo_entidad, ultimo_movimiento)
+    VALUES (NEW.id_entidad_comercial, NEW.saldo_nuevo, v_tipo_entidad, NEW.fecha)
+    ON CONFLICT (id_entidad_comercial) DO UPDATE SET
+        saldo_actual = EXCLUDED.saldo_actual,
+        ultimo_movimiento = EXCLUDED.ultimo_movimiento;
+
+    -- También sincronizar con app.lista_cliente si existe
+    UPDATE app.lista_cliente 
+    SET saldo_cuenta = NEW.saldo_nuevo 
+    WHERE id_entidad_comercial = NEW.id_entidad_comercial;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_saldo_cc ON app.movimiento_cuenta_corriente;
+CREATE TRIGGER trg_sync_saldo_cc
+    AFTER INSERT ON app.movimiento_cuenta_corriente
+    FOR EACH ROW
+    EXECUTE FUNCTION app.fn_sync_saldo_cuenta_corriente();
+
+-- Función para registrar movimiento de cuenta corriente
+CREATE OR REPLACE FUNCTION app.registrar_movimiento_cc(
+    p_id_entidad BIGINT,
+    p_tipo VARCHAR(20),
+    p_concepto VARCHAR(150),
+    p_monto NUMERIC(14,4),
+    p_id_documento BIGINT DEFAULT NULL,
+    p_id_pago BIGINT DEFAULT NULL,
+    p_observacion TEXT DEFAULT NULL,
+    p_id_usuario BIGINT DEFAULT NULL
+) RETURNS BIGINT AS $$
+DECLARE
+    v_saldo_anterior NUMERIC(14,4);
+    v_saldo_nuevo NUMERIC(14,4);
+    v_mov_id BIGINT;
+BEGIN
+    -- Obtener saldo actual
+    SELECT COALESCE(saldo_actual, 0) INTO v_saldo_anterior
+    FROM app.saldo_cuenta_corriente
+    WHERE id_entidad_comercial = p_id_entidad;
+    
+    IF NOT FOUND THEN
+        v_saldo_anterior := 0;
+    END IF;
+    
+    -- Calcular nuevo saldo
+    IF p_tipo IN ('DEBITO', 'AJUSTE_DEBITO') THEN
+        v_saldo_nuevo := v_saldo_anterior + p_monto;
+    ELSIF p_tipo IN ('CREDITO', 'AJUSTE_CREDITO', 'ANULACION') THEN
+        v_saldo_nuevo := v_saldo_anterior - p_monto;
+    ELSE
+        RAISE EXCEPTION 'Tipo de movimiento no válido: %', p_tipo;
+    END IF;
+    
+    -- Insertar movimiento
+    INSERT INTO app.movimiento_cuenta_corriente (
+        id_entidad_comercial, tipo_movimiento, concepto, monto,
+        saldo_anterior, saldo_nuevo, id_documento, id_pago,
+        observacion, id_usuario
+    ) VALUES (
+        p_id_entidad, p_tipo, p_concepto, p_monto,
+        v_saldo_anterior, v_saldo_nuevo, p_id_documento, p_id_pago,
+        p_observacion, COALESCE(p_id_usuario, NULLIF(current_setting('app.user_id', true), '')::BIGINT)
+    ) RETURNING id INTO v_mov_id;
+    
+    RETURN v_mov_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Vista de resumen de cuentas corrientes
+CREATE OR REPLACE VIEW app.v_cuenta_corriente_resumen AS
+SELECT
+    s.id_entidad_comercial,
+    COALESCE(e.razon_social, TRIM(COALESCE(e.apellido, '') || ' ' || COALESCE(e.nombre, ''))) AS entidad,
+    e.cuit,
+    e.telefono,
+    e.email,
+    s.tipo_entidad,
+    s.saldo_actual,
+    s.limite_credito,
+    CASE 
+        WHEN s.saldo_actual > 0 THEN 'DEUDOR'
+        WHEN s.saldo_actual < 0 THEN 'A_FAVOR'
+        ELSE 'AL_DIA'
+    END AS estado_cuenta,
+    s.ultimo_movimiento,
+    (SELECT COUNT(*) FROM app.movimiento_cuenta_corriente m WHERE m.id_entidad_comercial = s.id_entidad_comercial AND m.anulado = FALSE) AS total_movimientos,
+    e.activo
+FROM app.saldo_cuenta_corriente s
+JOIN app.entidad_comercial e ON e.id = s.id_entidad_comercial;
+
+-- Vista de movimientos con información completa
+CREATE OR REPLACE VIEW app.v_movimiento_cc_full AS
+SELECT
+    m.id,
+    m.id_entidad_comercial,
+    COALESCE(e.razon_social, TRIM(COALESCE(e.apellido, '') || ' ' || COALESCE(e.nombre, ''))) AS entidad,
+    m.fecha,
+    m.tipo_movimiento,
+    m.concepto,
+    m.monto,
+    m.saldo_anterior,
+    m.saldo_nuevo,
+    m.id_documento,
+    d.numero_serie AS nro_documento,
+    td.nombre AS tipo_documento,
+    m.id_pago,
+    fp.descripcion AS forma_pago,
+    m.observacion,
+    u.nombre AS usuario,
+    m.anulado,
+    m.id_movimiento_anula
+FROM app.movimiento_cuenta_corriente m
+JOIN app.entidad_comercial e ON e.id = m.id_entidad_comercial
+LEFT JOIN app.documento d ON d.id = m.id_documento
+LEFT JOIN ref.tipo_documento td ON td.id = d.id_tipo_documento
+LEFT JOIN app.pago p ON p.id = m.id_pago
+LEFT JOIN ref.forma_pago fp ON fp.id = p.id_forma_pago
+LEFT JOIN seguridad.usuario u ON u.id = m.id_usuario;
+
+-- Estadísticas de cuentas corrientes
+CREATE OR REPLACE VIEW app.v_stats_cuenta_corriente AS
+SELECT
+    (SELECT COALESCE(SUM(saldo_actual), 0) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'CLIENTE') AS deuda_clientes,
+    (SELECT COUNT(*) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'CLIENTE') AS clientes_deudores,
+    (SELECT COALESCE(SUM(saldo_actual), 0) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'PROVEEDOR') AS deuda_proveedores,
+    (SELECT COUNT(*) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'PROVEEDOR') AS proveedores_acreedores,
+    (SELECT COUNT(*) FROM app.movimiento_cuenta_corriente WHERE fecha >= CURRENT_DATE AND anulado = FALSE) AS movimientos_hoy,
+    (SELECT COALESCE(SUM(CASE WHEN tipo_movimiento IN ('CREDITO', 'AJUSTE_CREDITO') THEN monto ELSE 0 END), 0) 
+     FROM app.movimiento_cuenta_corriente WHERE fecha >= CURRENT_DATE AND anulado = FALSE) AS cobros_hoy,
+    (SELECT COALESCE(SUM(CASE WHEN tipo_movimiento IN ('DEBITO', 'AJUSTE_DEBITO') THEN monto ELSE 0 END), 0) 
+     FROM app.movimiento_cuenta_corriente WHERE fecha >= CURRENT_DATE AND anulado = FALSE) AS facturacion_hoy;
+
+-- Migrate existing saldo_cuenta from lista_cliente to new unified table
+INSERT INTO app.saldo_cuenta_corriente (id_entidad_comercial, saldo_actual, limite_credito, tipo_entidad)
+SELECT 
+    lc.id_entidad_comercial,
+    lc.saldo_cuenta,
+    lc.limite_credito,
+    'CLIENTE'
+FROM app.lista_cliente lc
+WHERE lc.saldo_cuenta != 0
+ON CONFLICT (id_entidad_comercial) DO UPDATE SET
+    saldo_actual = EXCLUDED.saldo_actual,
+    limite_credito = EXCLUDED.limite_credito;
+
+-- Trigger auditoría para movimientos de cuenta corriente
+DROP TRIGGER IF EXISTS tr_audit_mov_cc ON app.movimiento_cuenta_corriente;
+CREATE TRIGGER tr_audit_mov_cc
+AFTER INSERT OR UPDATE OR DELETE ON app.movimiento_cuenta_corriente
+FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
+
+COMMENT ON FUNCTION app.registrar_movimiento_cc IS 'Registra un movimiento de cuenta corriente calculando automáticamente el nuevo saldo';
+COMMENT ON VIEW app.v_cuenta_corriente_resumen IS 'Resumen de cuentas corrientes con estado calculado';
+COMMENT ON VIEW app.v_movimiento_cc_full IS 'Movimientos de cuenta corriente con información completa de entidad, documento y usuario';
+
