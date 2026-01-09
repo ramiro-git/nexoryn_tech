@@ -1,0 +1,554 @@
+"""
+AsyncSelect - Componente de select con búsqueda y carga lazy para Flet.
+
+Características:
+- Búsqueda con debounce
+- Lazy loading con infinite scroll
+- Cache simple por (query, offset)
+- Manejo de errores con retry
+- Selección con callback
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import flet as ft
+
+Option = Dict[str, Any]
+
+
+class AsyncSelect(ft.Column):
+    _default_page: Optional[ft.Page] = None
+
+    @classmethod
+    def set_default_page(cls, page: ft.Page) -> None:
+        cls._default_page = page
+
+    def __init__(
+        self,
+        loader: Callable[[str, int, int], Any],
+        value: Any = None,
+        placeholder: str = "Seleccionar...",
+        on_change: Optional[Callable[[Any], None]] = None,
+        width: Optional[int] = None,
+        disabled: bool = False,
+        page_size: int = 50,
+        debounce_ms: int = 400,
+        label: Optional[str] = None,
+        bgcolor: str = "#F8FAFC",
+        border_color: str = "#CBD5E1",  # Slate 200
+        focused_border_color: str = "#6366F1",  # Indigo 500
+        expand: bool = False,
+        initial_items: Optional[List[Dict[str, Any]]] = None,
+        page_ref: Optional[Any] = None,  # Explicit page reference
+    ):
+        super().__init__(spacing=2, expand=expand, width=width, disabled=disabled)
+        self.loader = loader
+        self._value = value
+        self.placeholder = placeholder
+        self._on_change_callback = on_change
+        self.debounce_ms = debounce_ms
+        self.label = label
+        self.bgcolor = bgcolor
+        self.border_color = border_color
+        self.focused_border_color = focused_border_color
+        self.page_size = page_size
+
+        # State
+        self._query = ""
+        self._offset = 0
+        self._items: List[Dict[str, Any]] = initial_items or []
+        self._has_more = True
+        self._loading = False
+        self._loading_more = False
+        self._error: Optional[str] = None
+        self._selected_label = ""
+        self._debounce_task: Optional[asyncio.Task] = None
+        self._cache: Dict[str, Tuple[List[Dict[str, Any]], bool]] = {}
+        self._disabled = disabled
+
+        # Controls placeholders
+        self._trigger: Optional[ft.Container] = None
+        self._search_field: Optional[ft.TextField] = None
+        self._options_list: Optional[ft.ListView] = None
+        self._dialog: Optional[ft.AlertDialog] = None
+        self._loading_indicator: Optional[ft.Control] = None
+        self._loading_more_indicator: Optional[ft.Control] = None
+        self._empty_text: Optional[ft.Text] = None
+        self._error_row: Optional[ft.Row] = None
+        self._page_ref = page_ref
+
+        # Build UI
+        self._update_selected_label()
+        self._trigger = self._build_trigger()
+        
+        if self.label:
+            self.controls.append(ft.Text(self.label, size=12, color="#64748B", weight=ft.FontWeight.W_500))
+        self.controls.append(self._trigger)
+
+    def _build_trigger(self):
+        text_color = "#1E293B" if self._selected_label else "#94A3B8"
+        
+        return ft.Container(
+            on_click=self._on_trigger_click,
+            disabled=self._disabled,
+            content=ft.Row(
+                [
+                    ft.Text(
+                        self._selected_label or self.placeholder,
+                        expand=True,
+                        color=text_color,
+                        size=14,
+                        no_wrap=True,
+                    ),
+                    ft.Icon(
+                        ft.Icons.KEYBOARD_ARROW_DOWN,
+                        color="#64748B",
+                        size=18,
+                    ),
+                ],
+                spacing=8,
+                tight=True,
+            ),
+            padding=ft.padding.symmetric(horizontal=12, vertical=11),
+            border=ft.border.all(1, self.border_color),
+            border_radius=10,
+            bgcolor=self.bgcolor,
+            width=self.width,
+        )
+
+    @property
+    def on_change(self):
+        return self._on_change_callback
+
+    @on_change.setter
+    def on_change(self, v):
+        self._on_change_callback = v
+
+    @property
+    def disabled(self):
+        return self._disabled if hasattr(self, '_disabled') else False
+
+    @disabled.setter
+    def disabled(self, v):
+        self._disabled = bool(v)
+        if hasattr(self, '_trigger') and self._trigger:
+            self._trigger.disabled = self._disabled
+            try: self._trigger.update()
+            except: pass
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, v):
+        self._value = v
+        self._update_selected_label()
+        if self._trigger:
+            self._trigger.content.controls[0].value = self._selected_label or self.placeholder
+            self._trigger.content.controls[0].color = "#1E293B" if self._selected_label else "#94A3B8"
+        try:
+            self.update()
+        except: pass
+
+    def update(self):
+        try:
+            return super().update()
+        except AssertionError:
+            return None
+
+    def clear_cache(self) -> None:
+        self._cache.clear()
+        self._items = []
+        self._offset = 0
+        self._has_more = True
+
+    def set_busy(self, loading: bool) -> None:
+        self._update_trigger_icon(loading)
+        if loading:
+            self.disabled = True
+
+    def prefetch(self, query: str = "", on_done: Optional[Callable[[], None]] = None) -> None:
+        page = self._get_page()
+        if not page:
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+            return
+
+        async def _do():
+            try:
+                await self._load_items(query, 0, is_search=True)
+            finally:
+                if on_done:
+                    try:
+                        on_done()
+                    except Exception:
+                        pass
+
+        page.run_task(_do)
+
+    @property
+    def options(self):
+        return []
+
+    @options.setter
+    def options(self, v):
+        items = []
+        for opt in (v or []):
+            if hasattr(opt, 'key') and hasattr(opt, 'text'):
+                items.append({"value": opt.key, "label": opt.text})
+        self._items = items
+        self._cache.clear()
+        self._update_selected_label()
+        try: self.update()
+        except: pass
+
+    def _update_selected_label(self):
+        if self._value is None:
+            self._selected_label = ""
+            return
+        
+        # Try to find in current items
+        for opt in self._items:
+            if str(opt.get("value")) == str(self._value):
+                self._selected_label = opt.get("label", "")
+                return
+        
+        # NOTE: Initial label resolution needs to be handled by the parent 
+        # or by a separate loader call if not in current view items.
+        pass
+
+    def _get_cache_key(self, query, offset):
+        return f"{query}|{offset}"
+
+    async def _load_items(self, query, offset, is_search=False):
+        if is_search:
+            self._error = None
+            self._update_trigger_icon(True)
+
+        # Cache check
+        key = self._get_cache_key(query, offset)
+        if key in self._cache:
+            items, has_more = self._cache[key]
+            if is_search:
+                self._items = items
+                self._has_more = has_more
+                self._loading = False
+                self._update_dialog_ui()
+            else: # load more
+                self._items.extend(items)
+                self._has_more = has_more
+                self._loading_more = False
+                self._update_dialog_ui()
+            return
+
+        if offset == 0:
+            self._loading = True
+            self._error = None
+        else:
+            self._loading_more = True
+
+        self._update_dialog_ui()
+
+        try:
+            result = self.loader(query, offset, self.page_size)
+            if asyncio.iscoroutine(result):
+                items, has_more = await result
+            else:
+                items, has_more = result
+
+            self._cache[key] = (items, has_more)
+
+            if is_search:
+                self._items = items
+                self._offset = 0
+            else:
+                self._items.extend(items)
+                self._offset = offset
+
+            self._has_more = has_more
+            self._error = None
+        except Exception as exc:
+            self._error = str(exc)
+        finally:
+            self._loading = False
+            self._loading_more = False
+            self._update_trigger_icon(False)
+            self._update_dialog_ui()
+
+    def _update_trigger_icon(self, loading):
+        if self._trigger:
+            icon = self._trigger.content.controls[1]
+            icon.icon = ft.Icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.Icons.KEYBOARD_ARROW_DOWN
+            try: self._trigger.update()
+            except: pass
+
+    def _on_search_change(self, e):
+        new_query = e.control.value
+
+        if self._debounce_task:
+            self._debounce_task.cancel()
+
+        async def debounced_search():
+            await asyncio.sleep(self.debounce_ms / 1000)
+            self._query = new_query
+            self._cache.clear()
+            await self._load_items(new_query, 0, is_search=True)
+
+        page = self._get_page()
+        if not page:
+            return
+        self._debounce_task = page.run_task(debounced_search)
+
+    def _on_scroll(self, e):
+        if self._loading_more or not self._has_more or self._error:
+            return
+
+        if e.pixels >= e.max_scroll_extent - 100:
+            page = self._get_page()
+            if not page:
+                return
+            page.run_task(self._load_items, self._query, len(self._items))
+
+    def _on_option_click(self, option):
+        self._value = option.get("value")
+        self._selected_label = option.get("label", "")
+        self._close_dialog()
+
+        if self._on_change_callback:
+            self._on_change_callback(self._value)
+
+        # Update trigger manualy before general update
+        if self._trigger:
+            text_field = self._trigger.content.controls[0]
+            text_field.value = self._selected_label
+            text_field.color = "#1E293B"
+        
+        try: self.update()
+        except: pass
+
+    def _on_retry(self, _e):
+        self._cache.clear()
+        page = self._get_page()
+        if not page:
+            return
+        page.run_task(self._load_items, self._query, 0, True)
+
+    def _on_trigger_click(self, _e):
+        if self.disabled: return
+        self._open_dialog()
+
+    def _open_dialog(self):
+        # build once or update existing
+        if not self._dialog:
+            self._build_dialog()
+        
+        # Initialize loading state
+        self._query = ""
+        self._offset = 0
+        self._items = []
+        self._has_more = True
+        self._error = None
+        
+        # Get page reference - try self.page first, then traverse parent hierarchy
+        page = self._get_page()
+        
+        if page:
+            # IMPORTANT: Clear Flet's internal dialog to avoid conflicts
+            # Setting it to None and ensuring open=False prevents Flet from closing other things
+            if hasattr(page, 'dialog') and page.dialog:
+                try:
+                    page.dialog.open = False
+                    page.dialog = None
+                except: pass
+
+            # Ensure it's in overlay and ALWAYS at the end (to be on top of other modals)
+            if self._dialog in page.overlay:
+                page.overlay.remove(self._dialog)
+            page.overlay.append(self._dialog)
+            
+            # Show the manual modal
+            self._dialog.visible = True
+            page.update()
+            
+            # Start loading
+            page.run_task(self._load_items, "", 0, True)
+
+    def _get_page(self):
+        """Get page reference, traversing parent hierarchy if needed."""
+        # First check stored reference from did_mount
+        if hasattr(self, '_page_ref') and self._page_ref:
+            return self._page_ref
+        if self.page:
+            return self.page
+        if AsyncSelect._default_page:
+            self._page_ref = AsyncSelect._default_page
+            return AsyncSelect._default_page
+        ctrl = self
+        depth = 0
+        while ctrl and depth < 50:
+            if hasattr(ctrl, 'page') and ctrl.page:
+                print(f"[AsyncSelect] Found page at depth {depth}")
+                self._page_ref = ctrl.page
+                return ctrl.page
+            ctrl = getattr(ctrl, 'parent', None)
+            depth += 1
+        print(f"[AsyncSelect] Could not find page after {depth} levels")
+        return None
+
+    def _close_dialog(self, _e=None):
+        if self._dialog:
+            self._dialog.visible = False
+            try:
+                page = self._get_page()
+                if page: page.update()
+            except: pass
+
+    def did_mount(self):
+        # Store page reference for later use
+        if self.page:
+            self._page_ref = self.page
+        
+        # When component mounts, pre-build to have it ready
+        if not self._dialog:
+            self._build_dialog()
+        
+        self._update_selected_label()
+        try: self.update()
+        except: pass
+
+    def _build_dialog(self):
+        self._search_field = ft.TextField(
+            hint_text="Buscar...",
+            on_change=self._on_search_change,
+            border_color="#E2E8F0",
+            focused_border_color=self.focused_border_color,
+            border_radius=8,
+            height=44,
+            text_size=14,
+            prefix_icon=ft.Icons.SEARCH_ROUNDED,
+            autofocus=True,
+        )
+
+        self._loading_indicator = ft.Container(
+            content=ft.Row([
+                ft.ProgressRing(width=16, height=16, stroke_width=2, color=self.focused_border_color),
+                ft.Text("Buscando...", size=13, color="#64748B")
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            padding=20,
+            visible=False
+        )
+
+        self._loading_more_indicator = ft.Container(
+            content=ft.Row([
+                ft.ProgressRing(width=14, height=14, stroke_width=2, color=self.focused_border_color),
+                ft.Text("Más...", size=12, color="#64748B")
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            padding=10,
+            visible=False
+        )
+
+        self._error_row = ft.Row(
+            [
+                ft.Icon(ft.Icons.ERROR_OUTLINE, color="#EF4444", size=16),
+                ft.Text("Error al cargar", size=13, color="#EF4444", expand=True),
+                ft.TextButton("Reintentar", on_click=self._on_retry),
+            ],
+            visible=False,
+        )
+
+        self._empty_text = ft.Container(
+            content=ft.Text("Sin resultados", size=14, color="#94A3B8"),
+            alignment=ft.alignment.center,
+            padding=40,
+            visible=False
+        )
+
+        self._options_list = ft.ListView(
+            expand=True,
+            spacing=2,
+            padding=ft.padding.all(4),
+            on_scroll=self._on_scroll,
+        )
+
+        # Usamos un Container manual en el overlay que se comporta como un modal
+        # pero SIN ser un ft.AlertDialog, para que no cierre otros diálogos.
+        self._dialog = ft.Container(
+            content=ft.Card(
+                elevation=30, # Higher elevation for search
+                shape=ft.RoundedRectangleBorder(radius=16),
+                content=ft.Container(
+                    width=450,
+                    height=550,
+                    bgcolor="#FFFFFF",
+                    padding=ft.padding.all(16),
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text(self.label or "Seleccionar", size=18, weight=ft.FontWeight.BOLD, color="#1E293B"),
+                            ft.IconButton(ft.Icons.CLOSE_ROUNDED, icon_size=24, on_click=self._close_dialog)
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        self._search_field,
+                        ft.Divider(height=1, color="#F1F5F9"),
+                        self._loading_indicator,
+                        self._error_row,
+                        ft.Container(
+                            content=self._options_list,
+                            expand=True,
+                        ),
+                        self._empty_text,
+                        self._loading_more_indicator,
+                    ], spacing=10)
+                )
+            ),
+            bgcolor="#40000000", # Slightly lighter dimming for search
+            alignment=ft.alignment.center,
+            visible=False,
+            # Force full screen in overlay
+            left=0, top=0, right=0, bottom=0,
+            on_click=lambda _: None 
+        )
+
+    def _update_dialog_ui(self):
+        if not self._dialog or not self._dialog.visible: return
+
+        self._loading_indicator.visible = self._loading and not self._items
+        self._loading_more_indicator.visible = self._loading_more
+        self._error_row.visible = self._error is not None
+        if self._error:
+            self._error_row.controls[1].value = f"Error: {self._error[:30]}..."
+            
+        self._empty_text.visible = not self._loading and not self._error and not self._items
+        
+        self._options_list.controls = [
+            self._build_option_item(opt) for opt in self._items
+        ]
+        
+        page = self._get_page()
+        if page:
+            try: page.update()
+            except: pass
+
+    def _build_option_item(self, option):
+        is_selected = str(option.get("value")) == str(self._value)
+        
+        def on_item_hover(e):
+            e.control.bgcolor = "#F1F5F9" if e.data == "true" else ("#EEF2FF" if is_selected else None)
+            e.control.update()
+
+        return ft.Container(
+            content=ft.Row([
+                ft.Text(option.get("label", ""), size=14, color="#1E293B", expand=True),
+                ft.Icon(ft.Icons.CHECK_ROUNDED, size=16, color=self.focused_border_color, visible=is_selected)
+            ]),
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            border_radius=8,
+            on_click=lambda _: self._on_option_click(option),
+            on_hover=on_item_hover,
+            bgcolor="#EEF2FF" if is_selected else None,
+        )

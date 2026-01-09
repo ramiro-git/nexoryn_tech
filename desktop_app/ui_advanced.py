@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import atexit
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+import threading
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import flet as ft
 
@@ -15,10 +16,12 @@ try:
     from desktop_app.config import load_config
     from desktop_app.database import Database
     from desktop_app.components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig
+    from desktop_app.components.async_select import AsyncSelect
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
     from components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig  # type: ignore
+    from components.async_select import AsyncSelect  # type: ignore
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -135,6 +138,10 @@ def main(page: ft.Page) -> None:
     page.vertical_alignment = ft.MainAxisAlignment.START
     page.padding = 0
     page.spacing = 0
+    try:
+        AsyncSelect.set_default_page(page)
+    except Exception:
+        pass
 
     def show_fatal_error(exc: Exception) -> None:
         page.controls.clear()
@@ -161,6 +168,7 @@ def main(page: ft.Page) -> None:
         COLOR_PRIMARY = "#4F46E5"
         COLOR_BORDER = "#E2E8F0"
         COLOR_SURFACE_2 = "#F1F5F9"
+        COLOR_INFO = "#3B82F6"
 
         page.bgcolor = COLOR_BG
 
@@ -237,6 +245,14 @@ def main(page: ft.Page) -> None:
             conn_badge.content.controls[1].value = label
             conn_badge.content.controls[1].color = text
             page.update()
+
+        backup_service = BackupService(pg_bin_path=config.pg_bin_path)
+        backup_view_component = BackupView(page, backup_service, show_message, set_connection)
+        backup_view_control = ft.Container(
+            content=backup_view_component.build(),
+            padding=12,
+            expand=1,
+        )
 
         def _maybe_set(obj: Any, name: str, value: Any) -> None:
             if hasattr(obj, name):
@@ -631,18 +647,23 @@ def main(page: ft.Page) -> None:
         _style_input(entity_apellido)
         entity_razon_social = ft.TextField(label="Razón social", width=490)
         _style_input(entity_razon_social)
-        entity_tipo = ft.Dropdown(
-            label="Tipo",
-            width=240,
+        def tipo_loader(query: str, offset: int, limit: int) -> Tuple[List[Dict], bool]:
+            options = [
+                {"label": "—", "value": ""},
+                {"label": "Cliente", "value": "CLIENTE"},
+                {"label": "Proveedor", "value": "PROVEEDOR"},
+                {"label": "Ambos", "value": "AMBOS"},
+            ]
+            filtered = [o for o in options if query.lower() in o["label"].lower()]
+            return filtered[offset:offset+limit], offset + limit < len(filtered)
+
+        entity_tipo = AsyncSelect(
+            loader=tipo_loader,
             value="",
-            options=[
-                ft.dropdown.Option("", "—"),
-                ft.dropdown.Option("CLIENTE", "Cliente"),
-                ft.dropdown.Option("PROVEEDOR", "Proveedor"),
-                ft.dropdown.Option("AMBOS", "Ambos"),
-            ],
+            placeholder="Seleccionar tipo...",
+            width=240,
+            label="Tipo",
         )
-        _style_input(entity_tipo)
         entity_cuit = ft.TextField(label="CUIT", width=240)
         _style_input(entity_cuit)
         entity_telefono = ft.TextField(label="Teléfono", width=240)
@@ -727,12 +748,32 @@ def main(page: ft.Page) -> None:
                 marcas_values = []
                 rubros_values = []
 
+        def marcas_loader(query: str, offset: int, limit: int) -> Tuple[List[Dict], bool]:
+            options = [{"label": "(Sin marca)", "value": ""}] + [{"label": m, "value": m} for m in marcas_values]
+            filtered = [o for o in options if query.lower() in o["label"].lower()]
+            return filtered[offset:offset+limit], offset + limit < len(filtered)
+
+        def rubros_loader(query: str, offset: int, limit: int) -> Tuple[List[Dict], bool]:
+            options = [{"label": "(Sin rubro)", "value": ""}] + [{"label": r, "value": r} for r in rubros_values]
+            filtered = [o for o in options if query.lower() in o["label"].lower()]
+            return filtered[offset:offset+limit], offset + limit < len(filtered)
+
         article_nombre = ft.TextField(label="Nombre", width=490)
         _style_input(article_nombre)
-        article_marca = ft.Dropdown(label="Marca", width=240, value="", options=[ft.dropdown.Option("", "(Sin marca)")])
-        _style_input(article_marca)
-        article_rubro = ft.Dropdown(label="Rubro", width=240, value="", options=[ft.dropdown.Option("", "(Sin rubro)")])
-        _style_input(article_rubro)
+        article_marca = AsyncSelect(
+            loader=marcas_loader,
+            value="",
+            placeholder="Seleccionar marca...",
+            width=240,
+            label="Marca",
+        )
+        article_rubro = AsyncSelect(
+            loader=rubros_loader,
+            value="",
+            placeholder="Seleccionar rubro...",
+            width=240,
+            label="Rubro",
+        )
         article_costo = ft.TextField(label="Costo", width=240, value="0")
         _style_input(article_costo)
         article_stock_minimo = ft.TextField(label="Stock mínimo", width=240, value="0")
@@ -764,8 +805,6 @@ def main(page: ft.Page) -> None:
                 reload_catalogs()
             except Exception as exc:
                 show_message(f"Error cargando catálogos: {exc}", kind="error")
-            article_marca.options = [ft.dropdown.Option("", "(Sin marca)")] + [ft.dropdown.Option(m, m) for m in marcas_values]
-            article_rubro.options = [ft.dropdown.Option("", "(Sin rubro)")] + [ft.dropdown.Option(r, r) for r in rubros_values]
             article_nombre.value = ""
             article_marca.value = ""
             article_rubro.value = ""
@@ -995,22 +1034,226 @@ def main(page: ft.Page) -> None:
             spacing=0,
         )
 
-        page.add(
-            ft.Row(
+        maintenance_title = ft.Text("Preparando sistema...", size=22, weight=ft.FontWeight.BOLD, color=COLOR_TEXT)
+        maintenance_detail = ft.Text("Verificando respaldos y migraciones...", size=13, color=COLOR_TEXT_MUTED)
+        maintenance_progress = ft.ProgressBar(width=360, color=COLOR_PRIMARY, bgcolor=COLOR_BORDER, value=None)
+        maintenance_badge_text = ft.Text("", size=11, weight=ft.FontWeight.BOLD, color="#FFFFFF")
+        maintenance_badge = ft.Container(
+            content=maintenance_badge_text,
+            bgcolor=COLOR_PRIMARY,
+            padding=ft.padding.symmetric(horizontal=12, vertical=6),
+            border_radius=8,
+            visible=False,
+        )
+        maintenance_overlay = ft.Container(
+            content=ft.Column(
                 [
-                    sidebar,
-                    ft.Container(content_area, expand=1, bgcolor=COLOR_BG),
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.SETTINGS_SUGGEST_ROUNDED, size=56, color=COLOR_PRIMARY),
+                        bgcolor=f"{COLOR_PRIMARY}15",
+                        padding=22,
+                        border_radius=30,
+                        margin=ft.margin.only(bottom=16),
+                    ),
+                    maintenance_title,
+                    ft.Container(height=8),
+                    maintenance_detail,
+                    ft.Container(height=18),
+                    maintenance_badge,
+                    ft.Container(height=12),
+                    maintenance_progress,
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            visible=False,
+            expand=True,
+            bgcolor="#F1F5F9E6",
+            padding=40,
+            alignment=ft.alignment.center,
+        )
+
+        def _set_maintenance_state(
+            title: str,
+            detail: str,
+            *,
+            progress: Optional[float] = None,
+            badge: Optional[str] = None,
+            badge_color: Optional[str] = None,
+        ) -> None:
+            maintenance_overlay.visible = True
+            maintenance_title.value = title
+            maintenance_detail.value = detail
+            maintenance_progress.visible = True
+            maintenance_progress.value = progress
+            if badge:
+                maintenance_badge_text.value = badge
+                maintenance_badge.bgcolor = badge_color or COLOR_PRIMARY
+                maintenance_badge.visible = True
+            else:
+                maintenance_badge.visible = False
+            page.update()
+
+        def _hide_maintenance() -> None:
+            maintenance_overlay.visible = False
+            maintenance_progress.value = 0
+            maintenance_badge.visible = False
+            page.update()
+
+        def run_startup_maintenance(on_success: Callable[[], None]) -> None:
+            def _backup_progress(backup_type: str, status: str, current: int, total: int) -> None:
+                label_map = {
+                    "daily": "DIARIO",
+                    "weekly": "SEMANAL",
+                    "monthly": "MENSUAL",
+                }
+                label = label_map.get(backup_type, backup_type.upper())
+                if status == "running":
+                    progress = (current - 1) / max(total, 1)
+                    _set_maintenance_state(
+                        "Ejecutando respaldos pendientes...",
+                        f"{label} en progreso",
+                        progress=progress,
+                        badge=label,
+                        badge_color=COLOR_PRIMARY,
+                    )
+                elif status == "completed":
+                    progress = current / max(total, 1)
+                    _set_maintenance_state(
+                        "Ejecutando respaldos pendientes...",
+                        f"{label} completado",
+                        progress=progress,
+                        badge=label,
+                        badge_color=COLOR_SUCCESS,
+                    )
+                elif status == "failed":
+                    progress = current / max(total, 1)
+                    _set_maintenance_state(
+                        "Error en respaldos",
+                        f"{label} fallido",
+                        progress=progress,
+                        badge="ERROR",
+                        badge_color=COLOR_ERROR,
+                    )
+
+            def _schema_progress(payload: Dict[str, Any]) -> None:
+                phase = payload.get("phase")
+                if phase in {"extensions", "schemas"}:
+                    _set_maintenance_state(
+                        "Actualizando esquema...",
+                        payload.get("message", "Sincronizando..."),
+                        progress=None,
+                        badge="SCHEMA",
+                        badge_color=COLOR_INFO,
+                    )
+                    return
+                if phase in {"tables", "indexes"}:
+                    current = int(payload.get("current", 0))
+                    total = int(payload.get("total", 1)) or 1
+                    progress = current / total if total else 0
+                    _set_maintenance_state(
+                        "Actualizando esquema...",
+                        payload.get("message", "Sincronizando..."),
+                        progress=progress,
+                        badge="SCHEMA",
+                        badge_color=COLOR_INFO,
+                    )
+                    return
+
+            def _run() -> None:
+                try:
+                    _set_maintenance_state(
+                        "Preparando sistema...",
+                        "Verificando respaldos y esquema...",
+                        progress=None,
+                    )
+
+                    missed = backup_service.check_missed_backups(db)
+                    if missed:
+                        for path in [
+                            backup_service.daily_dir,
+                            backup_service.weekly_dir,
+                            backup_service.monthly_dir,
+                            backup_service.manual_dir,
+                        ]:
+                            try:
+                                path.mkdir(parents=True, exist_ok=True)
+                            except Exception:
+                                pass
+                        results = backup_service.execute_missed_backups(
+                            db,
+                            missed,
+                            progress_callback=_backup_progress,
+                        )
+                        if not results or not all(results.values()):
+                            _set_maintenance_state(
+                                "Error en respaldos",
+                                "Revisa el log antes de continuar.",
+                                progress=1.0,
+                                badge="ERROR",
+                                badge_color=COLOR_ERROR,
+                            )
+                            return
+
+                    try:
+                        from desktop_app.services.schema_sync import SchemaSync
+                    except ImportError:
+                        from services.schema_sync import SchemaSync  # type: ignore
+
+                    schema_sync = SchemaSync(
+                        db,
+                        sql_path=PROJECT_ROOT / "database" / "database.sql",
+                        logs_dir=PROJECT_ROOT / "logs",
+                    )
+                    if schema_sync.needs_sync():
+                        result = schema_sync.apply(progress_callback=_schema_progress)
+                        if not result.success:
+                            _set_maintenance_state(
+                                "Error actualizando esquema",
+                                result.error or "Fallo la sincronizacion.",
+                                progress=1.0,
+                                badge="ERROR",
+                                badge_color=COLOR_ERROR,
+                            )
+                            return
+
+                    _hide_maintenance()
+                    on_success()
+                except Exception as exc:
+                    _set_maintenance_state(
+                        "Error de mantenimiento",
+                        str(exc),
+                        progress=1.0,
+                        badge="ERROR",
+                        badge_color=COLOR_ERROR,
+                    )
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        page.add(
+            ft.Stack(
+                [
+                    ft.Row(
+                        [
+                            sidebar,
+                            ft.Container(content_area, expand=1, bgcolor=COLOR_BG),
+                        ],
+                        expand=True,
+                        spacing=0,
+                    ),
+                    maintenance_overlay,
                 ],
                 expand=True,
-                spacing=0,
             )
         )
 
-        # First paint, then load.
-        set_view("entidades")
-        refresh_stock_metrics()
-        page.on_close = None
-        page.on_window_event = None
+        def finalize_startup() -> None:
+            set_view("entidades")
+            refresh_stock_metrics()
+            page.on_close = None
+            page.on_window_event = None
+
+        run_startup_maintenance(finalize_startup)
     except Exception as exc:
         show_fatal_error(exc)
         _shutdown("fatal_exception")

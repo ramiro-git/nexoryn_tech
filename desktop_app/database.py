@@ -2193,6 +2193,7 @@ class Database:
 
     # Localities
     def fetch_localidades(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
+        """Fetch localities with filtering support."""
         filters = ["1=1"]
         params = []
         if search:
@@ -3361,6 +3362,27 @@ class Database:
                 if res is None: return 0
                 return res.get("total", 0) if isinstance(res, dict) else res[0]
 
+    def fetch_documentos_pendientes(self, id_entidad: int, search: Optional[str] = None, limit: int = 60, offset: int = 0) -> List[Dict[str, Any]]:
+        filters = ["doc.id_entidad_comercial = %s", "doc.estado NOT IN ('ANULADO', 'PAGADO')"]
+        params: List[Any] = [id_entidad]
+        if search:
+            filters.append("(lower(doc.numero_serie) LIKE %s OR lower(td.nombre) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 2)
+        where_clause = " AND ".join(filters)
+        query = f"""
+            SELECT doc.id, doc.fecha, doc.numero_serie, doc.total, doc.estado, td.nombre AS tipo_documento
+            FROM app.documento doc
+            JOIN ref.tipo_documento td ON td.id = doc.id_tipo_documento
+            WHERE {where_clause}
+            ORDER BY doc.fecha DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return _rows_to_dicts(cur)
+
     def list_tipos_documento(self) -> List[Dict[str, Any]]:
         query = "SELECT id, nombre, clase, letra FROM ref.tipo_documento ORDER BY nombre"
         with self.pool.connection() as conn:
@@ -3378,28 +3400,33 @@ class Database:
                 return float(val) if val is not None else 1000000.0
 
     # Stock Movements
+    def _movimientos_base_query(self) -> str:
+        return """
+            SELECT 
+              m.id, m.fecha, m.id_articulo, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
+              m.cantidad, tm.signo_stock, d.nombre AS deposito, u.nombre AS usuario,
+              m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
+              doc.numero_serie AS nro_comprobante,
+              COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
+            FROM app.movimiento_articulo m
+            JOIN app.articulo a ON m.id_articulo = a.id
+            JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
+            JOIN ref.deposito d ON m.id_deposito = d.id
+            LEFT JOIN app.documento doc ON m.id_documento = doc.id
+            LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
+            LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
+            LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id
+        """
+
     def fetch_movimientos_stock(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
         # Ensure view is updated (to support new traceability columns)
-        with self.pool.connection() as conn:
-            with conn.cursor() as vcur:
-                vcur.execute("""
-                    CREATE OR REPLACE VIEW app.v_movimientos_full AS
-                    SELECT 
-                      m.id, m.fecha, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
-                      m.cantidad, tm.signo_stock, d.nombre AS deposito, u.nombre AS usuario,
-                      m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
-                      doc.numero_serie AS nro_comprobante,
-                      COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
-                    FROM app.movimiento_articulo m
-                    JOIN app.articulo a ON m.id_articulo = a.id
-                    JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
-                    JOIN ref.deposito d ON m.id_deposito = d.id
-                    LEFT JOIN app.documento doc ON m.id_documento = doc.id
-                    LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
-                    LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
-                    LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
-                """)
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as vcur:
+                    vcur.execute(f"CREATE OR REPLACE VIEW app.v_movimientos_full AS {self._movimientos_base_query()}")
+                    conn.commit()
+        except Exception:
+            pass
 
         filters = ["1=1"]
         params = []
@@ -3411,8 +3438,13 @@ class Database:
         # Advanced Filters
         art = advanced.get("articulo")
         if art and art not in ("Todos", "Todas", ""):
-            filters.append("lower(articulo) LIKE %s")
-            params.append(f"%{art.lower().strip()}%")
+            art_value = str(art).strip()
+            if art_value.isdigit():
+                filters.append("id_articulo = %s")
+                params.append(int(art_value))
+            else:
+                filters.append("lower(articulo) LIKE %s")
+                params.append(f"%{art_value.lower()}%")
         
         tipo_mov = advanced.get("tipo_movimiento") or advanced.get("tipo")
         if tipo_mov and tipo_mov not in ("Todos", "Todas", ""):
@@ -3449,7 +3481,8 @@ class Database:
             "comprobante": "CASE WHEN nro_comprobante ~ '^[0-9]+$' THEN LPAD(nro_comprobante, 20, '0') ELSE nro_comprobante END"
         }
         order_by = self._build_order_by(sorts, sort_columns, default="fecha DESC")
-        query = f"SELECT * FROM app.v_movimientos_full WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
+        base_query = self._movimientos_base_query()
+        query = f"SELECT * FROM ({base_query}) AS movs WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -3457,6 +3490,14 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def count_movimientos_stock(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as vcur:
+                    vcur.execute(f"CREATE OR REPLACE VIEW app.v_movimientos_full AS {self._movimientos_base_query()}")
+                    conn.commit()
+        except Exception:
+            pass
+
         filters = ["1=1"]
         params = []
         advanced = advanced or {}
@@ -3467,8 +3508,13 @@ class Database:
         # Advanced Filters
         art = advanced.get("articulo")
         if art and art not in ("Todos", "Todas", ""):
-            filters.append("lower(articulo) LIKE %s")
-            params.append(f"%{art.lower().strip()}%")
+            art_value = str(art).strip()
+            if art_value.isdigit():
+                filters.append("id_articulo = %s")
+                params.append(int(art_value))
+            else:
+                filters.append("lower(articulo) LIKE %s")
+                params.append(f"%{art_value.lower()}%")
         
         tipo_mov = advanced.get("tipo_movimiento") or advanced.get("tipo")
         if tipo_mov and tipo_mov not in ("Todos", "Todas", ""):
@@ -3496,7 +3542,8 @@ class Database:
             params.append(usuario)
 
         where_clause = " AND ".join(filters)
-        query = f"SELECT COUNT(*) as total FROM app.v_movimientos_full WHERE {where_clause}"
+        base_query = self._movimientos_base_query()
+        query = f"SELECT COUNT(*) as total FROM ({base_query}) AS movs WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
@@ -3940,23 +3987,7 @@ class Database:
         # Ensure view is updated (Idempotent)
         with self.pool.connection() as conn:
             with conn.cursor() as vcur:
-                vcur.execute("""
-                    CREATE OR REPLACE VIEW app.v_movimientos_full AS
-                    SELECT 
-                      m.id, m.fecha, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
-                      m.cantidad, tm.signo_stock, d.nombre AS deposito, u.nombre AS usuario,
-                      m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
-                      doc.numero_serie AS nro_comprobante,
-                      COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
-                    FROM app.movimiento_articulo m
-                    JOIN app.articulo a ON m.id_articulo = a.id
-                    JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
-                    JOIN ref.deposito d ON m.id_deposito = d.id
-                    LEFT JOIN app.documento doc ON m.id_documento = doc.id
-                    LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
-                    LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
-                    LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
-                """)
+                vcur.execute(f"CREATE OR REPLACE VIEW app.v_movimientos_full AS {self._movimientos_base_query()}")
                 conn.commit()
 
         with self._transaction() as cur:
@@ -4556,4 +4587,3 @@ class Database:
             limit=limit,
             sorts=[("fecha", "DESC")]
         )
-

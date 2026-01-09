@@ -39,11 +39,14 @@ pylatexenc_cache/
 # Logs
 *.log
 database/init_db.log
+logs/
 
 # Database / Data
 database/counts.txt
 database/csvs/*.csv
 backups/
+backups_incrementales/
+backups_migraciones/
 
 # IDEs/Editors
 .vscode/

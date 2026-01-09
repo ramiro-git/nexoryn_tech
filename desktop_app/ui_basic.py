@@ -58,6 +58,7 @@ try:
     from desktop_app.components.toast import ToastManager
     from desktop_app.components.mass_update_view import MassUpdateView
     from desktop_app.services.print_service import generate_pdf_and_open
+    from desktop_app.components.async_select import AsyncSelect
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -337,33 +338,59 @@ def main(page: ft.Page) -> None:
 
 
     # --- SHARED DIALOGS ---
-    form_dialog = ft.AlertDialog(
-        modal=True,
-        title=ft.Text("Formulario"),
-        content=ft.Container(),
-        actions=[],
+    # --- SHARED DIALOGS (Custom Modal to allow nesting) ---
+    _form_title = ft.Text(size=18, weight=ft.FontWeight.BOLD)
+    _form_content_area = ft.Container()
+    _form_actions_area = ft.Row(alignment=ft.MainAxisAlignment.END, spacing=10)
+    _form_header = ft.Row([_form_title, ft.IconButton(ft.Icons.CLOSE_ROUNDED, icon_size=20, on_click=lambda _: close_form())], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+    
+    # This replaces the native AlertDialog to allow multiple layers of modals
+    form_dialog = ft.Container(
+        content=ft.Card(
+            elevation=20,
+            shape=ft.RoundedRectangleBorder(radius=12),
+            content=ft.Container(
+                padding=24,
+                width=850, # Default wide
+                height=650, # Max height to enable scrolling
+                content=ft.Column([
+                    _form_header,
+                    _form_content_area,
+                    _form_actions_area
+                ], tight=True, spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
+            )
+        ),
+        bgcolor="#80000000",
+        alignment=ft.alignment.center,
+        visible=False,
+        expand=True,
+        left=0, top=0, right=0, bottom=0
     )
     page.overlay.append(form_dialog)
 
     def close_form(e=None):
-        if hasattr(page, "close"):
-            page.close(form_dialog)
-        else:
-            form_dialog.open = False
-            page.update()
+        form_dialog.visible = False
+        page.update()
 
     def open_form(title, content, actions):
-        form_dialog.title = ft.Text(title)
-        form_dialog.content = content
-        form_dialog.actions = actions
-        if hasattr(page, "open"):
-            page.open(form_dialog)
-        else:
-            form_dialog.open = True
-            page.update()
+        _form_title.value = title
+        _form_content_area.content = content
+        _form_actions_area.controls = actions
+        _form_header.visible = True
+        
+        form_dialog.visible = True
+        # Move to front of overlay
+        if form_dialog in page.overlay:
+            page.overlay.remove(form_dialog)
+        page.overlay.append(form_dialog)
+        page.update()
     
     # ----------------------
     page.spacing = 0
+    try:
+        AsyncSelect.set_default_page(page)
+    except Exception:
+        pass
     
     # Set Spanish locale for date pickers and other components
     page.locale_configuration = ft.LocaleConfiguration(
@@ -388,6 +415,8 @@ def main(page: ft.Page) -> None:
             pool_min_size=config.db_pool_min,
             pool_max_size=config.db_pool_max,
         )
+
+        # DB compatibility checks are handled by schema sync on login
     
         # Initialize Backup Service & Scheduler
         # Old standard backup system disabled
@@ -636,6 +665,53 @@ def main(page: ft.Page) -> None:
             return dd
 
         return build
+
+    # --- AsyncSelect Loaders ---
+    def article_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_articles(search=query, offset=offset, limit=limit)
+        items = [{"value": r["id"], "label": f"{r['nombre']} (Cod: {r['id']})"} for r in rows]
+        return items, len(rows) >= limit
+
+    def entity_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_entities(search=query, offset=offset, limit=limit)
+        items = [{"value": r["id"], "label": f"{r['nombre_completo']} ({r['tipo']})"} for r in rows]
+        return items, len(rows) >= limit
+
+    def supplier_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_entities(search=query, tipo="PROVEEDOR", offset=offset, limit=limit)
+        items = [{"value": r["id"], "label": f"{r['nombre_completo']} (Proveedor)"} for r in rows]
+        return items, len(rows) >= limit
+
+    def price_list_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_listas_precio(search=query, offset=offset, limit=limit)
+        # Solo activas
+        items = [{"value": r["id"], "label": r["nombre"]} for r in rows if r.get("activa", True)]
+        return items, len(rows) >= limit
+
+    def province_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.list_provincias()
+        if query:
+            rows = [r for r in rows if query.lower() in r["nombre"].lower()]
+        items = [{"value": r["id"], "label": r["nombre"]} for r in rows[offset:offset+limit]]
+        return items, (offset + limit < len(rows))
+
+    def locality_loader(query, offset, limit):
+        if not db: return [], False
+        pid = nueva_entidad_provincia.value
+        if not pid:
+            return [], False
+        rows = db.fetch_localidades_by_provincia(int(pid))
+        if query:
+            q = query.lower()
+            rows = [r for r in rows if q in (r.get("nombre") or "").lower()]
+        slice_rows = rows[offset:offset + limit]
+        items = [{"value": r["id"], "label": r["nombre"]} for r in slice_rows]
+        return items, offset + limit < len(rows)
     status_icon_value = ft.Icons.CHECK_CIRCLE_ROUNDED if db and not db_error else ft.Icons.ERROR_OUTLINE_ROUNDED
     status_color = "#166534" if db and not db_error else "#991B1B"
     status_badge.content.controls.extend(
@@ -743,11 +819,31 @@ def main(page: ft.Page) -> None:
             articulos_advanced_costo_label.update()
         except: pass
 
+    def _get_costo_min_value(_: Any) -> Optional[float]:
+        slider = articulos_advanced_costo_slider
+        start = slider.start_value
+        min_value = getattr(slider, "min", None)
+        if start is None:
+            return None
+        if min_value is not None and start <= min_value:
+            return None
+        return start
+
+    def _get_costo_max_value(_: Any) -> Optional[float]:
+        slider = articulos_advanced_costo_slider
+        end = slider.end_value
+        max_value = getattr(slider, "max", None)
+        if end is None:
+            return None
+        if max_value is not None and end >= max_value:
+            return None
+        return end
+
     articulos_advanced_nombre = ft.TextField(label="Nombre contiene", width=220, on_change=_art_live)
     _style_input(articulos_advanced_nombre)
     articulos_advanced_marca = _dropdown("Filtrar Marca", [("", "Todas")], value="", width=200, on_change=_art_live)
     articulos_advanced_rubro = _dropdown("Filtrar Rubro", [("", "Todos")], value="", width=200, on_change=_art_live)
-    articulos_advanced_proveedor = _dropdown("Filtrar Proveedor", [("", "Todos")], value="", width=200, on_change=_art_live)
+    articulos_advanced_proveedor = AsyncSelect(label="Filtrar Proveedor", loader=supplier_loader, width=200, on_change=lambda _: _art_live(None))
     articulos_advanced_ubicacion = _dropdown("Filtrar Ubicación", [("", "Todas")], value="", width=200, on_change=_art_live)
     
     articulos_advanced_costo_slider = ft.RangeSlider(
@@ -787,6 +883,26 @@ def main(page: ft.Page) -> None:
             articulos_advanced_stock_label.update()
         except: pass
 
+    def _get_stock_min_value(_: Any) -> Optional[float]:
+        slider = articulos_advanced_stock_slider
+        start = slider.start_value
+        min_value = getattr(slider, "min", None)
+        if start is None:
+            return None
+        if min_value is not None and start <= min_value:
+            return None
+        return start
+
+    def _get_stock_max_value(_: Any) -> Optional[float]:
+        slider = articulos_advanced_stock_slider
+        end = slider.end_value
+        max_value = getattr(slider, "max", None)
+        if end is None:
+            return None
+        if max_value is not None and end >= max_value:
+            return None
+        return end
+
     articulos_advanced_stock_slider = ft.RangeSlider(
         min=-1000, max=10000,
         start_value=-1000, end_value=10000,
@@ -810,7 +926,7 @@ def main(page: ft.Page) -> None:
     articulos_advanced_unidad = _dropdown("Unidad Medida", [("", "Todas")], value="", width=200, on_change=_art_live)
     articulos_advanced_redondeo = _dropdown("Redondeo", [("", "Todos"), ("SI", "Sí"), ("NO", "No")], value="", width=150, on_change=_art_live)
     
-    articulos_advanced_lista_precio = _dropdown("Precios de lista", [("", "Todas")], value="", width=200, on_change=_art_live)
+    articulos_advanced_lista_precio = AsyncSelect(label="Precios de lista", loader=price_list_loader, width=200, on_change=lambda _: _art_live(None))
     
     articulos_advanced_estado = _dropdown(
         "Estado",
@@ -823,10 +939,7 @@ def main(page: ft.Page) -> None:
     def refresh_articles_catalogs():
         try:
             if db: db.invalidate_catalog_cache()
-            lists = db.fetch_listas_precio()
-            articulos_advanced_lista_precio.options = [ft.dropdown.Option("", "Todas")] + [
-                ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in lists
-            ]
+            # lists = db.fetch_listas_precio() # AsyncSelect handles it
             
             ivas = db.fetch_tipos_iva()
             articulos_advanced_iva.options = [ft.dropdown.Option("", "Todas")] + [
@@ -838,10 +951,7 @@ def main(page: ft.Page) -> None:
                 ft.dropdown.Option(str(u["id"]), f"{u['nombre']} ({u['abreviatura']})") for u in unidades
             ]
             
-            provs = db.list_proveedores()
-            articulos_advanced_proveedor.options = [ft.dropdown.Option("", "Todos")] + [
-                ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in provs
-            ]
+            # provs = db.list_proveedores() # AsyncSelect handles it
 
             marcas = db.list_marcas_full()
             articulos_advanced_marca.options = [ft.dropdown.Option("", "Todas")] + [
@@ -1306,10 +1416,10 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("id_rubro", articulos_advanced_rubro),
             AdvancedFilterControl("id_proveedor", articulos_advanced_proveedor),
             AdvancedFilterControl("ubicacion_exacta", articulos_advanced_ubicacion),
-            AdvancedFilterControl("costo_min", articulos_advanced_costo_ctrl, getter=lambda _: articulos_advanced_costo_slider.start_value, setter=_reset_cost_filter),
-            AdvancedFilterControl("costo_max", ft.Container(), getter=lambda _: articulos_advanced_costo_slider.end_value),
-            AdvancedFilterControl("stock_min", articulos_advanced_stock_ctrl, getter=lambda _: articulos_advanced_stock_slider.start_value, setter=_reset_stock_filter),
-            AdvancedFilterControl("stock_max", ft.Container(), getter=lambda _: articulos_advanced_stock_slider.end_value),
+            AdvancedFilterControl("costo_min", articulos_advanced_costo_ctrl, getter=_get_costo_min_value, setter=_reset_cost_filter),
+            AdvancedFilterControl("costo_max", ft.Container(), getter=_get_costo_max_value),
+            AdvancedFilterControl("stock_min", articulos_advanced_stock_ctrl, getter=_get_stock_min_value, setter=_reset_stock_filter),
+            AdvancedFilterControl("stock_max", ft.Container(), getter=_get_stock_max_value),
             AdvancedFilterControl("stock_bajo_minimo", articulos_advanced_stock_bajo),
             AdvancedFilterControl("id_lista_precio", articulos_advanced_lista_precio),
             AdvancedFilterControl("activo", articulos_advanced_estado),
@@ -1364,26 +1474,7 @@ def main(page: ft.Page) -> None:
     admin_export_tables = [entidades_table, articulos_table]
 
     # ---- Crear entidad / artículo ----
-    form_dialog = ft.AlertDialog(modal=True)
-
-    def close_form(_: Any = None) -> None:
-        if hasattr(page, "close"):
-            page.close(form_dialog)
-        else:
-            form_dialog.open = False
-            page.update()
-
-    def open_form(title: str, content: ft.Control, actions: List[ft.Control]) -> None:
-        form_dialog.title = ft.Text(title, size=22, weight=ft.FontWeight.W_800)
-        form_dialog.content = ft.Container(content=content, padding=ft.padding.only(top=10))
-        form_dialog.actions = actions
-        form_dialog.shape = ft.RoundedRectangleBorder(radius=20)
-        if hasattr(page, "open"):
-            page.open(form_dialog)
-        else:
-            page.dialog = form_dialog
-            form_dialog.open = True
-            page.update()
+    # (Using the unified form_dialog defined above at the start of main)
 
     nueva_entidad_nombre = ft.TextField(label="Nombre *", width=250)
     _style_input(nueva_entidad_nombre)
@@ -1405,17 +1496,14 @@ def main(page: ft.Page) -> None:
     _style_input(nueva_entidad_email)
     nueva_entidad_domicilio = ft.TextField(label="Domicilio", width=510)
     _style_input(nueva_entidad_domicilio)
-    nueva_entidad_lista_precio = ft.Dropdown(label="Lista de Precios", width=250, options=[ft.dropdown.Option("", "—")], value="", enable_search=True)
-    _style_input(nueva_entidad_lista_precio)
+    nueva_entidad_lista_precio = AsyncSelect(label="Lista de Precios", loader=price_list_loader, width=250)
     nueva_entidad_descuento = _number_field("Desc. (%)", width=120)
     nueva_entidad_limite_credito = _number_field("Límite Crédito ($)", width=180)
     nueva_entidad_activo = ft.Switch(label="Activo", value=True)
     
     # New Fields for Entity
-    nueva_entidad_provincia = ft.Dropdown(label="Provincia *", width=250, options=[], enable_search=True)
-    _style_input(nueva_entidad_provincia)
-    nueva_entidad_localidad = ft.Dropdown(label="Localidad *", width=250, options=[], disabled=True, enable_search=True)
-    _style_input(nueva_entidad_localidad)
+    nueva_entidad_provincia = AsyncSelect(label="Provincia *", loader=province_loader, width=250, on_change=lambda _: _on_provincia_change(None))
+    nueva_entidad_localidad = AsyncSelect(label="Localidad *", loader=locality_loader, width=250, disabled=True)
     nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA *", width=250, options=[], enable_search=True)
     _style_input(nueva_entidad_condicion_iva)
     nueva_entidad_notas = ft.TextField(label="Notas", width=510, multiline=True, min_lines=2, max_lines=4)
@@ -1453,15 +1541,17 @@ def main(page: ft.Page) -> None:
     # Cascading logic for Province -> City
     def _on_provincia_change(e):
         pid = nueva_entidad_provincia.value
-        nueva_entidad_localidad.options = []
+        # Reset locality
         nueva_entidad_localidad.value = ""
+        nueva_entidad_localidad.clear_cache()
         if not pid:
             nueva_entidad_localidad.disabled = True
-        else:
-            if db:
-                locs = db.fetch_localidades_by_provincia(int(pid))
-                nueva_entidad_localidad.options = [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in locs]
-                nueva_entidad_localidad.disabled = False
+            nueva_entidad_localidad.set_busy(False)
+            nueva_entidad_localidad.update()
+            return
+
+        nueva_entidad_localidad.set_busy(True)
+        nueva_entidad_localidad.prefetch(on_done=lambda: setattr(nueva_entidad_localidad, "disabled", False))
         nueva_entidad_localidad.update()
     
     nueva_entidad_provincia.on_change = _on_provincia_change
@@ -1734,8 +1824,7 @@ def main(page: ft.Page) -> None:
     _style_input(nuevo_articulo_tipo_iva)
     nuevo_articulo_unidad = ft.Dropdown(label="Unidad Medida *", width=275, options=[], value="")
     _style_input(nuevo_articulo_unidad)
-    nuevo_articulo_proveedor = ft.Dropdown(label="Proveedor Habitual", width=560, options=[ft.dropdown.Option("", "—")], value="")
-    _style_input(nuevo_articulo_proveedor)
+    nuevo_articulo_proveedor = AsyncSelect(label="Proveedor Habitual", loader=supplier_loader, width=560)
     
     nuevo_articulo_costo = _number_field("Costo *", width=275)
     nuevo_articulo_stock_minimo = _number_field("Stock mínimo *", width=275)
@@ -3487,7 +3576,7 @@ def main(page: ft.Page) -> None:
         try: movimientos_table.trigger_refresh()
         except: pass
 
-    mov_adv_art = ft.Dropdown(label="Artículo", width=220, on_change=_mov_live, enable_search=True); _style_input(mov_adv_art)
+    mov_adv_art = AsyncSelect(label="Artículo", loader=article_loader, width=220, on_change=lambda _: _mov_live(None))
     mov_adv_tipo = ft.Dropdown(label="Tipo Mov.", width=180, on_change=_mov_live); _style_input(mov_adv_tipo)
     mov_adv_depo = ft.Dropdown(label="Depósito", width=180, on_change=_mov_live); _style_input(mov_adv_depo)
     mov_adv_user = ft.Dropdown(label="Usuario", width=180, on_change=_mov_live); _style_input(mov_adv_user)
@@ -3544,9 +3633,23 @@ def main(page: ft.Page) -> None:
             
             # Add articles dropdown
             arts = db.list_articulos_simple(limit=500)
-            mov_adv_art.options = [ft.dropdown.Option("", "Todos")] + [
-                ft.dropdown.Option(a["nombre"], a["nombre"]) for a in arts
+            art_options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(str(a["id"]), f"{a['nombre']} (Cod: {a['id']})") for a in arts
             ]
+            selected_art = mov_adv_art.value
+            if selected_art and not any(opt.key == str(selected_art) for opt in art_options):
+                try:
+                    missing_art = db.get_article_simple(int(selected_art))
+                    if missing_art:
+                        art_options.append(
+                            ft.dropdown.Option(
+                                str(missing_art["id"]),
+                                f"{missing_art['nombre']} (Cod: {missing_art['id']})",
+                            )
+                        )
+                except Exception:
+                    pass
+            mov_adv_art.options = art_options
 
             for ctrl in [mov_adv_tipo, mov_adv_depo, mov_adv_user, mov_adv_art]:
                 try: 
@@ -3566,7 +3669,7 @@ def main(page: ft.Page) -> None:
         tipo_options = [ft.dropdown.Option("Todos", "Todos")]
         ent_options = [ft.dropdown.Option("0", "Todas")]
 
-    doc_adv_entidad = ft.Dropdown(label="Entidad", options=ent_options, width=280, value="0", enable_search=True); _style_input(doc_adv_entidad)
+    doc_adv_entidad = AsyncSelect(label="Entidad", loader=entity_loader, width=280, on_change=lambda _: _doc_live(None))
     doc_adv_tipo = ft.Dropdown(label="Tipo", options=tipo_options, width=160, value="Todos", enable_search=True); _style_input(doc_adv_tipo)
     
     doc_adv_letra = ft.Dropdown(
@@ -3779,7 +3882,11 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("desde", mov_adv_desde),
             AdvancedFilterControl("hasta", mov_adv_hasta),
         ],
-        show_inline_controls=False, show_mass_actions=False, auto_load=True, page_size=20,
+        show_inline_controls=False,
+        show_mass_actions=False,
+        auto_load=True,
+        page_size=50,
+        page_size_options=(20, 50, 100),
     )
     movimientos_view = ft.Column([
         ft.Row([
@@ -3806,7 +3913,7 @@ def main(page: ft.Page) -> None:
     pago_adv_ref = ft.TextField(label="Referencia", width=200, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_ref)
     pago_adv_desde = _date_field(page, "Desde", width=140); pago_adv_desde.on_submit = lambda _: pagos_table.trigger_refresh()
     pago_adv_hasta = _date_field(page, "Hasta", width=140); pago_adv_hasta.on_submit = lambda _: pagos_table.trigger_refresh()
-    pago_adv_entidad = ft.Dropdown(label="Entidad", options=ent_options, width=280, value="0", enable_search=True, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_entidad)
+    pago_adv_entidad = AsyncSelect(label="Entidad", loader=entity_loader, width=280, on_change=lambda _: pagos_table.trigger_refresh())
     
     # Forma de pago filter
     try:
@@ -3907,11 +4014,36 @@ def main(page: ft.Page) -> None:
         except Exception as e:
             show_toast(f"Error cargando datos: {e}", kind="error"); return
 
-        pago_entidad = ft.Dropdown(label="Entidad", options=[ft.dropdown.Option(str(e["id"]), e["nombre_completo"]) for e in entidades], width=400)
-        _style_input(pago_entidad)
+        pago_entidad = AsyncSelect(
+            label="Entidad", 
+            loader=entity_loader, 
+            width=400,
+            initial_items=[{"value": e["id"], "label": e["nombre_completo"]} for e in entidades]
+        )
         
-        pago_documento = ft.Dropdown(label="Comprobante Pendiente", width=400, disabled=True)
-        _style_input(pago_documento)
+        def pending_doc_loader(query, offset, limit):
+            eid = pago_entidad.value
+            if not eid:
+                return [], False
+            try:
+                rows = db.fetch_documentos_pendientes(
+                    int(eid),
+                    search=query,
+                    limit=limit,
+                    offset=offset,
+                )
+                items = [
+                    {
+                        "value": r["id"],
+                        "label": f"{r.get('numero_serie', 'N/A')} - ${r.get('total', 0):,.2f} ({r.get('fecha')})",
+                    }
+                    for r in rows
+                ]
+                return items, len(rows) >= limit
+            except Exception:
+                return [], False
+
+        pago_documento = AsyncSelect(label="Comprobante Pendiente", loader=pending_doc_loader, width=400, disabled=True)
         
         pago_forma = ft.Dropdown(label="Forma de Pago", options=[ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas], width=250)
         _style_input(pago_forma)
@@ -3921,32 +4053,16 @@ def main(page: ft.Page) -> None:
         pago_ref = ft.TextField(label="Referencia", width=250); _style_input(pago_ref)
         pago_obs = ft.TextField(label="Observaciones", multiline=True, width=500); _style_input(pago_obs)
 
-        def on_entidad_change(e):
-            eid = pago_entidad.value
-            pago_documento.options = []
+        def on_entidad_change(val):
             pago_documento.value = ""
-            pago_documento.disabled = True
-            if eid:
-                try:
-                    docs = db.fetch_documentos_resumen(
-                        limit=50, 
-                        advanced={"id_entidad": eid}, 
-                        sorts=[("fecha", "DESC")]
-                    )
-                    options = []
-                    for d in docs:
-                         label = f"{d.get('numero_serie', 'N/A')} - ${d.get('total', 0):,.2f} ({d.get('fecha')})"
-                         options.append(ft.dropdown.Option(str(d['id']), label))
-                    
-                    if options:
-                        pago_documento.options = options
-                        pago_documento.disabled = False
-                    else:
-                         pago_documento.disabled = True
-                         pago_documento.options = [ft.dropdown.Option("", "Sin comprobantes recientes")]
-                except Exception as ex:
-                    print(f"Error fetching docs: {ex}")
-                    pago_documento.disabled = True
+            pago_documento.clear_cache()
+            if val:
+                pago_documento.set_busy(True)
+                pago_documento.prefetch(on_done=lambda: pago_documento.set_busy(False))
+                pago_documento.disabled = False
+            else:
+                pago_documento.set_busy(False)
+                pago_documento.disabled = True
             pago_documento.update()
 
         pago_entidad.on_change = on_entidad_change
@@ -4128,13 +4244,11 @@ def main(page: ft.Page) -> None:
             show_toast(f"Error cargando datos: {e}", kind="error")
             return
 
-        pcc_entidad = ft.Dropdown(
+        pcc_entidad = AsyncSelect(
             label="Entidad *",
-            options=[ft.dropdown.Option(str(e["id"]), e["nombre_completo"]) for e in entidades],
+            loader=entity_loader,
             width=400,
-            enable_search=True
         )
-        _style_input(pcc_entidad)
         
         pcc_saldo = ft.Text("Saldo: $0.00", size=12, color=COLOR_TEXT_MUTED)
         
@@ -4143,6 +4257,7 @@ def main(page: ft.Page) -> None:
                 info = db.get_saldo_entidad(int(pcc_entidad.value))
                 pcc_saldo.value = f"Saldo actual: {_format_money(info.get('saldo', 0))}"
                 pcc_saldo.update()
+        # (pcc_entidad.on_change is already wired in constructor)
         pcc_entidad.on_change = on_entidad_change
         
         pcc_forma = ft.Dropdown(
@@ -4207,13 +4322,11 @@ def main(page: ft.Page) -> None:
             show_toast(f"Error cargando datos: {e}", kind="error")
             return
 
-        aj_entidad = ft.Dropdown(
+        aj_entidad = AsyncSelect(
             label="Entidad *",
-            options=[ft.dropdown.Option(str(e["id"]), e["nombre_completo"]) for e in entidades],
+            loader=entity_loader,
             width=400,
-            enable_search=True
         )
-        _style_input(aj_entidad)
         
         aj_saldo = ft.Text("Saldo actual: $0.00", size=12, color=COLOR_TEXT_MUTED)
         
@@ -4660,7 +4773,12 @@ def main(page: ft.Page) -> None:
     def ensure_masivos_view():
         nonlocal masivos_view
         if not masivos_view and db:
-             masivos_view = MassUpdateView(db, show_toast)
+            masivos_view = MassUpdateView(
+                db, 
+                show_toast, 
+                supplier_loader=supplier_loader, 
+                price_list_loader=price_list_loader
+            )
         return masivos_view
 
     # content_holder starts with dashboard_view if possible
@@ -4782,8 +4900,9 @@ def main(page: ft.Page) -> None:
     backup_status_title = ft.Text("Verificando Respaldos...", size=24, weight=ft.FontWeight.BOLD, color=COLOR_TEXT)
     backup_status_detail = ft.Text("Esto puede tardar unos segundos...", size=14, color=COLOR_TEXT_MUTED)
     backup_progress_bar = ft.ProgressBar(width=400, color=COLOR_ACCENT, bgcolor="#E2E8F0", value=0)
+    backup_type_text = ft.Text("", size=11, weight=ft.FontWeight.BOLD, color="#FFFFFF")
     backup_type_badge = ft.Container(
-        content=ft.Text("", size=11, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+        content=backup_type_text,
         bgcolor=COLOR_ACCENT,
         padding=ft.padding.symmetric(horizontal=12, vertical=6),
         border_radius=8,
@@ -4828,14 +4947,159 @@ def main(page: ft.Page) -> None:
         alignment=ft.alignment.center,
     )
 
-    def handle_missed_backups():
-        """Bypasses legacy backup check and shows main application."""
-        # Just transition smoothly to the app
-        backup_overlay.visible = False
-        login_container.disabled = False
+    def _set_overlay_state(
+        title: str,
+        detail: str,
+        *,
+        progress: Optional[float] = None,
+        badge: Optional[str] = None,
+        badge_color: Optional[str] = None,
+    ) -> None:
+        backup_overlay.visible = True
+        login_container.disabled = True
         login_container.visible = False
-        main_app_container.visible = True
+        main_app_container.visible = False
+        backup_status_title.value = title
+        backup_status_detail.value = detail
+        backup_progress_bar.visible = True
+        backup_progress_bar.value = progress
+        if badge:
+            backup_type_text.value = badge
+            backup_type_badge.bgcolor = badge_color or COLOR_ACCENT
+            backup_type_badge.visible = True
+        else:
+            backup_type_badge.visible = False
         page.update()
+
+    def _hide_overlay() -> None:
+        backup_overlay.visible = False
+        backup_progress_bar.value = 0
+        backup_type_badge.visible = False
+        page.update()
+
+    def run_startup_maintenance(on_success: Callable[[], None]) -> None:
+        def _backup_progress(backup_type: str, status: str, current: int, total: int) -> None:
+            label = backup_type.upper()
+            if status == "running":
+                progress = (current - 1) / max(total, 1)
+                _set_overlay_state(
+                    "Ejecutando respaldos pendientes...",
+                    f"{label} en progreso",
+                    progress=progress,
+                    badge=label,
+                    badge_color=COLOR_ACCENT,
+                )
+            elif status == "completed":
+                progress = current / max(total, 1)
+                _set_overlay_state(
+                    "Ejecutando respaldos pendientes...",
+                    f"{label} completado",
+                    progress=progress,
+                    badge=label,
+                    badge_color=COLOR_SUCCESS,
+                )
+            elif status == "failed":
+                progress = current / max(total, 1)
+                _set_overlay_state(
+                    "Error en respaldos",
+                    f"{label} fallido",
+                    progress=progress,
+                    badge="ERROR",
+                    badge_color=COLOR_ERROR,
+                )
+
+        def _schema_progress(payload: Dict[str, Any]) -> None:
+            phase = payload.get("phase")
+            if phase in {"extensions", "schemas"}:
+                _set_overlay_state(
+                    "Actualizando esquema...",
+                    payload.get("message", "Sincronizando..."),
+                    progress=None,
+                    badge="SCHEMA",
+                    badge_color=COLOR_INFO,
+                )
+                return
+            if phase in {"tables", "indexes"}:
+                current = int(payload.get("current", 0))
+                total = int(payload.get("total", 1)) or 1
+                progress = current / total if total else 0
+                _set_overlay_state(
+                    "Actualizando esquema...",
+                    payload.get("message", "Sincronizando..."),
+                    progress=progress,
+                    badge="SCHEMA",
+                    badge_color=COLOR_INFO,
+                )
+                return
+
+        def _run() -> None:
+            try:
+                _set_overlay_state(
+                    "Preparando sistema...",
+                    "Verificando respaldos y esquema...",
+                    progress=None,
+                )
+
+                try:
+                    from desktop_app.services.backup_manager import BackupManager
+                except ImportError:
+                    from services.backup_manager import BackupManager  # type: ignore
+
+                backup_manager = BackupManager(db, pg_bin_path=config.pg_bin_path)
+                missed = backup_manager.check_missed_backups()
+                if missed:
+                    results = backup_manager.execute_missed_backups(
+                        missed,
+                        progress_callback=_backup_progress,
+                    )
+                    if not results or not all(results.values()):
+                        _set_overlay_state(
+                            "Error en respaldos",
+                            "Revisa el log antes de continuar.",
+                            progress=1.0,
+                            badge="ERROR",
+                            badge_color=COLOR_ERROR,
+                        )
+                        return
+
+                try:
+                    from desktop_app.services.schema_sync import SchemaSync
+                except ImportError:
+                    from services.schema_sync import SchemaSync  # type: ignore
+
+                schema_sync = SchemaSync(
+                    db,
+                    sql_path=PROJECT_ROOT / "database" / "database.sql",
+                    logs_dir=PROJECT_ROOT / "logs",
+                )
+                if schema_sync.needs_sync():
+                    result = schema_sync.apply(progress_callback=_schema_progress)
+                    if not result.success:
+                        _set_overlay_state(
+                            "Error actualizando esquema",
+                            result.error or "Fallo la sincronizacion.",
+                            progress=1.0,
+                            badge="ERROR",
+                            badge_color=COLOR_ERROR,
+                        )
+                        return
+
+                _hide_overlay()
+                login_container.disabled = False
+                login_container.visible = False
+                main_app_container.visible = True
+                page.update()
+                on_success()
+            except Exception as exc:
+                _set_overlay_state(
+                    "Error de mantenimiento",
+                    str(exc),
+                    progress=1.0,
+                    badge="ERROR",
+                    badge_color=COLOR_ERROR,
+                )
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def do_login(_=None):
         nonlocal CURRENT_USER_ROLE, current_user, logout_logged
@@ -4918,15 +5182,13 @@ def main(page: ft.Page) -> None:
         except Exception:
             pass
         
-        # Switch to missed backup check (which eventually shows main app)
-        handle_missed_backups()
-        
-        # Force rebuild of navigation to respect role
-        update_nav()
-        set_view("dashboard")
-        
-        show_toast(f"Bienvenido, {user['nombre']}", kind="success")
-        page.update()
+        def finalize_login() -> None:
+            update_nav()
+            set_view("dashboard")
+            show_toast(f"Bienvenido, {user['nombre']}", kind="success")
+            page.update()
+
+        run_startup_maintenance(finalize_login)
     
     def do_logout(_=None):
         nonlocal CURRENT_USER_ROLE, current_user, logout_logged
@@ -5412,30 +5674,41 @@ def main(page: ft.Page) -> None:
         field_vto = _date_field(page, "Vencimiento", width=160)
         
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
-
-        dropdown_entidad = ft.Dropdown(label="Entidad", options=[ft.dropdown.Option(str(e["id"]), f"{e['nombre_completo']} ({e['tipo']})") for e in entidades], width=300); _style_input(dropdown_entidad)
+        lista_initial_items = [{"value": l["id"], "label": l["nombre"]} for l in listas]
         field_saldo = ft.Text("", size=12, color=COLOR_ACCENT, weight=ft.FontWeight.W_500)
         
-        def _update_entidad_info(e):
+        def _update_entidad_info(e=None):
             if dropdown_entidad.value:
-                bal = db.get_entity_balance(int(dropdown_entidad.value))
+                info = db.get_saldo_entidad(int(dropdown_entidad.value))
+                bal = float(info.get("saldo", 0))
                 field_saldo.value = f"Saldo actual: {_format_money(bal)}"
-                if bal < 0: field_saldo.color = COLOR_SUCCESS 
-                else: field_saldo.color = COLOR_ERROR
+                if bal < 0:
+                    field_saldo.color = COLOR_SUCCESS
+                elif bal > 0:
+                    field_saldo.color = COLOR_ERROR
+                else:
+                    field_saldo.color = COLOR_TEXT_MUTED
                 if field_saldo.page:
                     field_saldo.update()
         
-        dropdown_entidad.on_change = _update_entidad_info
+        ent_initial_items = [{"value": e["id"], "label": f"{e['nombre_completo']} ({e['tipo']})"} for e in entidades]
+        dropdown_entidad = AsyncSelect(
+            label="Entidad",
+            loader=entity_loader,
+            width=300,
+            on_change=lambda _: _update_entidad_info(None),
+            initial_items=ent_initial_items
+        )
 
         dropdown_deposito = ft.Dropdown(label="Depósito", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito)
         
         # Lista de precios global (opcional, se aplica a todos los ítems)
-        dropdown_lista_global = ft.Dropdown(
+        dropdown_lista_global = AsyncSelect(
             label="Lista de Precios (Global)", 
-            options=lista_options, 
+            loader=price_list_loader,
             width=220,
-            hint_text="Aplicar a todos los ítems"
-        ); _style_input(dropdown_lista_global)
+            initial_items=lista_initial_items,
+        )
         
         field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, width=800, height=80); _style_input(field_obs)
         field_direccion = ft.TextField(label="Dirección de Entrega", width=500); _style_input(field_direccion)
@@ -5507,7 +5780,7 @@ def main(page: ft.Page) -> None:
                 field_fecha.value = doc_data["fecha"][:10] if doc_data["fecha"] else None
             elif copy_doc_id:
                 field_obs.value = f"Copia de {doc_data.get('numero_serie','')}. " + (doc_data.get('observacion','') or "")
-                # Auto-generate next number for the copied type
+                # Use helper for copied type
                 try:
                     next_num = db.get_next_number(int(doc_data["id_tipo_documento"]))
                     field_numero.value = str(next_num)
@@ -5526,6 +5799,11 @@ def main(page: ft.Page) -> None:
             field_sena.value = str(doc_data.get("sena", 0))
             
             _update_entidad_info(None)
+        else:
+            # New document: select first type by default and trigger number load
+            if not dropdown_tipo.value and allowed_tipos:
+                dropdown_tipo.value = str(allowed_tipos[0]["id"])
+                _update_serial_number()
 
         # Financial Summary
         manual_mode = ft.Switch(label="Manual", value=False)
@@ -5597,8 +5875,19 @@ def main(page: ft.Page) -> None:
         lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
 
         def _add_line(_=None, update_ui=True, initial_data=None):
-            art_drop = ft.Dropdown(label="Artículo", options=[ft.dropdown.Option(str(a["id"]), f"{a['nombre']} (Código: {a['id']})") for a in articulos], expand=True); _style_input(art_drop)
-            lista_drop = ft.Dropdown(label="Lista", options=lista_options, width=140); _style_input(lista_drop)
+            art_initial_items = [{"value": a["id"], "label": f"{a['nombre']} (Cod: {a['id']})"} for a in articulos]
+            art_drop = AsyncSelect(
+                label="Artículo", 
+                loader=article_loader, 
+                expand=True,
+                initial_items=art_initial_items
+            )
+            lista_drop = AsyncSelect(
+                label="Lista",
+                loader=price_list_loader,
+                width=140,
+                initial_items=lista_initial_items,
+            )
             cant_field = ft.TextField(label="Cant.", width=80, value="1"); _style_input(cant_field)
             price_field = ft.TextField(label="Precio",width=90, value="0"); _style_input(price_field)
             iva_field = ft.TextField(label="IVA %", width=60, value="21"); _style_input(iva_field)
@@ -5694,15 +5983,14 @@ def main(page: ft.Page) -> None:
                 _update_price_from_list()
                 _check_stock_warning()
             
-            def _on_lista_change(e):
-                _update_price_from_list()
-
             def _on_value_change(_):
                 _update_line_total()
                 _recalc_total()
 
             cant_field.on_change = lambda _: (_check_stock_warning(), _update_line_total(), _recalc_total())
             art_drop.on_change = _on_art_change
+            def _on_lista_change(e):
+                _update_price_from_list()
             lista_drop.on_change = _on_lista_change
             
             for f in [price_field, iva_field]:
@@ -5766,6 +6054,7 @@ def main(page: ft.Page) -> None:
             page.update()
             _recalc_total()
 
+        # (Manual wire for AsyncSelect global list is handled in its on_change)
         dropdown_lista_global.on_change = _on_global_list_change
 
         def _save(_=None):
@@ -5870,6 +6159,12 @@ def main(page: ft.Page) -> None:
             sum_subtotal.value = str(doc_data["neto"])
             sum_iva.value = str(doc_data["iva_total"])
             sum_total.value = str(doc_data["total"])
+            try:
+                total_val = float(sum_total.value or 0)
+                sena_val = float(field_sena.value or 0)
+                sum_saldo.value = str(round(max(0, total_val - sena_val), 2))
+            except Exception:
+                sum_saldo.value = "0.00"
             # Auto-enable manual mode if there's a discrepancy? 
             # For now, let user enable it if they want to edit.
         else:
@@ -5961,16 +6256,20 @@ def main(page: ft.Page) -> None:
         # Directly open dialog bypassing generic wrapper for custom size/layout
         # Directly open dialog bypassing generic wrapper for custom size/layout
         # Using nonlocal/closure from main
-        form_dialog.content = dialog_content
-        form_dialog.actions = [] # No actions, buttons are inside
-        form_dialog.title = None
-        form_dialog.modal = True
-        
-        if hasattr(page, "open"):
-            page.open(form_dialog)
-        else:
-            form_dialog.open = True
-            page.update()
+        # Using nonlocal/closure from main
+        _form_title.value = "Nuevo Comprobante" if not edit_doc_id else "Editar Comprobante"
+        _form_content_area.content = dialog_content
+        _form_actions_area.controls = [] # No actions, buttons are inside
+        _form_header.visible = False # Hide header to use internal one
+
+        # Clear native dialog just in case
+        page.dialog = None
+
+        form_dialog.visible = True
+        if form_dialog in page.overlay:
+            page.overlay.remove(form_dialog)
+        page.overlay.append(form_dialog)
+        page.update()
 
     def wire_live_search(table: GenericTable):
         for flt in table.advanced_filters:

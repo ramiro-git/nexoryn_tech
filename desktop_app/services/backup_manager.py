@@ -1,5 +1,6 @@
 import os
 import logging
+import calendar
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -61,6 +62,138 @@ class BackupManager:
             return 'INCREMENTAL'
         
         return 'INCREMENTAL'
+
+    def _build_scheduled_datetime(
+        self,
+        *,
+        year: int,
+        month: int,
+        day: int,
+        hour: int,
+        minute: int,
+    ) -> datetime:
+        last_day = calendar.monthrange(year, month)[1]
+        safe_day = min(max(day, 1), last_day)
+        return datetime(year, month, safe_day, hour, minute, 0, 0)
+
+    def get_last_required_run_time(
+        self,
+        backup_type: str,
+        *,
+        current_time: Optional[datetime] = None,
+    ) -> datetime:
+        now = current_time or datetime.now()
+        schedule = self.schedules.get(backup_type, {})
+
+        if backup_type == "FULL":
+            day = int(schedule.get("day", 1))
+            hour = int(schedule.get("hour", 0))
+            minute = int(schedule.get("minute", 0))
+            this_month = self._build_scheduled_datetime(
+                year=now.year,
+                month=now.month,
+                day=day,
+                hour=hour,
+                minute=minute,
+            )
+            if now >= this_month:
+                return this_month
+            if now.month == 1:
+                return self._build_scheduled_datetime(
+                    year=now.year - 1,
+                    month=12,
+                    day=day,
+                    hour=hour,
+                    minute=minute,
+                )
+            return self._build_scheduled_datetime(
+                year=now.year,
+                month=now.month - 1,
+                day=day,
+                hour=hour,
+                minute=minute,
+            )
+
+        if backup_type == "DIFERENCIAL":
+            weekday = int(schedule.get("weekday", 6))
+            hour = int(schedule.get("hour", 23))
+            minute = int(schedule.get("minute", 30))
+            days_since = (now.weekday() - weekday) % 7
+            candidate = (now - timedelta(days=days_since)).replace(
+                hour=hour,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
+            if candidate > now:
+                candidate = candidate - timedelta(days=7)
+            return candidate
+
+        if backup_type == "INCREMENTAL":
+            hour = int(schedule.get("hour", 23))
+            minute = int(schedule.get("minute", 0))
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate > now:
+                candidate = candidate - timedelta(days=1)
+            return candidate
+
+        return now
+
+    def get_last_backup_time(self, backup_type: str) -> Optional[datetime]:
+        query = """
+        SELECT fecha_inicio
+        FROM seguridad.backup_manifest
+        WHERE tipo_backup = %s AND estado = 'COMPLETADO'
+        ORDER BY fecha_inicio DESC
+        LIMIT 1
+        """
+        with self.db.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (backup_type,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return row[0]
+
+    def check_missed_backups(self, current_time: Optional[datetime] = None) -> List[str]:
+        now = current_time or datetime.now()
+        missed: List[str] = []
+        for backup_type in ("FULL", "DIFERENCIAL", "INCREMENTAL"):
+            required_time = self.get_last_required_run_time(backup_type, current_time=now)
+            last_run = self.get_last_backup_time(backup_type)
+            if last_run is None:
+                missed.append(backup_type)
+                continue
+            if hasattr(last_run, "tzinfo") and last_run.tzinfo is not None:
+                last_run = last_run.replace(tzinfo=None)
+            if last_run < required_time:
+                missed.append(backup_type)
+        return missed
+
+    def execute_missed_backups(
+        self,
+        missed_types: List[str],
+        *,
+        progress_callback=None,
+    ) -> Dict[str, bool]:
+        results: Dict[str, bool] = {}
+        ordered = [t for t in ("FULL", "DIFERENCIAL", "INCREMENTAL") if t in missed_types]
+        total = len(ordered)
+        for index, backup_type in enumerate(ordered, start=1):
+            try:
+                if progress_callback:
+                    progress_callback(backup_type, "running", index, total)
+                result = self.execute_scheduled_backup(backup_type)
+                ok = bool(result.get("exitoso"))
+                results[backup_type] = ok
+                if progress_callback:
+                    progress_callback(backup_type, "completed" if ok else "failed", index, total)
+            except Exception as exc:
+                self.logger.error("Error ejecutando backup %s: %s", backup_type, exc)
+                results[backup_type] = False
+                if progress_callback:
+                    progress_callback(backup_type, "failed", index, total)
+        return results
     
     def execute_scheduled_backup(self, backup_type: Optional[str] = None) -> Dict:
         if backup_type is None:

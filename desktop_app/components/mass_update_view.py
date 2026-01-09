@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import flet as ft
 from desktop_app.database import Database
+from desktop_app.components.async_select import AsyncSelect
 
 
 # Styling helpers
@@ -69,10 +70,12 @@ class SafeDataTable(ft.DataTable):
             pass
 
 class MassUpdateView(ft.Container):
-    def __init__(self, db: Database, on_show_toast: Callable[[str, str], None]):
+    def __init__(self, db: Database, on_show_toast: Callable[[str, str], None], supplier_loader: Optional[Callable] = None, price_list_loader: Optional[Callable] = None):
         super().__init__(expand=True)
         self.db = db
         self.show_toast = on_show_toast
+        self.supplier_loader = supplier_loader
+        self.price_list_loader = price_list_loader
 
         # State
         self.filters: Dict[str, Any] = {}
@@ -96,9 +99,8 @@ class MassUpdateView(ft.Container):
 
         self.filter_marca = _dropdown("Marca")
         self.filter_rubro = _dropdown("Rubro")
-        self.filter_proveedor = _dropdown("Proveedor")
-
-        self.filter_lista = _dropdown("En Lista Precios")
+        self.filter_proveedor = AsyncSelect(label="Proveedor", loader=self.supplier_loader, width=200, on_change=lambda _: self._update_count(None))
+        self.filter_lista = AsyncSelect(label="En Lista Precios", loader=self.price_list_loader, width=200, on_change=lambda _: self._update_count(None))
         self.filter_iva = _dropdown("Alicuota IVA")
         self.filter_activo = _dropdown("Estado")
         self.filter_activo.options = [
@@ -277,8 +279,8 @@ class MassUpdateView(ft.Container):
         for ctrl in [
             self.filter_marca,
             self.filter_rubro,
-            self.filter_proveedor,
-            self.filter_lista,
+            # self.filter_proveedor, # AsyncSelect has its own on_change
+            # self.filter_lista, # AsyncSelect has its own on_change
             self.filter_iva,
             self.filter_activo,
         ]:
@@ -331,16 +333,10 @@ class MassUpdateView(ft.Container):
                 ft.dropdown.Option(str(r["id"]), r["nombre"]) for r in rubros
             ]
 
-            provs = self.db.list_proveedores()
-            self.filter_proveedor.options = [ft.dropdown.Option("", "Todos")] + [
-                ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in provs
-            ]
+            # provs = self.db.list_proveedores() # AsyncSelect handles it
 
+            # Fetch IVA types
             lists = self.db.fetch_listas_precio()
-            self.filter_lista.options = [ft.dropdown.Option("", "Todas")] + [
-                ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in lists
-            ]
-
             ivas = self.db.fetch_tipos_iva()
             self.filter_iva.options = [ft.dropdown.Option("", "Todas")] + [
                 ft.dropdown.Option(str(i["id"]), f"{i['descripcion']} ({i['porcentaje']}%)") for i in ivas

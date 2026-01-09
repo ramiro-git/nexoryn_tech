@@ -30,3 +30,23 @@ Utilidad para forzar el cierre de todas las conexiones activas a la base de dato
 
 ### 3. `db_conn.py`
 Módulo de utilidad que centraliza la lógica de conexión para los scripts de este directorio. Raramente se ejecuta directamente.
+
+## Sincronizacion automatica desde `database.sql`
+
+El esquema se sincroniza leyendo `database/database.sql` y aplicando solo cambios seguros.
+No se re-ejecuta el archivo completo ni se borra informacion existente.
+
+- **Fuente**: `database/database.sql`.
+- **Control de cambios**: hash guardado en `seguridad.config_sistema` (clave `schema_hash`).
+- **Aplicacion**: automatico al iniciar el ejecutable, sin comandos manuales.
+- **Operaciones permitidas**:
+  - `CREATE EXTENSION IF NOT EXISTS`
+  - `CREATE SCHEMA IF NOT EXISTS`
+  - `CREATE TABLE` si la tabla no existe
+  - `ADD COLUMN` solo si es compatible (nullable o con default, sin PK/UNIQUE/CHECK)
+  - `CREATE INDEX` si no existe
+- **Operaciones ignoradas**:
+  - cambios destructivos (drop, truncate, alter incompatible)
+  - DML masivo (insert/update/delete) para evitar duplicados
+
+> Nota: si se requiere un cambio riesgoso, debe hacerse en un flujo aparte con backup y confirmacion.

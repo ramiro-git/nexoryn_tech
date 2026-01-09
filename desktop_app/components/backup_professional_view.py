@@ -296,6 +296,7 @@ class BackupProfessionalView:
             border=ft.border.all(1, self.COLOR_BORDER),
             heading_row_color=ft.Colors.with_opacity(0.05, self.COLOR_PRIMARY),
         )
+
     
     def load_data(self):
         try:
@@ -506,7 +507,7 @@ class BackupProfessionalView:
                     
         except Exception as e:
             print(f"Error cargando logs: {e}")
-    
+
     def _get_backup_type_badge(self, tipo: str) -> ft.Container:
         colors = {
             'FULL': self.COLOR_SUCCESS,
