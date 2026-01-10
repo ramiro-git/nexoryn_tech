@@ -75,7 +75,7 @@ class DashboardView(ft.Container):
         self.is_loading = True
         self.content = ft.Container(
             content=ft.ProgressRing(),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             expand=True
         )
         try:

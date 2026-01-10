@@ -487,7 +487,7 @@ def main(page: ft.Page) -> None:
         stock_list = ft.ListView(expand=1, spacing=10, padding=0)
         stock_empty = ft.Container(
             visible=False,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             content=ft.Column(
                 [
                     ft.Icon(getattr(ft.Icons, "CHECK_CIRCLE_OUTLINE", ft.Icons.CHECK_CIRCLE), size=34, color=ft.Colors.GREEN_400),
@@ -551,7 +551,7 @@ def main(page: ft.Page) -> None:
                             height=40,
                             border_radius=12,
                             bgcolor=COLOR_SURFACE_2,
-                            alignment=ft.alignment.center,
+                            alignment=ft.Alignment(0, 0),
                             content=ft.Icon(icon, color=COLOR_PRIMARY),
                         ),
                         ft.Column(
@@ -1070,7 +1070,7 @@ def main(page: ft.Page) -> None:
             expand=True,
             bgcolor="#F1F5F9E6",
             padding=40,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
         )
 
         def _set_maintenance_state(

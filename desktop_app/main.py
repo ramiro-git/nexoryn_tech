@@ -40,4 +40,12 @@ if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    ft.app(target=_get_target())
+    target = _get_target()
+    run_app = getattr(ft, "run", None)
+    if callable(run_app):
+        try:
+            run_app(main=target)
+        except TypeError:
+            run_app(target)
+    else:
+        ft.app(target=target)

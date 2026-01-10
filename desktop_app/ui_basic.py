@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import base64
+import json
 import atexit
+import inspect
 import socket
 import sys
 import time
@@ -11,7 +14,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from venv import logger
 
 import flet as ft
-from flet.core.datatable import DataTable as CoreDataTable
+try:
+    from flet.core.datatable import DataTable as CoreDataTable
+except Exception:
+    CoreDataTable = ft.DataTable
 
 if not getattr(CoreDataTable.before_update, "_nexoryn_patched_v2", False):
     _original_before_update_core = CoreDataTable.before_update
@@ -199,6 +205,61 @@ def _maybe_set(obj: Any, name: str, value: Any) -> None:
             return
 
 
+# Flet Tab API compatibility across versions.
+try:
+    _TAB_PARAMS = set(inspect.signature(ft.Tab).parameters)
+except (TypeError, ValueError):
+    _TAB_PARAMS = set()
+
+
+def _tab_header_content(text: Optional[str], icon: Optional[str]) -> ft.Control:
+    if icon and text:
+        return ft.Row(
+            [ft.Icon(icon), ft.Text(text)],
+            spacing=6,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+    if icon:
+        return ft.Icon(icon)
+    return ft.Text(text or "")
+
+
+def make_tab(
+    *,
+    text: Optional[str] = None,
+    icon: Optional[str] = None,
+    content: Optional[ft.Control] = None,
+) -> ft.Tab:
+    kwargs: Dict[str, Any] = {}
+    if "content" in _TAB_PARAMS:
+        kwargs["content"] = content
+    if text is not None and "data" in _TAB_PARAMS:
+        kwargs["data"] = text
+    if "text" in _TAB_PARAMS:
+        kwargs["text"] = text
+        if icon is not None and "icon" in _TAB_PARAMS:
+            kwargs["icon"] = icon
+        return ft.Tab(**kwargs)
+    if "label" in _TAB_PARAMS:
+        kwargs["label"] = text
+        if icon is not None and "icon" in _TAB_PARAMS:
+            kwargs["icon"] = icon
+        return ft.Tab(**kwargs)
+    if "tab_content" in _TAB_PARAMS:
+        kwargs["tab_content"] = _tab_header_content(text, icon)
+        return ft.Tab(**kwargs)
+    tab = ft.Tab(**kwargs)
+    if text is not None:
+        _maybe_set(tab, "text", text)
+        _maybe_set(tab, "label", text)
+        _maybe_set(tab, "data", text)
+    if icon is not None:
+        _maybe_set(tab, "icon", icon)
+    _maybe_set(tab, "tab_content", _tab_header_content(text, icon))
+    _maybe_set(tab, "content", content)
+    return tab
+
+
 def _style_input(control: Any) -> None:
     name = getattr(control, "__class__", type("x", (), {})).__name__.lower()
     is_dropdown = "dropdown" in name
@@ -244,9 +305,10 @@ def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, wid
         value=value,
         options=[ft.dropdown.Option(str(v) if v is not None else "", t) for v, t in options],
         width=width,
-        on_change=on_change,
-        enable_search=True,
     )
+    if on_change is not None:
+        _maybe_set(dd, "on_change", on_change)
+    _maybe_set(dd, "enable_search", True)
     _style_input(dd)
     return dd
 
@@ -273,8 +335,16 @@ def _date_field(page: ft.Page, label: str, width: int = 180) -> ft.TextField:
         error_format_text="Formato inválido",
         error_invalid_text="Fecha fuera de rango",
     )
+    safe_min = datetime(1970, 1, 1)
+    safe_max = datetime(2100, 12, 31)
+    _maybe_set(dp, "first_date", safe_min)
+    _maybe_set(dp, "last_date", safe_max)
+    _maybe_set(dp, "current_date", datetime.now())
     page.overlay.append(dp)
-    page.update()  # Ensure DatePicker is registered with the page
+    try:
+        page.update()  # Ensure DatePicker is registered with the page
+    except Exception:
+        pass
     
     def open_picker(_):
         try:
@@ -525,7 +595,7 @@ def main(page: ft.Page) -> None:
                 cuit=config.afip_cuit,
                 cert_path=config.afip_cert,
                 key_path=config.afip_key,
-                production=config.afip_prod
+                production=config.afip_prod,
             )
         
         # Try to get local IP for logging
@@ -843,7 +913,13 @@ def main(page: ft.Page) -> None:
     _style_input(articulos_advanced_nombre)
     articulos_advanced_marca = _dropdown("Filtrar Marca", [("", "Todas")], value="", width=200, on_change=_art_live)
     articulos_advanced_rubro = _dropdown("Filtrar Rubro", [("", "Todos")], value="", width=200, on_change=_art_live)
-    articulos_advanced_proveedor = AsyncSelect(label="Filtrar Proveedor", loader=supplier_loader, width=200, on_change=lambda _: _art_live(None))
+    articulos_advanced_proveedor = AsyncSelect(
+        label="Filtrar Proveedor",
+        loader=supplier_loader,
+        width=200,
+        on_change=lambda _: _art_live(None),
+        show_label=False,
+    )
     articulos_advanced_ubicacion = _dropdown("Filtrar Ubicación", [("", "Todas")], value="", width=200, on_change=_art_live)
     
     articulos_advanced_costo_slider = ft.RangeSlider(
@@ -3265,8 +3341,9 @@ def main(page: ft.Page) -> None:
     usuarios_tabs = ft.Tabs(
         selected_index=0,
         animation_duration=300,
+        expand=True,
         tabs=[
-            ft.Tab(
+            make_tab(
                 text="Lista de Usuarios",
                 icon=ft.Icons.PEOPLE_OUTLINE_ROUNDED,
                 content=ft.Container(
@@ -3288,7 +3365,7 @@ def main(page: ft.Page) -> None:
                     )
                 )
             ),
-            ft.Tab(
+            make_tab(
                 text="Sesiones Activas",
                 icon=ft.Icons.SATELLITE_ALT_ROUNDED,
                 content=ft.Container(
@@ -3301,7 +3378,6 @@ def main(page: ft.Page) -> None:
                 )
             ),
         ],
-        expand=True,
     )
 
     usuarios_view = ft.Column([
@@ -3334,6 +3410,176 @@ def main(page: ft.Page) -> None:
     backup_view_component.load_data()
 
     # Documents View
+    def _can_authorize_afip(doc_row: Dict[str, Any]) -> bool:
+        estado = str(doc_row.get("estado") or "").upper()
+        return estado in ("CONFIRMADO", "PAGADO") and doc_row.get("codigo_afip") and not doc_row.get("cae")
+
+    def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+        if not _can_authorize_afip(doc_row):
+            show_toast("El comprobante no está listo para autorizar.", kind="error")
+            return
+        if not afip:
+            show_toast("Servicio AFIP no configurado. Verifique CUIT y certificados en .env", kind="error")
+            return
+        db_local = get_db_or_toast()
+        if not db_local:
+            return
+
+        try:
+            show_toast("Solicitando CAE...", kind="info")
+            doc_id = int(doc_row["id"])
+            codigo_afip = int(doc_row.get("codigo_afip"))
+            punto_venta = 1
+            last = afip.get_last_voucher_number(punto_venta, codigo_afip)
+            next_num = last + 1
+
+            entity = None
+            ent_id = doc_row.get("id_entidad")
+            if ent_id:
+                entity = db_local.fetch_entity_by_id(int(ent_id))
+
+            total = float(doc_row.get("total", 0) or 0)
+            neto = float(doc_row.get("neto", 0) or 0)
+            iva_total = float(doc_row.get("iva_total", 0) or 0)
+            if total and (neto <= 0 or iva_total < 0):
+                neto = total / 1.21
+                iva_total = total - neto
+
+            letra = str(doc_row.get("letra") or "").strip().upper()
+            es_letra_a = letra == "A" or codigo_afip in (1, 2, 3)
+            cuit_raw = (doc_row.get("cuit_receptor") or (entity or {}).get("cuit") or "").strip()
+            digits = "".join(ch for ch in cuit_raw if ch.isdigit())
+            doc_tipo = 99
+            doc_nro = 0
+            if digits:
+                if len(digits) == 11:
+                    doc_tipo = 80
+                    doc_nro = int(digits)
+                elif len(digits) <= 8:
+                    doc_tipo = 96
+                    doc_nro = int(digits)
+                else:
+                    show_toast("CUIT/DNI del receptor inválido.", kind="error")
+                    return
+
+            if es_letra_a and doc_tipo != 80:
+                show_toast("Para comprobantes letra A se requiere CUIT válido del receptor.", kind="error")
+                return
+
+            condicion_nombre = (entity or {}).get("condicion_iva")
+            condicion_id = afip.get_condicion_iva_receptor_id(condicion_nombre) if condicion_nombre else None
+            if es_letra_a and not condicion_id:
+                show_toast("Falta la condición IVA del receptor (requerida para letra A).", kind="error")
+                return
+
+            invoice_data = {
+                "CantReg": 1,
+                "PtoVta": punto_venta,
+                "CbteTipo": codigo_afip,
+                "Concepto": 1,
+                "DocTipo": doc_tipo,
+                "DocNro": doc_nro,
+                "CbteDesde": next_num,
+                "CbteHasta": next_num,
+                "CbteFch": datetime.now().strftime("%Y%m%d"),
+                "ImpTotal": total,
+                "ImpTotConc": 0,
+                "ImpNeto": neto,
+                "ImpOpEx": 0,
+                "ImpIVA": iva_total,
+                "ImpTrib": 0,
+                "MonId": "PES",
+                "MonCotiz": 1,
+                "Iva": [
+                    {
+                        "Id": 5,
+                        "BaseImp": neto,
+                        "Importe": iva_total,
+                    }
+                ],
+            }
+            if condicion_id is not None:
+                invoice_data["CondicionIVAReceptorId"] = condicion_id
+
+            res = afip.authorize_invoice(invoice_data)
+            if res.get("success"):
+                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "")).strip() if ch.isdigit())
+                qr_data = None
+                try:
+                    fecha_doc = str(doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
+                    qr_payload = {
+                        "ver": 1,
+                        "fecha": fecha_doc,
+                        "cuit": int(cuit_emisor) if cuit_emisor else 0,
+                        "ptoVta": int(punto_venta),
+                        "tipoCmp": int(codigo_afip),
+                        "nroCmp": int(next_num),
+                        "importe": round(total, 2),
+                        "moneda": "PES",
+                        "ctz": 1,
+                        "tipoDocRec": int(doc_tipo),
+                        "nroDocRec": int(doc_nro),
+                        "tipoCodAut": "E",
+                        "codAut": res.get("CAE"),
+                    }
+                    qr_json = json.dumps(qr_payload, separators=(",", ":"), ensure_ascii=False)
+                    qr_base64 = base64.b64encode(qr_json.encode("utf-8")).decode("ascii")
+                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_base64}"
+                except Exception:
+                    qr_data = None
+
+                db_local.update_document_afip_data(
+                    doc_id,
+                    res["CAE"],
+                    res["CAEFchVto"],
+                    punto_venta,
+                    codigo_afip,
+                    cuit_emisor=cuit_emisor or None,
+                    qr_data=qr_data,
+                )
+                show_toast(f"Autorizado! CAE: {res['CAE']}", kind="success")
+                if close_after:
+                    close_form()
+                if hasattr(documentos_summary_table, "refresh"):
+                    documentos_summary_table.refresh()
+                refresh_all_stats()
+            else:
+                show_toast(f"Error AFIP: {res.get('error')}", kind="error")
+        except Exception as e:
+            show_toast(f"Error: {e}", kind="error")
+
+    def _confirm_afip_authorization(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+        ask_confirm(
+            "Autorizar AFIP",
+            "Vas a facturar electrónicamente este comprobante en AFIP. Esta acción es irreversible y no se puede volver atrás. ¿Deseás continuar?",
+            "Autorizar AFIP",
+            lambda: _authorize_afip_doc(doc_row, close_after=close_after),
+            button_color=COLOR_WARNING,
+        )
+
+    def _confirm_document(doc_id: int, *, close_after: bool = False) -> None:
+        def on_confirm_real():
+            try:
+                if not db:
+                    return
+                db.confirm_document(doc_id)
+                show_toast("Comprobante confirmado", kind="success")
+                if close_after:
+                    close_form()
+                if hasattr(documentos_summary_table, "refresh"):
+                    documentos_summary_table.refresh()
+                refresh_all_stats()
+            except Exception as exc:
+                show_toast(f"Error al confirmar: {exc}", kind="error")
+
+        ask_confirm(
+            "Confirmar Comprobante",
+            "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
+            "Confirmar",
+            on_confirm_real,
+            button_color=COLOR_SUCCESS,
+        )
+
     def view_doc_detail(doc_row: Dict[str, Any]):
         doc_id = int(doc_row["id"])
         estado = doc_row.get("estado", "BORRADOR")
@@ -3344,8 +3590,7 @@ def main(page: ft.Page) -> None:
             # Improved content with more details
             total_doc = float(doc_row.get("total", 0))
             
-            content = ft.Container(
-                content=ft.Column([
+            body = ft.Column([
                     ft.Container(
                         content=ft.Row([
                             ft.Column([
@@ -3455,7 +3700,10 @@ def main(page: ft.Page) -> None:
                             border_radius=12,
                         )
                     ])
-                ], spacing=5, scroll=ft.ScrollMode.ADAPTIVE),
+                ], spacing=5, scroll=ft.ScrollMode.ADAPTIVE)
+
+            content = ft.Container(
+                content=body,
                 padding=10,
                 width=650,
                 height=550,
@@ -3463,102 +3711,27 @@ def main(page: ft.Page) -> None:
             
             actions = [ft.TextButton("Cerrar", on_click=close_form)]
             if estado == "BORRADOR":
-                def confirm_click(_):
-                    def on_confirm_real():
-                        try:
-                            if not db: return
-                            db.confirm_document(doc_id)
-                            show_toast("Comprobante confirmado", kind="success")
-                            close_form()
-                            if hasattr(documentos_summary_table, "refresh"):
-                                documentos_summary_table.refresh()
-                            refresh_all_stats()
-                        except Exception as exc:
-                            show_toast(f"Error al confirmar: {exc}", kind="error")
-
-                    ask_confirm(
-                        "Confirmar Comprobante",
-                        "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
-                        "Confirmar",
-                        on_confirm_real,
-                        button_color=COLOR_SUCCESS
-                    )
-                
-                actions.insert(0, ft.ElevatedButton("Confirmar Comprobante", icon=ft.Icons.CHECK_CIRCLE, bgcolor=COLOR_SUCCESS, color="#FFFFFF", on_click=confirm_click))
+                actions.insert(0, ft.ElevatedButton(
+                    "Confirmar Comprobante",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    bgcolor=COLOR_SUCCESS,
+                    color="#FFFFFF",
+                    on_click=lambda _: _confirm_document(doc_id, close_after=True),
+                ))
             
             # AFIP Authorization
+            if _can_authorize_afip(doc_row):
+                actions.insert(0, ft.ElevatedButton(
+                    "Autorizar AFIP",
+                    icon=ft.Icons.SECURITY,
+                    bgcolor=COLOR_ACCENT,
+                    color="#FFFFFF",
+                    on_click=lambda _: _confirm_afip_authorization(doc_row, close_after=True),
+                ))
+
             cae = doc_row.get("cae")
-            codigo_afip = doc_row.get("codigo_afip")
-            if estado == "CONFIRMADO" and codigo_afip and not cae:
-                def authorize_afip(_):
-                    if not afip:
-                        show_toast("Servicio AFIP no configurado. Verifique CUIT y certificados en .env", kind="error")
-                        return
-                    
-                    try:
-                        # Preparar datos para AFIP
-                        # Esto es una simplificación, en producción se deben mapear todos los campos
-                        show_toast("Solicitando CAE...", kind="info")
-                        
-                        # 1. Obtener punto de venta (podría estar en config o ser fijo por ahora)
-                        punto_venta = 1 
-                        
-                        # 2. Obtener último nro para ese tipo
-                        last = afip.get_last_voucher_number(punto_venta, codigo_afip)
-                        next_num = last + 1
-                        
-                        # 3. Autorizar
-                        # Mapeo básico de datos del documento
-                        invoice_data = {
-                            "CantReg": 1,
-                            "PtoVta": punto_venta,
-                            "CbteTipo": codigo_afip,
-                            "Concepto": 1, # Productos
-                            "DocTipo": 80 if doc_row.get("cuit_receptor") else 96, # 80 CUIT, 96 DNI
-                            "DocNro": int(doc_row.get("cuit_receptor").replace("-", "")) if doc_row.get("cuit_receptor") else 0,
-                            "CbteDesde": next_num,
-                            "CbteHasta": next_num,
-                            "CbteFch": datetime.now().strftime("%Y%m%d"),
-                            "ImpTotal": float(doc_row.get("total", 0)),
-                            "ImpTotConc": 0,
-                            "ImpNeto": float(doc_row.get("total", 0)) / 1.21, # Simplificación: 21% IVA
-                            "ImpOpEx": 0,
-                            "ImpIVA": float(doc_row.get("total", 0)) - (float(doc_row.get("total", 0)) / 1.21),
-                            "ImpTrib": 0,
-                            "MonId": "PES",
-                            "MonCotiz": 1,
-                            "Iva": [
-                                {
-                                    "Id": 5, # 21%
-                                    "BaseImp": float(doc_row.get("total", 0)) / 1.21,
-                                    "Importe": float(doc_row.get("total", 0)) - (float(doc_row.get("total", 0)) / 1.21)
-                                }
-                            ]
-                        }
-                        
-                        res = afip.authorize_invoice(invoice_data)
-                        if res.get("success"):
-                            db.update_document_afip_data(
-                                doc_id, 
-                                res["CAE"], 
-                                res["CAEFchVto"], 
-                                punto_venta, 
-                                codigo_afip
-                            )
-                            show_toast(f"Autorizado! CAE: {res['CAE']}", kind="success")
-                            close_form()
-                            documentos_summary_table.refresh()
-                            refresh_all_stats()
-                        else:
-                            show_toast(f"Error AFIP: {res.get('error')}", kind="error")
-                            
-                    except Exception as e:
-                        show_toast(f"Error: {e}", kind="error")
-
-                actions.insert(0, ft.ElevatedButton("Autorizar AFIP", icon=ft.Icons.SECURITY, bgcolor=COLOR_ACCENT, color="#FFFFFF", on_click=authorize_afip))
-
             if cae:
-                content.controls.append(ft.Container(
+                body.controls.append(ft.Container(
                     content=ft.Column([
                         ft.Text(f"CAE: {cae}", weight=ft.FontWeight.BOLD),
                         ft.Text(f"Vencimiento CAE: {doc_row.get('cae_vencimiento')}")
@@ -3749,6 +3922,25 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="total", label="Total", width=120, formatter=_format_money),
             ColumnConfig(key="forma_pago", label="Forma de Pago", width=130),
             ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"))),
+            ColumnConfig(
+                key="_confirm", label="", sortable=False, width=40,
+                renderer=lambda row: _icon_button_or_spacer(
+                    row.get("estado") == "BORRADOR",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    tooltip="Confirmar comprobante",
+                    icon_color=COLOR_SUCCESS,
+                    icon_size=18,
+                    on_click=lambda e, rid=row["id"]: _confirm_document(int(rid)),
+                )
+            ),
+            ColumnConfig(
+                key="_detail", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.INFO_OUTLINE, tooltip="Ver detalle",
+                    icon_color=COLOR_TEXT_MUTED,
+                    on_click=lambda e: view_doc_detail(row)
+                )
+            ),
             ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(
                 key="_edit", label="", sortable=False, width=40,
@@ -3781,6 +3973,17 @@ def main(page: ft.Page) -> None:
                 )
             ),
             ColumnConfig(
+                key="_afip", label="", sortable=False, width=40,
+                renderer=lambda row: _icon_button_or_spacer(
+                    _can_authorize_afip(row),
+                    icon=ft.Icons.SECURITY,
+                    tooltip="Autorizar AFIP",
+                    icon_color=COLOR_ACCENT,
+                    icon_size=18,
+                    on_click=lambda e, r=row: _confirm_afip_authorization(r),
+                )
+            ),
+            ColumnConfig(
                 key="_annul", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
                     row.get("estado") != "ANULADO" and not row.get("cae"),
@@ -3805,14 +4008,6 @@ def main(page: ft.Page) -> None:
                     on_click=lambda e, rid=row["id"]: open_nuevo_comprobante(copy_doc_id=rid),
                 )
             ),
-            ColumnConfig(
-                key="_detail", label="", sortable=False, width=40,
-                renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.INFO_OUTLINE, tooltip="Ver detalle",
-                    icon_color=COLOR_TEXT_MUTED,
-                    on_click=lambda e: view_doc_detail(row)
-                )
-            )
         ],
         data_provider=create_catalog_provider(db.fetch_documentos_resumen, db.count_documentos_resumen),
         advanced_filters=[
@@ -4553,7 +4748,8 @@ def main(page: ft.Page) -> None:
 
     def on_config_tab_change(e):
         if db:
-            tab_name = config_tabs.tabs[config_tabs.selected_index].text
+            tab = config_tabs.tabs[config_tabs.selected_index]
+            tab_name = getattr(tab, "text", None) or getattr(tab, "label", None) or getattr(tab, "data", None)
             db.log_activity("CONFIG_TAB", "VIEW", detalle={"tab": tab_name})
             
             # Lazy loading: refresh only the table in the current tab
@@ -4576,11 +4772,11 @@ def main(page: ft.Page) -> None:
         expand=True,
         height=600, # Force height to debug web view layout issue
         tabs=[
-            ft.Tab(
+            make_tab(
                 text="Sistema",
                 content=sistema_tab_content
             ),
-            ft.Tab(
+            make_tab(
                 text="Marcas",
                 content=ft.Column(
                     [
@@ -4590,7 +4786,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Rubros",
                 content=ft.Column(
                     [
@@ -4600,7 +4796,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Unidades",
                 content=ft.Column(
                     [
@@ -4610,7 +4806,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Provincias",
                 content=ft.Column(
                     [
@@ -4620,7 +4816,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Localidades",
                 content=ft.Column(
                     [
@@ -4630,7 +4826,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Condiciones IVA",
                 content=ft.Column(
                     [
@@ -4640,7 +4836,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Tipos IVA",
                 content=ft.Column(
                     [
@@ -4650,7 +4846,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Depósitos",
                 content=ft.Column(
                     [
@@ -4660,7 +4856,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Formas Pago",
                 content=ft.Column(
                     [
@@ -4670,7 +4866,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Tipos Porcentaje",
                 content=ft.Column(
                     [
@@ -4680,7 +4876,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Tipos Documento",
                 content=ft.Column(
                     [
@@ -4697,7 +4893,7 @@ def main(page: ft.Page) -> None:
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
                 ),
             ),
-            ft.Tab(
+            make_tab(
                 text="Tipos Movimiento",
                 content=ft.Column(
                     [

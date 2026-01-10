@@ -3,7 +3,6 @@ psycopg[binary]>=3.1
 psycopg_pool>=3.1
 python-dotenv>=1.0
 SQLAlchemy>=2.0.0
-afip.py>=1.2.0
 pyOpenSSL>=24.0.0
 zeep>=4.2.1
 APScheduler>=3.10.4

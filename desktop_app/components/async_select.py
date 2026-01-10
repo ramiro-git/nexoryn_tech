@@ -37,16 +37,32 @@ class AsyncSelect(ft.Column):
         page_size: int = 50,
         debounce_ms: int = 400,
         label: Optional[str] = None,
-        bgcolor: str = "#F8FAFC",
-        border_color: str = "#CBD5E1",  # Slate 200
+        bgcolor: Optional[str] = "#F1F5F9",
+        border_color: str = "#475569",  # Slate 600
         focused_border_color: str = "#6366F1",  # Indigo 500
         expand: bool = False,
         initial_items: Optional[List[Dict[str, Any]]] = None,
         page_ref: Optional[Any] = None,  # Explicit page reference
+        show_label: bool = False,
+        border_width: int = 2,
+        border_radius: int = 12,
+        placeholder_color: Optional[str] = None,
+        text_color: str = "#1E293B",
+        text_weight: Optional[ft.FontWeight] = None,
+        placeholder_weight: Optional[ft.FontWeight] = None,
+        label_color: str = "#1E293B",
+        label_size: int = 13,
+        label_weight: ft.FontWeight = ft.FontWeight.BOLD,
     ):
         super().__init__(spacing=2, expand=expand, width=width, disabled=disabled)
         self.loader = loader
+        if bgcolor is None:
+            bgcolor = "#F1F5F9"
         self._value = value
+        placeholder_clean = (placeholder or "").strip().lower()
+        if not show_label and label:
+            if not placeholder_clean or placeholder_clean.startswith("seleccionar"):
+                placeholder = label
         self.placeholder = placeholder
         self._on_change_callback = on_change
         self.debounce_ms = debounce_ms
@@ -55,6 +71,20 @@ class AsyncSelect(ft.Column):
         self.border_color = border_color
         self.focused_border_color = focused_border_color
         self.page_size = page_size
+        self.show_label = show_label
+        self.border_width = border_width
+        self.border_radius = border_radius
+        if placeholder_color is None:
+            placeholder_color = "#1E293B" if not show_label else "#94A3B8"
+        self.placeholder_color = placeholder_color
+        self.text_color = text_color
+        self.text_weight = text_weight
+        if placeholder_weight is None:
+            placeholder_weight = ft.FontWeight.BOLD if not show_label else None
+        self.placeholder_weight = placeholder_weight
+        self.label_color = label_color
+        self.label_size = label_size
+        self.label_weight = label_weight
 
         # State
         self._query = ""
@@ -84,12 +114,16 @@ class AsyncSelect(ft.Column):
         self._update_selected_label()
         self._trigger = self._build_trigger()
         
-        if self.label:
-            self.controls.append(ft.Text(self.label, size=12, color="#64748B", weight=ft.FontWeight.W_500))
+        if self.label and self.show_label:
+            self.controls.append(
+                ft.Text(self.label, size=self.label_size, color=self.label_color, weight=self.label_weight)
+            )
         self.controls.append(self._trigger)
 
     def _build_trigger(self):
-        text_color = "#1E293B" if self._selected_label else "#94A3B8"
+        is_selected = bool(self._selected_label)
+        text_color = self.text_color if is_selected else self.placeholder_color
+        text_weight = self.text_weight if is_selected else self.placeholder_weight
         
         return ft.Container(
             on_click=self._on_trigger_click,
@@ -101,22 +135,25 @@ class AsyncSelect(ft.Column):
                         expand=True,
                         color=text_color,
                         size=14,
+                        weight=text_weight,
                         no_wrap=True,
                     ),
                     ft.Icon(
-                        ft.Icons.KEYBOARD_ARROW_DOWN,
-                        color="#64748B",
-                        size=18,
+                        ft.Icons.ARROW_DROP_DOWN,
+                        color="#475569",
+                        size=24,
                     ),
                 ],
                 spacing=8,
                 tight=True,
             ),
-            padding=ft.padding.symmetric(horizontal=12, vertical=11),
-            border=ft.border.all(1, self.border_color),
-            border_radius=10,
+            padding=ft.padding.only(left=12, right=4),
+            border=ft.border.all(self.border_width, self.border_color),
+            border_radius=self.border_radius,
             bgcolor=self.bgcolor,
             width=self.width,
+            height=50,
+            alignment=ft.alignment.center_left,
         )
 
     @property
@@ -149,7 +186,8 @@ class AsyncSelect(ft.Column):
         self._update_selected_label()
         if self._trigger:
             self._trigger.content.controls[0].value = self._selected_label or self.placeholder
-            self._trigger.content.controls[0].color = "#1E293B" if self._selected_label else "#94A3B8"
+            self._trigger.content.controls[0].color = self.text_color if self._selected_label else self.placeholder_color
+            self._trigger.content.controls[0].weight = self.text_weight if self._selected_label else self.placeholder_weight
         try:
             self.update()
         except: pass
@@ -285,7 +323,9 @@ class AsyncSelect(ft.Column):
     def _update_trigger_icon(self, loading):
         if self._trigger:
             icon = self._trigger.content.controls[1]
-            icon.icon = ft.Icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.Icons.KEYBOARD_ARROW_DOWN
+            icon.size = 24
+            icon.color = "#475569"
+            icon.icon = ft.Icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.Icons.ARROW_DROP_DOWN
             try: self._trigger.update()
             except: pass
 
@@ -328,7 +368,8 @@ class AsyncSelect(ft.Column):
         if self._trigger:
             text_field = self._trigger.content.controls[0]
             text_field.value = self._selected_label
-            text_field.color = "#1E293B"
+            text_field.color = self.text_color
+            text_field.weight = self.text_weight
         
         try: self.update()
         except: pass
@@ -465,7 +506,7 @@ class AsyncSelect(ft.Column):
 
         self._empty_text = ft.Container(
             content=ft.Text("Sin resultados", size=14, color="#94A3B8"),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             padding=40,
             visible=False
         )
@@ -507,7 +548,7 @@ class AsyncSelect(ft.Column):
                 )
             ),
             bgcolor="#40000000", # Slightly lighter dimming for search
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             visible=False,
             # Force full screen in overlay
             left=0, top=0, right=0, bottom=0,

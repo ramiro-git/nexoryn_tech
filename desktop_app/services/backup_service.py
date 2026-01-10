@@ -35,7 +35,13 @@ def _save_settings(settings: Dict) -> bool:
         return False
 
 class BackupService:
-    def __init__(self, backup_dir: str = "backups", pg_bin_path: Optional[str] = None, sync_dir: Optional[str] = None):
+    def __init__(
+        self,
+        backup_dir: str = "backups",
+        pg_bin_path: Optional[str] = None,
+        sync_dir: Optional[str] = None,
+        incremental_dir: Optional[str] = None,
+    ):
         # Load persisted settings
         settings = _load_settings()
         
@@ -46,6 +52,12 @@ class BackupService:
         
         self.backup_dir = Path(backup_dir)
         self.pg_bin_path = pg_bin_path
+        self.incremental_root = Path(incremental_dir) if incremental_dir else Path("backups_incrementales")
+        self.incremental_dirs = {
+            "FULL": self.incremental_root / "full",
+            "DIFERENCIAL": self.incremental_root / "differential",
+            "INCREMENTAL": self.incremental_root / "incremental",
+        }
         
         # Use persisted sync_dir if not overridden
         saved_sync_dir = settings.get("sync_dir")
@@ -58,8 +70,7 @@ class BackupService:
         self._ensure_directories()
     
     def _ensure_directories(self):
-        """Standard backup directory creation is disabled to favor incremental system."""
-        # Definitions are kept for compatibility with listing methods, but creation is disabled.
+        """Maintain references for legacy and incremental backup folders."""
         self.daily_dir = self.backup_dir / "daily"
         self.weekly_dir = self.backup_dir / "weekly"
         self.monthly_dir = self.backup_dir / "monthly"
@@ -361,26 +372,49 @@ class BackupService:
             raise RuntimeError(f"Restore failed: {str(e)}")
 
     def list_backups(self) -> List[Dict]:
-        """Lists all available backups."""
+        """Lists all available backups across legacy and incremental folders."""
         backups = []
-        for d in [self.daily_dir, self.weekly_dir, self.monthly_dir, self.manual_dir]:
-            logger.info(f"Checking directory: {d}, exists: {d.exists()}")
-            if d.exists():
-                files = list(d.glob("*.sql"))
-                logger.info(f"Found {len(files)} .sql files in {d}")
-                for f in files:
-                    stats = f.stat()
-                    backups.append({
-                        "name": f.name,
-                        "path": str(f),
-                        "type": d.name,
-                        "size": stats.st_size,
-                        "created": datetime.fromtimestamp(stats.st_ctime)
-                    })
-        
+        legacy_directories = [
+            ("daily", self.daily_dir, "*.sql"),
+            ("weekly", self.weekly_dir, "*.sql"),
+            ("monthly", self.monthly_dir, "*.sql"),
+            ("manual", self.manual_dir, "*.sql"),
+        ]
+
+        for backup_type, directory, pattern in legacy_directories:
+            backups.extend(self._collect_backup_files(directory, pattern, backup_type))
+
+        for backup_type, directory in self.incremental_dirs.items():
+            backups.extend(self._collect_backup_files(directory, "*.backup", backup_type))
+
         logger.info(f"Total backups found: {len(backups)}")
-        # Sort by creation time desc
         return sorted(backups, key=lambda x: x["created"], reverse=True)
+
+    def _collect_backup_files(self, directory: Path, pattern: str, backup_type: str) -> List[Dict]:
+        if not directory.exists():
+            logger.debug(f"Skipping missing backup directory: {directory}")
+            return []
+
+        entries: List[Dict] = []
+        for candidate in directory.glob(pattern):
+            if not candidate.is_file():
+                continue
+
+            try:
+                stats = candidate.stat()
+            except OSError:
+                continue
+
+            entries.append({
+                "name": candidate.name,
+                "path": str(candidate),
+                "type": backup_type,
+                "size": stats.st_size,
+                "created": datetime.fromtimestamp(stats.st_ctime),
+            })
+
+        logger.debug(f"Found {len(entries)} {pattern} files in {directory}")
+        return entries
 
     def prune_backups(self, retention_policy: Optional[Dict[str, int]] = None):
         """

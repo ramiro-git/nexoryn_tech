@@ -1276,7 +1276,7 @@ class Database:
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 # 1. Basic Info
-                cur.execute("SELECT * FROM app.v_articulo_detallado WHERE id = %s", (article_id,))
+                cur.execute("SELECT * FROM app.v_articulo_detallado WHERE id_articulo = %s", (article_id,))
                 basic_info = _rows_to_dicts(cur)
                 if not basic_info:
                     return {}
@@ -3403,11 +3403,12 @@ class Database:
     def _movimientos_base_query(self) -> str:
         return """
             SELECT 
-              m.id, m.fecha, m.id_articulo, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
+              m.id, m.fecha, a.nombre AS articulo, tm.nombre AS tipo_movimiento,
               m.cantidad, tm.signo_stock, d.nombre AS deposito, u.nombre AS usuario,
               m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
               doc.numero_serie AS nro_comprobante,
-              COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
+              COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
+              m.id_articulo AS id_articulo
             FROM app.movimiento_articulo m
             JOIN app.articulo a ON m.id_articulo = a.id
             JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
@@ -3949,7 +3950,7 @@ class Database:
                 return rows[0] if rows else None
 
     def list_articulos_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
-        query = f"SELECT id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
+        query = f"SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
@@ -3957,7 +3958,7 @@ class Database:
 
     def get_article_simple(self, article_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a single article by ID, regardless of active status."""
-        query = "SELECT id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE id = %s"
+        query = "SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE id_articulo = %s"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (article_id,))
@@ -4026,7 +4027,16 @@ class Database:
                     (id_tipo_mov, depo_id, doc_id, clase, self.current_user_id, doc_id),
                 )
 
-    def update_document_afip_data(self, doc_id: int, cae: str, cae_vencimiento: str, punto_venta: int, tipo_comprobante_afip: int):
+    def update_document_afip_data(
+        self,
+        doc_id: int,
+        cae: str,
+        cae_vencimiento: str,
+        punto_venta: int,
+        tipo_comprobante_afip: int,
+        cuit_emisor: Optional[str] = None,
+        qr_data: Optional[str] = None,
+    ):
         """
         Actualiza los datos de AFIP (CAE, vencimiento, etc.) para un documento.
         Normalmente se llama después de una autorización exitosa en AFIP.
@@ -4039,10 +4049,12 @@ class Database:
                     cae_vencimiento = %s, 
                     punto_venta = %s, 
                     tipo_comprobante_afip = %s,
+                    cuit_emisor = %s,
+                    qr_data = %s,
                     estado = 'CONFIRMADO'
                 WHERE id = %s
                 """,
-                (cae, cae_vencimiento, punto_venta, tipo_comprobante_afip, doc_id),
+                (cae, cae_vencimiento, punto_venta, tipo_comprobante_afip, cuit_emisor, qr_data, doc_id),
             )
 
         # Opcional: registrar actividad (fuera de la transacción principal)
@@ -4123,8 +4135,10 @@ class Database:
                            d.observacion, d.numero_serie, d.descuento_porcentaje, d.descuento_importe,
                            d.fecha::text, d.fecha_vencimiento::text, d.id_lista_precio,
                            d.neto, d.subtotal, d.iva_total, d.total, d.sena, d.estado, d.cae,
-                           d.direccion_entrega
-                    FROM app.documento d WHERE d.id = %s
+                           d.cae_vencimiento, d.cuit_emisor, d.qr_data, d.direccion_entrega, td.nombre, td.letra
+                    FROM app.documento d
+                    JOIN ref.tipo_documento td ON td.id = d.id_tipo_documento
+                    WHERE d.id = %s
                 """, (doc_id,))
                 head = cur.fetchone()
                 if not head: return None
@@ -4136,7 +4150,9 @@ class Database:
                     "fecha": head[8], "fecha_vencimiento": head[9],
                     "id_lista_precio": head[10], "neto": float(head[11]), "subtotal": float(head[12]),
                     "iva_total": float(head[13]), "total": float(head[14]), "sena": float(head[15]),
-                    "estado": head[16], "cae": head[17], "direccion_entrega": head[18]
+                    "estado": head[16], "cae": head[17], "cae_vencimiento": head[18],
+                    "cuit_emisor": head[19], "qr_data": head[20], "direccion_entrega": head[21],
+                    "tipo_documento": head[22], "letra": head[23]
                 }
                 
                 cur.execute("""

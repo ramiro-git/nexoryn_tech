@@ -405,7 +405,8 @@ SELECT
   doc.id AS id_documento,
   td.nombre AS tipo_documento,
   doc.numero_serie AS nro_comprobante,
-  COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad
+  COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
+  m.id_articulo AS id_articulo
 FROM app.movimiento_articulo m
 JOIN app.articulo a ON m.id_articulo = a.id
 JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
@@ -484,7 +485,8 @@ LEFT JOIN ref.lista_precio lp ON lp.id = lc.id_lista_precio;
 DROP VIEW IF EXISTS app.v_articulo_detallado CASCADE;
 CREATE OR REPLACE VIEW app.v_articulo_detallado AS
 SELECT
-  a.id,
+  a.id AS id,
+  a.id AS id_articulo,
   a.nombre,
   a.id_marca,
   m.nombre AS marca,
@@ -902,6 +904,7 @@ ORDER BY 1 DESC;
 DROP VIEW IF EXISTS app.v_top_articulos_mes CASCADE;
 CREATE OR REPLACE VIEW app.v_top_articulos_mes AS
 SELECT
+  a.id AS id,
   a.nombre,
   r.nombre AS rubro,
   SUM(dd.cantidad) AS cantidad_vendida,
@@ -914,7 +917,7 @@ JOIN ref.tipo_documento td ON d.id_tipo_documento = td.id
 WHERE td.clase = 'VENTA' 
   AND d.estado IN ('CONFIRMADO', 'PAGADO')
   AND d.fecha >= date_trunc('month', now())
-GROUP BY a.nombre, r.nombre
+GROUP BY a.id, a.nombre, r.nombre
 ORDER BY total_facturado DESC
 LIMIT 20;
 

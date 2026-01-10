@@ -365,6 +365,18 @@ class BackupProfessionalView:
             error_invalid_text="Fecha fuera de rango",
             help_text="SELECCIONAR FECHA"
         )
+        def _maybe_set(obj: Any, name: str, value: Any) -> None:
+            if hasattr(obj, name):
+                try:
+                    setattr(obj, name, value)
+                except Exception:
+                    pass
+
+        safe_min = datetime(1970, 1, 1)
+        safe_max = datetime(2100, 12, 31)
+        _maybe_set(dp, "first_date", safe_min)
+        _maybe_set(dp, "last_date", safe_max)
+        _maybe_set(dp, "current_date", datetime.now())
         
         # Add to overlay safely
         if self.page:
@@ -1094,7 +1106,7 @@ class BackupProfessionalView:
                     height=48,
                     border_radius=12,
                     bgcolor=f"{color}1A",
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment(0, 0),
                     content=ft.Icon(icon, color=color, size=24),
                 ),
                 ft.Column([

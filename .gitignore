@@ -36,6 +36,9 @@ pylatexenc_cache/
 .env.*
 !.env.example
 
+# Certificates
+certs/
+
 # Logs
 *.log
 database/init_db.log

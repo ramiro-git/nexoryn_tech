@@ -60,9 +60,10 @@ class InvoicePDF(FPDF):
 
     def _draw_document_header(self) -> None:
         doc_type = self.doc.get("tipo_documento") or "COMPROBANTE"
-        series = self.doc.get("serie", "")
+        series = self.doc.get("letra") or self.doc.get("serie", "")
         number = self.doc.get("numero_serie", "---")
         cae = self.doc.get("cae") or "Pendiente"
+        cae_vto = self.doc.get("cae_vencimiento") or ""
         date = self.doc.get("fecha", datetime.now().strftime("%Y-%m-%d"))
 
         self.set_draw_color(226, 232, 240)
@@ -79,6 +80,8 @@ class InvoicePDF(FPDF):
         self.cell(0, 5, f"Número: {number}", ln=1)
         self.cell(0, 5, f"Fecha emisión: {date}", ln=1)
         self.cell(0, 5, f"CAE: {cae}", ln=1)
+        if cae_vto:
+            self.cell(0, 5, f"Vencimiento CAE: {cae_vto}", ln=1)
 
     def _draw_client_block(self) -> None:
         name = self.entity.get("nombre_completo") or self.entity.get("razon_social") or "Consumidor Final"
@@ -150,16 +153,23 @@ class InvoicePDF(FPDF):
             iva = float(self.doc.get("iva_total", 0) or 0)
             total = float(self.doc.get("total", neto + iva) or (neto + iva))
 
+        letra = str(self.doc.get("letra") or "").strip().upper()
+        show_iva = letra == "A"
+        subtotal_label = "Subtotal" if show_iva else "Subtotal (IVA incluido)"
+        subtotal_value = neto if show_iva else total
+
         y = self.get_y()
         self.set_fill_color(247, 250, 255)
-        self.rect(110, y, 90, 35, "F")
+        box_height = 35 if show_iva else 25
+        self.rect(110, y, 90, box_height, "F")
         self.set_xy(112, y + 2)
         self.set_font("helvetica", "", 10)
         self.set_text_color(15, 23, 42)
-        self.cell(40, 6, "Subtotal", border=0, align="L")
-        self.cell(40, 6, _format_money(neto), border=0, align="R", ln=1)
-        self.cell(40, 6, "IVA", border=0, align="L")
-        self.cell(40, 6, _format_money(iva), border=0, align="R", ln=1)
+        self.cell(40, 6, subtotal_label, border=0, align="L")
+        self.cell(40, 6, _format_money(subtotal_value), border=0, align="R", ln=1)
+        if show_iva:
+            self.cell(40, 6, "IVA", border=0, align="L")
+            self.cell(40, 6, _format_money(iva), border=0, align="R", ln=1)
         self.set_font("helvetica", "B", 11)
         self.cell(40, 8, "TOTAL", border=0, align="L")
         self.cell(40, 8, _format_money(total), border=0, align="R", ln=1)
@@ -169,7 +179,10 @@ class InvoicePDF(FPDF):
         self.set_xy(10, y)
         self.set_font("helvetica", "I", 8)
         self.set_text_color(120)
-        self.multi_cell(0, 5, "Recibimos tu consulta. Pronto estaremos emitiendo el CAE oficial. Este comprobante funciona como presupuesto y tiene validez comercial conforme la normativa vigente.")
+        if self.doc.get("cae"):
+            self.multi_cell(0, 5, "Comprobante autorizado por AFIP. Conserve este documento para tus registros.")
+        else:
+            self.multi_cell(0, 5, "Recibimos tu consulta. Pronto estaremos emitiendo el CAE oficial. Este comprobante funciona como presupuesto y tiene validez comercial conforme la normativa vigente.")
 
 
 def generate_pdf_and_open(doc_data: Dict[str, Any], entity_data: Dict[str, Any], items_data: List[Dict[str, Any]]) -> str:

@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from typing import Optional, Tuple
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -55,6 +56,33 @@ def _read_int_env(name: str, default: int, *, min_value: int = 1) -> int:
     return value if value >= min_value else default
 
 
+def _read_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _read_afip_production_flag() -> bool:
+    if os.getenv("AFIP_PRODUCCION") is not None:
+        return _read_bool_env("AFIP_PRODUCCION", False)
+    return _read_bool_env("AFIP_PRODUCTION", False)
+
+
+def _select_afip_credentials(use_production: bool) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    if use_production:
+        return (
+            os.getenv("AFIP_CUIT_PRODUCCION") or os.getenv("AFIP_CUIT_PRODUCTION"),
+            os.getenv("AFIP_CERT_PATH_PRODUCCION") or os.getenv("AFIP_CERT_PATH_PRODUCTION"),
+            os.getenv("AFIP_KEY_PATH_PRODUCCION") or os.getenv("AFIP_KEY_PATH_PRODUCTION"),
+        )
+    return (
+        os.getenv("AFIP_CUIT_HOMOLOGACION") or os.getenv("AFIP_CUIT"),
+        os.getenv("AFIP_CERT_PATH_HOMOLOGACION") or os.getenv("AFIP_CERT_PATH"),
+        os.getenv("AFIP_KEY_PATH_HOMOLOGACION") or os.getenv("AFIP_KEY_PATH"),
+    )
+
+
 def load_config() -> AppConfig:
     load_dotenv()
     database_url = os.getenv("DATABASE_URL")
@@ -64,14 +92,16 @@ def load_config() -> AppConfig:
     db_pool_max = _read_int_env("DB_POOL_MAX", 4, min_value=1)
     if db_pool_max < db_pool_min:
         db_pool_max = db_pool_min
-    
+
+    afip_prod = _read_afip_production_flag()
+    afip_cuit, afip_cert, afip_key = _select_afip_credentials(afip_prod)
     return AppConfig(
         database_url=database_url,
         db_pool_min=db_pool_min,
         db_pool_max=db_pool_max,
-        afip_cuit=os.getenv("AFIP_CUIT"),
-        afip_cert=os.getenv("AFIP_CERT_PATH"),
-        afip_key=os.getenv("AFIP_KEY_PATH"),
-        afip_prod=os.getenv("AFIP_PRODUCTION", "False").lower() == "true",
+        afip_cuit=afip_cuit,
+        afip_cert=afip_cert,
+        afip_key=afip_key,
+        afip_prod=afip_prod,
         pg_bin_path=os.getenv("PG_BIN_PATH")
     )

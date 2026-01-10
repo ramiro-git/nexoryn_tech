@@ -333,8 +333,8 @@ class GenericTable:
             label="Campo",
             width=220,
             options=[ft.dropdown.Option(col.key, col.label) for col in editable_columns],
-            on_change=lambda e: self._on_mass_field_change(e.control.value),
         )
+        _maybe_set(self.mass_field_dropdown, "on_change", lambda e: self._on_mass_field_change(e.control.value))
         _style_input(self.mass_field_dropdown)
         self.mass_value_container = ft.Container(
             expand=1,
@@ -390,8 +390,8 @@ class GenericTable:
             label="Filas",
             value=str(self.page_size),
             options=[ft.dropdown.Option(str(size), str(size)) for size in self.page_size_options],
-            on_change=lambda e: self._on_page_size_change(e.control.value),
         )
+        _maybe_set(self.page_size_dropdown, "on_change", lambda e: self._on_page_size_change(e.control.value))
         _style_input(self.page_size_dropdown)
         self.first_button = ft.IconButton(
             icon=ft.Icons.FIRST_PAGE,
@@ -492,7 +492,7 @@ class GenericTable:
         self._empty_message = ft.Text("Ajustá el buscador o filtros.", size=12, color="#64748B")
         self._empty_overlay = ft.Container(
             visible=False,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             padding=40,
             content=ft.Column(
                 [
@@ -511,7 +511,7 @@ class GenericTable:
         )
         self._loading_overlay = ft.Container(
             visible=False,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             padding=40,
             content=ft.Column(
                 [
