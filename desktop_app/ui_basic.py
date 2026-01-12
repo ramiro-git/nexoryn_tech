@@ -191,6 +191,23 @@ def _status_pill(value: Any, row: Optional[Dict[str, Any]] = None) -> ft.Control
     )
 
 
+def _remito_status_pill(value: Any) -> ft.Control:
+    status = str(value or "").upper()
+    colors = {
+        "PENDIENTE": ("#FEF3C7", "#92400E"),
+        "DESPACHADO": ("#DBEAFE", "#1D4ED8"),
+        "ENTREGADO": ("#DCFCE7", "#166534"),
+        "ANULADO": ("#FEE2E2", "#991B1B"),
+    }
+    bg, fg = colors.get(status, ("#F3F4F6", "#374151"))
+    return ft.Container(
+        padding=ft.padding.symmetric(horizontal=10, vertical=4),
+        border_radius=20,
+        bgcolor=bg,
+        content=ft.Text(status, size=11, weight=ft.FontWeight.W_600, color=fg),
+    )
+
+
 def _icon_button_or_spacer(visible: bool, **kwargs: Any) -> ft.Control:
     if visible:
         return ft.IconButton(**kwargs)
@@ -389,7 +406,7 @@ def main(page: ft.Page) -> None:
                 return
             
             # Get client name
-            ent = db.get_entity_simple(doc.get("id_entidad_comercial"))
+            ent = db.get_entity_detail(doc.get("id_entidad_comercial")) if db else None
             
             # Build Items Data
             items_data = []
@@ -400,7 +417,7 @@ def main(page: ft.Page) -> None:
                 items_data.append(item_copy)
 
             # Generate PDF
-            generate_pdf_and_open(doc, ent or {}, items_data)
+            generate_pdf_and_open(doc, ent or {}, items_data, kind="invoice")
             show_toast(f"PDF generado correctamente.", kind="success")
             
         except Exception as e:
@@ -705,6 +722,8 @@ def main(page: ft.Page) -> None:
         try: refresh_articles_catalogs()
         except: pass
         try: refresh_movimientos_catalogs()
+        except: pass
+        try: refresh_remitos_catalogs()
         except: pass
         try: refresh_documentos_catalogs()
         except: pass
@@ -3744,6 +3763,128 @@ def main(page: ft.Page) -> None:
             open_form(f"Detalle: {doc_row.get('tipo_documento','')} {doc_row.get('numero_serie','')}", content, actions)
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
 
+    def view_remito_detail(rem_row: Dict[str, Any]):
+        if not rem_row:
+            return
+        remito_id = int(rem_row["id"])
+        try:
+            if db:
+                db.log_activity("app.remito", "VIEW_DETAIL", id_entidad=remito_id)
+            details = db.fetch_remito_detalle(remito_id) if db else []
+
+            header = ft.Row([
+                ft.Column([
+                    ft.Text("CLIENTE", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    ft.Text(rem_row.get("entidad") or "—", size=16, weight=ft.FontWeight.W_600),
+                ], spacing=2, expand=True),
+                ft.Column([
+                    ft.Text("DEPÓSITO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.RIGHT),
+                    ft.Text(rem_row.get("deposito") or "—", size=13, text_align=ft.TextAlign.RIGHT),
+                ], spacing=2, width=200),
+                ft.Column([
+                    ft.Text("DOCUMENTO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.RIGHT),
+                    ft.Text(rem_row.get("documento_numero") or "—", size=13, text_align=ft.TextAlign.RIGHT),
+                ], spacing=2, width=200),
+            ], spacing=20, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+
+            info_row = ft.Row([
+                ft.Column([
+                    ft.Text("NÚMERO REMITO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    ft.Text(rem_row.get("numero") or "—", size=16, weight=ft.FontWeight.W_700),
+                ], spacing=2),
+                ft.Column([
+                    ft.Text("FECHA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    ft.Text(str(rem_row.get("fecha") or "")[:10] or "—", size=13),
+                ], spacing=2),
+                ft.Column([
+                    ft.Text("ESTADO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    _remito_status_pill(rem_row.get("estado")),
+                ], spacing=2),
+                ft.Column([
+                    ft.Text("ENTREGA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    ft.Text(str(rem_row.get("fecha_entrega") or "")[:10] or "—", size=13),
+                ], spacing=2),
+            ], spacing=20, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+
+            table_body: ft.Control
+            if details:
+                table_body = SafeDataTable(
+                    heading_row_color="#F8FAFC",
+                    heading_row_height=40,
+                    data_row_min_height=40,
+                    column_spacing=16,
+                    columns=[
+                        ft.DataColumn(ft.Text("Artículo", size=12, weight=ft.FontWeight.BOLD)),
+                        ft.DataColumn(ft.Text("Cantidad", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                        ft.DataColumn(ft.Text("Observación", size=12, weight=ft.FontWeight.BOLD)),
+                    ],
+                    rows=[
+                        ft.DataRow(cells=[
+                            ft.DataCell(ft.Text(d.get("articulo") or "—", size=13)),
+                            ft.DataCell(ft.Text(str(d.get("cantidad") or 0), size=13)),
+                            ft.DataCell(ft.Text(d.get("observacion") or "—", size=12, color=COLOR_TEXT_MUTED)),
+                        ]) for d in details
+                    ],
+                )
+            else:
+                table_body = ft.Container(
+                    content=ft.Text("Este remito no tiene líneas registradas.", color=COLOR_TEXT_MUTED),
+                    padding=ft.padding.symmetric(vertical=20, horizontal=10),
+                )
+
+            body = ft.Column([
+                header,
+                info_row,
+                ft.Divider(color="#E2E8F0"),
+                table_body,
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("DIRECCIÓN DE ENTREGA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                        ft.Text(rem_row.get("direccion_entrega") or "—", size=13),
+                        ft.Container(height=6),
+                        ft.Text("OBSERVACIONES", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                        ft.Text(rem_row.get("observacion") or "Sin observaciones", size=13, color=COLOR_TEXT_MUTED),
+                    ], spacing=5),
+                    padding=ft.padding.symmetric(vertical=12, horizontal=10),
+                    bgcolor="#F8FAFC",
+                    border_radius=12,
+                ),
+            ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
+
+            content = ft.Container(
+                content=body,
+                padding=20,
+                width=720,
+                height=600,
+            )
+            def _print_remito(_=None):
+                try:
+                    entity_detail = db.get_entity_detail(rem_row.get("id_entidad_comercial")) if db else {}
+                    generate_pdf_and_open(rem_row, entity_detail or {}, details, kind="remito")
+                    show_toast("Remito generado correctamente.", kind="success")
+                except Exception as exc:
+                    show_toast(f"Error al imprimir remito: {exc}", kind="error")
+
+            actions = [
+                ft.ElevatedButton(
+                    "Cerrar",
+                    bgcolor=COLOR_ACCENT,
+                    color="#FFFFFF",
+                    on_click=lambda _: close_form()
+                )
+            ]
+            if db:
+                actions.insert(0, ft.ElevatedButton(
+                    "Imprimir remito",
+                    icon=ft.Icons.PRINT_ROUNDED,
+                    bgcolor=COLOR_ACCENT,
+                    color="#FFFFFF",
+                    on_click=_print_remito
+                ))
+            open_form(f"Remito {rem_row.get('numero', '')}", content, actions)
+        except Exception as exc:
+            show_toast(f"Error al mostrar remito: {exc}", kind="error")
+
     # Movement filters (Move up to be accessible via reload_catalogs if needed)
     def _mov_live(_=None):
         try: movimientos_table.trigger_refresh()
@@ -3828,6 +3969,17 @@ def main(page: ft.Page) -> None:
                 try: 
                     if ctrl.page: ctrl.update()
                 except: pass
+        except: pass
+
+    def refresh_remitos_catalogs():
+        if not db: return
+        try:
+            depositos = db.fetch_depositos()
+            rem_adv_deposito.options = [ft.dropdown.Option("", "Todos")] + [
+                ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos
+            ]
+            if rem_adv_deposito.page:
+                rem_adv_deposito.update()
         except: pass
 
     # Documents View
@@ -4046,6 +4198,137 @@ def main(page: ft.Page) -> None:
 
     documentos_view = ft.Container(
         content=documentos_view,
+        padding=ft.padding.only(right=10),
+        expand=True
+    )
+
+    def _rem_live(_=None):
+        try:
+            remitos_table.trigger_refresh()
+        except Exception:
+            pass
+
+    rem_adv_entidad = AsyncSelect(
+        label="Entidad",
+        loader=entity_loader,
+        width=280,
+        initial_items=[{"value": "", "label": "Todas"}],
+        on_change=lambda _: _rem_live(None)
+    )
+    _style_input(rem_adv_entidad)
+    rem_adv_estado = ft.Dropdown(
+        label="Estado",
+        options=[
+            ft.dropdown.Option("", "Todos"),
+            ft.dropdown.Option("PENDIENTE", "Pendiente"),
+            ft.dropdown.Option("DESPACHADO", "Despachado"),
+            ft.dropdown.Option("ENTREGADO", "Entregado"),
+            ft.dropdown.Option("ANULADO", "Anulado"),
+        ],
+        width=200,
+        value="",
+        on_change=_rem_live,
+    ); _style_input(rem_adv_estado)
+    rem_adv_deposito = ft.Dropdown(
+        label="Depósito",
+        options=[ft.dropdown.Option("", "Todos")],
+        width=200,
+        on_change=_rem_live,
+    ); _style_input(rem_adv_deposito)
+    rem_adv_documento = ft.TextField(label="Documento / Nº", width=180); _style_input(rem_adv_documento)
+    rem_adv_documento.on_change = lambda _: _rem_live(None)
+    rem_adv_documento.on_submit = lambda _: _rem_live(None)
+    rem_adv_desde = _date_field(page, "Desde", width=140); rem_adv_desde.on_submit = _rem_live
+    rem_adv_hasta = _date_field(page, "Hasta", width=140); rem_adv_hasta.on_submit = _rem_live
+
+    remitos_table = GenericTable(
+        columns=[
+            ColumnConfig(key="numero", label="Remito", width=120),
+            ColumnConfig(key="fecha", label="Fecha", width=120),
+            ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _remito_status_pill(row.get("estado"))),
+            ColumnConfig(key="entidad", label="Entidad", width=220),
+            ColumnConfig(key="deposito", label="Depósito", width=160),
+            ColumnConfig(key="documento_numero", label="Documento", width=160),
+            ColumnConfig(key="total_unidades", label="Unidades", width=90),
+            ColumnConfig(
+                key="_detail",
+                label="",
+                sortable=False,
+                width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.INFO_OUTLINE,
+                    tooltip="Ver remito",
+                    icon_color=COLOR_TEXT_MUTED,
+                    on_click=lambda e, r=row: view_remito_detail(r),
+                )
+            ),
+            ColumnConfig(key="fecha_despacho", label="Despacho", width=120),
+            ColumnConfig(key="fecha_entrega", label="Entrega", width=120),
+            ColumnConfig(key="direccion_entrega", label="Dirección", width=220),
+            ColumnConfig(key="observacion", label="Observación", width=220),
+        ],
+        data_provider=create_catalog_provider(db.fetch_remitos, db.count_remitos),
+        advanced_filters=[
+            AdvancedFilterControl("entidad", rem_adv_entidad),
+            AdvancedFilterControl("estado", rem_adv_estado),
+            AdvancedFilterControl("deposito", rem_adv_deposito),
+            AdvancedFilterControl("documento", rem_adv_documento),
+            AdvancedFilterControl("desde", rem_adv_desde),
+            AdvancedFilterControl("hasta", rem_adv_hasta),
+        ],
+        show_inline_controls=False,
+        show_mass_actions=False,
+        auto_load=True,
+        page_size=40,
+        page_size_options=(20, 40, 80),
+        show_export_button=True,
+    )
+    remitos_table.search_field.hint_text = "Buscar remito o cliente..."
+
+    def refresh_remito_summary() -> None:
+        if not db:
+            return
+        try:
+            total = db.count_remitos()
+            if "remitos_total" in card_registry:
+                card_registry["remitos_total"].value = f"{total:,}"
+        except Exception:
+            pass
+
+    remito_refresh_orig = remitos_table.refresh
+
+    def _remitos_table_refresh(*args, **kwargs):
+        remito_refresh_orig(*args, **kwargs)
+        refresh_remito_summary()
+
+    remitos_table.refresh = _remitos_table_refresh  # type: ignore[attr-defined]
+
+    remitos_view = ft.Column([
+        ft.Row([
+            make_stat_card("Remitos Pendientes", "0", "LOCAL_SHIPPING_ROUNDED", COLOR_WARNING, key="remitos_pend"),
+            make_stat_card("Entregas Hoy", "0", "DONE_ALL_ROUNDED", COLOR_SUCCESS, key="remitos_entregas"),
+            make_stat_card("Total Remitos", "0", "INVENTORY_2_ROUNDED", COLOR_INFO, key="remitos_total"),
+        ], spacing=20),
+        ft.Container(height=10),
+        make_card(
+            "Remitos",
+            "Seguimiento de entregas y despachos generados automáticamente.",
+            remitos_table.build(),
+            actions=[
+                ft.ElevatedButton(
+                    "Actualizar tabla",
+                    icon=ft.Icons.REFRESH,
+                    bgcolor=COLOR_ACCENT,
+                    color="#FFFFFF",
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                    on_click=lambda _: remitos_table.refresh(),
+                )
+            ]
+        )
+    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+
+    remitos_view = ft.Container(
+        content=remitos_view,
         padding=ft.padding.only(right=10),
         expand=True
     )
@@ -4985,12 +5268,17 @@ def main(page: ft.Page) -> None:
     )
     current_view = {"key": "dashboard"}
 
+    stats_refresh_lock = threading.Lock()
+
     def refresh_all_stats():
         def _bg_work():
-            if not db: return
+            if not db:
+                return
+            if not stats_refresh_lock.acquire(blocking=False):
+                return
             try:
                 # Fetch all stats in one go using the new role-based method
-                stats = db.get_full_dashboard_stats(CURRENT_USER_ROLE)
+                stats = db.get_full_dashboard_stats(CURRENT_USER_ROLE, force_refresh=True)
                 
                 # Entidades
                 se = stats.get("entidades", {})
@@ -5032,7 +5320,17 @@ def main(page: ft.Page) -> None:
                 if "movs_ingresos" in card_registry: card_registry["movs_ingresos"].value = f"{sm.get('ingresos', 0):,}"
                 if "movs_salidas" in card_registry: card_registry["movs_salidas"].value = f"{sm.get('salidas', 0):,}"
                 if "movs_ajustes" in card_registry: card_registry["movs_ajustes"].value = f"{sm.get('ajustes', 0):,}"
-                
+
+                soper = stats.get("operativas", {})
+                if "remitos_pend" in card_registry: card_registry["remitos_pend"].value = f"{soper.get('remitos_pend', 0):,}"
+                if "remitos_entregas" in card_registry: card_registry["remitos_entregas"].value = f"{soper.get('entregas_hoy', 0):,}"
+                if "remitos_total" in card_registry:
+                    try:
+                        rem_total = db.count_remitos()
+                        card_registry["remitos_total"].value = f"{rem_total:,}"
+                    except Exception:
+                        pass
+
                 if not window_is_closing:
                     page.update()
             except (Exception, RuntimeError) as e:
@@ -5041,9 +5339,10 @@ def main(page: ft.Page) -> None:
                     err_msg = str(e).lower()
                     if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
                         print(f"Error refreshing stats: {e}")
-        
+            finally:
+                stats_refresh_lock.release()
+
         # Run in a background thread to avoid UI lag on tab switches
-        import threading
         threading.Thread(target=_bg_work, daemon=True).start()
 
     # Re-declare refresh_all_stats for set_view to use
@@ -5089,8 +5388,8 @@ def main(page: ft.Page) -> None:
     login_error = ft.Text("", color=COLOR_ERROR, size=13, visible=False)
     login_loading = ft.ProgressRing(width=20, height=20, stroke_width=2, visible=False)
     
-    main_app_container = ft.Container(visible=False, expand=True)
-    login_container = ft.Container(visible=True, expand=True)
+    main_app_container = ft.Container(visible=False, expand=True, left=0, top=0, right=0, bottom=0)
+    login_container = ft.Container(visible=True, expand=True, left=0, top=0, right=0, bottom=0)
     
     # Backup Blocking Overlay
     backup_status_title = ft.Text("Verificando Respaldos...", size=24, weight=ft.FontWeight.BOLD, color=COLOR_TEXT)
@@ -5141,6 +5440,7 @@ def main(page: ft.Page) -> None:
         bgcolor="#F1F5F9E6", # Slate 100 with high opacity for glass effect
         padding=40,
         alignment=ft.alignment.center,
+        left=0, top=0, right=0, bottom=0
     )
 
     def _set_overlay_state(
@@ -5536,6 +5836,8 @@ def main(page: ft.Page) -> None:
             refresh_articles_catalogs()
         elif key == "documentos":
             content_holder.content = documentos_view
+        elif key == "remitos":
+            content_holder.content = remitos_view
         elif key == "movimientos":
             content_holder.content = movimientos_view
         elif key == "pagos":
@@ -5569,6 +5871,7 @@ def main(page: ft.Page) -> None:
             "logs": logs_table,
             "usuarios": usuarios_table,
             "documentos": documentos_summary_table,
+            "remitos": remitos_table,
             "movimientos": movimientos_table,
             "pagos": pagos_table,
             "articulos": articulos_table,
@@ -5659,8 +5962,12 @@ def main(page: ft.Page) -> None:
                 item.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
             
             # Header visibility
-            header_sistema.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
-            header_principal.visible = True # Always visible for now
+            try:
+                header_sistema.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
+                header_principal.visible = True # Always visible for now
+                header_sistema.update()
+                header_principal.update()
+            except: pass
             
             selected = key == current_view["key"]
             item.bgcolor = "#312E81" if selected else None  # Indigo 900 for active state
@@ -5673,6 +5980,10 @@ def main(page: ft.Page) -> None:
                 text.weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
             except: pass
             item.update()
+        
+        try:
+            sidebar.update()
+        except: pass
 
     # User info display (updated after login)
     sidebar_user_name = ft.Text("Usuario", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
@@ -5698,16 +6009,20 @@ def main(page: ft.Page) -> None:
                             ft.Text("TECH SOLUTION", size=10, weight=ft.FontWeight.W_600, color=COLOR_SIDEBAR_TEXT),
                         ], spacing=-2),
                     ], spacing=12),
-                    padding=ft.padding.only(bottom=20, top=10)
+                    padding=ft.padding.only(bottom=20, top=10, left=16)
                 ),
                 ft.Container(
                     content=ft.ListView(
                         controls=[
-                            header_principal := ft.Text("NAVEGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                            header_principal := ft.Container(
+                                content=ft.Text("NAVEGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                                padding=ft.padding.only(left=16, bottom=5)
+                            ),
                             nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
                             nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
                             nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
                             nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
+                            nav_item("remitos", "Remitos", "LOCAL_SHIPPING_ROUNDED"),
                             nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
                             nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
                             nav_item("cuentas", "Cuentas Corrientes", "ACCOUNT_BALANCE_ROUNDED"),
@@ -5715,7 +6030,10 @@ def main(page: ft.Page) -> None:
                             nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
                             
                             ft.Container(height=15),
-                            header_sistema := ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                            header_sistema := ft.Container(
+                                content=ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                                padding=ft.padding.only(left=16, bottom=5)
+                            ),
                             nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
                             nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
                             nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
@@ -5726,6 +6044,7 @@ def main(page: ft.Page) -> None:
                     ),
                     padding=0, # Remove external padding
                     expand=True,
+                    bgcolor=ft.Colors.TRANSPARENT,
                 ),
                 # Logout section at bottom
                 ft.Container(
@@ -5784,6 +6103,7 @@ def main(page: ft.Page) -> None:
         ],
         expand=True,
         spacing=0,
+        vertical_alignment=ft.CrossAxisAlignment.STRETCH,
     )
     main_app_container.content = main_app_content
 
@@ -6472,7 +6792,7 @@ def main(page: ft.Page) -> None:
             if hasattr(flt.control, "on_change"):
                 flt.control.on_change = lambda _: table.refresh()
 
-    for t in [entidades_table, articulos_table, documentos_summary_table, movimientos_table, pagos_table]:
+    for t in [entidades_table, articulos_table, documentos_summary_table, movimientos_table, pagos_table, remitos_table]:
         wire_live_search(t)
 
     # Don't auto-navigate - login will call set_view after auth

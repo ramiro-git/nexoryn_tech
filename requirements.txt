@@ -9,3 +9,5 @@ APScheduler>=3.10.4
 openpyxl>=3.1.0
 fpdf2>=2.7.0
 pyinstaller
+qrcode[pil]>=7.4.2,<8.0.0
+Pillow>=10.0

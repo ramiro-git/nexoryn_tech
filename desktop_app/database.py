@@ -1,10 +1,15 @@
 import json
+import logging
+import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from psycopg.errors import ForeignKeyViolation, IntegrityError
 from psycopg_pool import ConnectionPool
+
+logger = logging.getLogger(__name__)
 
 
 def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
@@ -43,6 +48,8 @@ class Database:
         self.current_user_id: Optional[int] = None
         self.current_ip: Optional[str] = None
         self.is_closing = False
+        self._dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._dashboard_cache_lock = threading.RLock()
 
     def set_context(self, user_id: Optional[int], ip: Optional[str] = None) -> None:
         self.current_user_id = user_id
@@ -162,6 +169,7 @@ class Database:
     # =========================================================================
     _catalog_cache: Dict[str, Tuple[float, List[str]]] = {}  # {key: (timestamp, data)}
     _CACHE_TTL = 300  # 5 minutes
+    _DASHBOARD_STATS_CACHE_TTL = 30.0  # seconds
 
     def _get_cached_catalog(self, cache_key: str, query: str) -> List[str]:
         """Get catalog from cache or fetch from DB if expired."""
@@ -203,42 +211,76 @@ class Database:
         else:
             self._catalog_cache.clear()
 
+    def invalidate_dashboard_stats_cache(self, role: Optional[str] = None) -> None:
+        """Clear cached dashboard statistics for a specific role or all roles."""
+        with self._dashboard_cache_lock:
+            if role:
+                self._dashboard_stats_cache.pop(role.upper(), None)
+            else:
+                self._dashboard_stats_cache.clear()
+
     # =========================================================================
     # Batch Dashboard Statistics (single connection, fewer round-trips)
     # =========================================================================
-    def get_full_dashboard_stats(self, role: str = "EMPLEADO") -> Dict[str, Any]:
+    def get_full_dashboard_stats(self, role: str = "EMPLEADO", *, force_refresh: bool = False) -> Dict[str, Any]:
         """
         Fetch 100+ dashboard statistics filtered by user role.
         Roles: 'ADMIN', 'GERENTE', 'EMPLEADO'
         """
+        role_key = (role or "EMPLEADO").upper()
+        now = time.time()
+
+        if not force_refresh:
+            with self._dashboard_cache_lock:
+                cache_entry = self._dashboard_stats_cache.get(role_key)
+                if cache_entry and now - cache_entry[0] < self._DASHBOARD_STATS_CACHE_TTL:
+                    return cache_entry[1]
+
+        stats = self._fetch_full_dashboard_stats(role_key)
+
+        with self._dashboard_cache_lock:
+            self._dashboard_stats_cache[role_key] = (now, stats)
+
+        return stats
+
+    def _fetch_full_dashboard_stats(self, role: str) -> Dict[str, Any]:
         role = (role or "EMPLEADO").upper()
-        stats = {}
-        
+        stats: Dict[str, Any] = {}
+
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 # 1. Basic Operating Stats (Accessible to all)
                 stats["operativas"] = self._get_stats_operativas(cur, role)
-                
+
                 # 2. Sales Stats
                 stats["ventas"] = self._get_stats_ventas_extended(cur, role)
-                
+
                 # 3. Stock Stats
                 stats["stock"] = self._get_stats_stock_extended(cur, role)
-                
+
                 # 5. Entities (Clients/Providers)
                 stats["entidades"] = self._get_stats_entidades_extended(cur, role)
 
                 # 6. Movement Stats (Today summary)
                 stats["movimientos"] = self._get_stats_movimientos_extended(cur, role)
-                
+
                 # 7. Financial Stats (Restricted)
                 if role in ("ADMIN", "GERENTE"):
                     stats["finanzas"] = self._get_stats_finanzas_extended(cur, role)
-                
+
                 # 8. Technical/System Stats (Admin only)
                 if role == "ADMIN":
                     stats["sistema"] = self._get_stats_sistema_extended(cur, role)
-                    
+
+                # 9. Extended Chart Data (Accessible to ADMIN/GERENTE)
+                if role in ("ADMIN", "GERENTE"):
+                    stats["charts"] = {
+                        "ventas_mensuales": self.get_reporte_ventas(limit=6),
+                        "top_articulos": self.get_top_articulos(limit=5),
+                        "bottom_articulos": self.get_bottom_articulos(limit=5),
+                        "alertas_stock": self.get_alertas_stock(limit=5)
+                    }
+
         return stats
 
     def _get_stats_ventas_extended(self, cur, role) -> Dict[str, Any]:
@@ -601,7 +643,7 @@ class Database:
                         "rol": rol
                     }
         except Exception as e:
-            print(f"Error during authentication: {e}")
+            logger.error("Error during authentication", exc_info=e)
             return None
     
     def _log_login_attempt(self, user_id: Optional[int], identifier: str, success: bool, detail: str = None) -> None:
@@ -636,7 +678,7 @@ class Database:
                     ))
                     conn.commit()
         except Exception as e:
-            print(f"Error logging login attempt: {e}")
+            logger.error("Error logging login attempt", exc_info=e)
 
 
     def get_reporte_ventas(self, limit: int = 12) -> List[Dict[str, Any]]:
@@ -648,6 +690,40 @@ class Database:
 
     def get_top_articulos(self, limit: int = 10) -> List[Dict[str, Any]]:
         query = "SELECT * FROM app.v_top_articulos_mes LIMIT %s"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
+
+    def get_bottom_articulos(self, limit: int = 10) -> List[Dict[str, Any]]:
+        query = """
+            SELECT 
+                a.id, a.nombre,
+                COALESCE(SUM(dd.cantidad), 0) as cantidad_vendida,
+                COALESCE(SUM(dd.total_linea), 0) as total_facturado
+            FROM app.articulo a
+            LEFT JOIN app.documento_detalle dd ON a.id = dd.id_articulo
+            LEFT JOIN app.documento d ON dd.id_documento = d.id
+            WHERE a.activo = true
+              AND (d.id IS NULL OR (d.fecha >= date_trunc('month', now()) AND d.estado IN ('CONFIRMADO', 'PAGADO')))
+            GROUP BY a.id, a.nombre
+            ORDER BY total_facturado ASC, cantidad_vendida ASC
+            LIMIT %s
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
+
+    def get_alertas_stock(self, limit: int = 10) -> List[Dict[str, Any]]:
+        query = """
+            SELECT id, nombre, stock_actual, stock_minimo, 
+                   (stock_minimo - stock_actual) as faltante
+            FROM app.v_articulo_detallado
+            WHERE stock_actual <= stock_minimo AND activo = true
+            ORDER BY faltante DESC
+            LIMIT %s
+        """
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (limit,))
@@ -1313,7 +1389,7 @@ class Database:
                     self.log_activity("app.articulo", "UPDATE", article_id, detalle={"activo": active})
                     return True
         except Exception as e:
-            print(f"Error updating article status: {e}")
+            logger.error("Error updating article status", exc_info=e)
             return False
 
     def fetch_stock_alerts(
@@ -2759,6 +2835,147 @@ class Database:
                 if res is None: return 0
                 return res.get("total", 0) if isinstance(res, dict) else res[0]
 
+    def fetch_remitos(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 60, offset: int = 0) -> List[Dict[str, Any]]:
+        filters = ["1=1"]
+        params: List[Any] = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 3)
+
+        estado = advanced.get("estado")
+        if estado and estado not in ("Todos", "Todas", "---", ""):
+            filters.append("estado = %s")
+            params.append(estado)
+
+        deposito = advanced.get("deposito")
+        if deposito and str(deposito).strip() not in ("Todos", "Todas", "---", "0", ""):
+            filters.append("id_deposito = %s")
+            params.append(int(deposito))
+
+        entidad = advanced.get("entidad")
+        if entidad:
+            filters.append("lower(entidad) LIKE %s")
+            params.append(f"%{entidad.lower().strip()}%")
+
+        documento = advanced.get("documento")
+        if documento:
+            filters.append("lower(documento_numero) LIKE %s")
+            params.append(f"%{documento.lower().strip()}%")
+
+        desde = advanced.get("desde")
+        if desde:
+            filters.append("fecha >= %s")
+            params.append(desde)
+
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("fecha <= %s")
+            params.append(hasta)
+
+        entidad_id = _to_id(advanced.get("id_entidad"))
+        if entidad_id:
+            filters.append("id_entidad_comercial = %s")
+            params.append(entidad_id)
+
+        where_clause = " AND ".join(filters)
+        sort_columns = {
+            "id": "id",
+            "numero": "numero",
+            "fecha": "fecha",
+            "estado": "estado",
+            "entidad": "entidad",
+            "deposito": "deposito",
+            "documento_numero": "documento_numero",
+            "total_unidades": "total_unidades",
+        }
+        order_by = self._build_order_by(sorts, sort_columns, default="fecha DESC")
+        query = f"""
+            SELECT
+                id, numero, fecha, estado, entidad, id_entidad_comercial,
+                deposito, id_deposito, id_documento, documento_numero, documento_estado,
+                direccion_entrega, observacion, fecha_despacho, fecha_entrega,
+                usuario, total_unidades
+            FROM app.v_remito_resumen
+            WHERE {where_clause}
+            ORDER BY {order_by}
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return _rows_to_dicts(cur)
+
+    def count_remitos(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
+        filters = ["1=1"]
+        params: List[Any] = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 3)
+
+        estado = advanced.get("estado")
+        if estado and estado not in ("Todos", "Todas", "---", ""):
+            filters.append("estado = %s")
+            params.append(estado)
+
+        deposito = advanced.get("deposito")
+        if deposito and str(deposito).strip() not in ("Todos", "Todas", "---", "0", ""):
+            filters.append("id_deposito = %s")
+            params.append(int(deposito))
+
+        entidad = advanced.get("entidad")
+        if entidad:
+            filters.append("lower(entidad) LIKE %s")
+            params.append(f"%{entidad.lower().strip()}%")
+
+        documento = advanced.get("documento")
+        if documento:
+            filters.append("lower(documento_numero) LIKE %s")
+            params.append(f"%{documento.lower().strip()}%")
+
+        desde = advanced.get("desde")
+        if desde:
+            filters.append("fecha >= %s")
+            params.append(desde)
+
+        hasta = advanced.get("hasta")
+        if hasta:
+            filters.append("fecha <= %s")
+            params.append(hasta)
+
+        entidad_id = _to_id(advanced.get("id_entidad"))
+        if entidad_id:
+            filters.append("id_entidad_comercial = %s")
+            params.append(entidad_id)
+
+        where_clause = " AND ".join(filters)
+        query = f"SELECT COUNT(*) as total FROM app.v_remito_resumen WHERE {where_clause}"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                res = cur.fetchone()
+                if res is None:
+                    return 0
+                return res.get("total", 0) if isinstance(res, dict) else res[0]
+
+    def fetch_remito_detalle(self, remito_id: int) -> List[Dict[str, Any]]:
+        query = """
+            SELECT rd.nro_linea, a.nombre AS articulo, rd.cantidad, rd.observacion, rd.id_articulo
+            FROM app.remito_detalle rd
+            JOIN app.articulo a ON a.id = rd.id_articulo
+            WHERE rd.id_remito = %s
+            ORDER BY rd.nro_linea
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (remito_id,))
+                return _rows_to_dicts(cur)
+
     def create_tipo_porcentaje(self, tipo: str) -> int:
         query = "INSERT INTO ref.tipo_porcentaje (tipo) VALUES (%s) RETURNING id"
         try:
@@ -3815,6 +4032,7 @@ class Database:
                     # Use a small epsilon for float comparison
                     if total_paid >= (doc_total - 0.01):
                         cur.execute("UPDATE app.documento SET estado = 'PAGADO' WHERE id = %s", (id_documento,))
+                        self._ensure_remito_for_document(cur, id_documento)
 
                 conn.commit()
                 return payment_id
@@ -3949,6 +4167,36 @@ class Database:
                 rows = _rows_to_dicts(cur)
                 return rows[0] if rows else None
 
+    def get_entity_detail(self, entity_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch entity metadata useful for printing."""
+        query = """
+            SELECT
+                id,
+                nombre_completo,
+                razon_social,
+                apellido,
+                nombre,
+                cuit,
+                domicilio,
+                localidad,
+                provincia,
+                condicion_iva,
+                telefono,
+                email,
+                tipo,
+                activo
+            FROM app.v_entidad_detallada
+            WHERE id = %s
+            LIMIT 1
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (entity_id,))
+                rows = _rows_to_dicts(cur)
+                if not rows:
+                    return None
+                return rows[0]
+
     def list_articulos_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
         query = f"SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
         with self.pool.connection() as conn:
@@ -4001,9 +4249,10 @@ class Database:
                     WHERE d.id = %s
                       AND d.estado = 'BORRADOR'
                       AND td.id = d.id_tipo_documento
-                    RETURNING d.id, d.id_deposito, td.clase, td.afecta_stock
+                    RETURNING d.id, d.id_deposito, d.id_entidad_comercial, d.direccion_entrega, d.observacion, d.numero_serie,
+                              td.clase, td.afecta_stock
                 )
-                SELECT id, id_deposito, clase, afecta_stock FROM updated
+                SELECT id, id_deposito, id_entidad_comercial, direccion_entrega, observacion, numero_serie, clase, afecta_stock FROM updated
                 """,
                 (doc_id,),
             )
@@ -4011,9 +4260,26 @@ class Database:
             if not doc:
                 raise Exception("Comprobante no encontrado o ya confirmado.")
 
-            depo_id = doc[1] if isinstance(doc, (list, tuple)) else doc["id_deposito"]
-            clase = doc[2] if isinstance(doc, (list, tuple)) else doc["clase"]
-            afecta_stk = doc[3] if isinstance(doc, (list, tuple)) else doc["afecta_stock"]
+            if isinstance(doc, dict):
+                doc_id = doc["id"]
+                depo_id = doc["id_deposito"]
+                entidad_id = doc.get("id_entidad_comercial")
+                direccion = doc.get("direccion_entrega")
+                observacion = doc.get("observacion")
+                doc_numero = doc.get("numero_serie")
+                clase = doc["clase"]
+                afecta_stk = doc["afecta_stock"]
+            else:
+                (
+                    doc_id,
+                    depo_id,
+                    entidad_id,
+                    direccion,
+                    observacion,
+                    doc_numero,
+                    clase,
+                    afecta_stk,
+                ) = doc
 
             if afecta_stk:
                 id_tipo_mov = 2 if clase == "VENTA" else 1
@@ -4026,6 +4292,174 @@ class Database:
                     """,
                     (id_tipo_mov, depo_id, doc_id, clase, self.current_user_id, doc_id),
                 )
+            if clase == "VENTA":
+                self._ensure_remito_for_document(
+                    cur,
+                    doc_id,
+                    doc_meta={
+                        "clase": clase,
+                        "id_entidad_comercial": entidad_id,
+                        "id_deposito": depo_id,
+                        "direccion_entrega": direccion,
+                        "observacion": observacion,
+                        "numero_serie": doc_numero,
+                    },
+                )
+
+    def _get_any_deposito_id(self, cur) -> int:
+        cur.execute("SELECT id FROM ref.deposito ORDER BY id LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            return 1
+        if isinstance(row, dict):
+            val = row.get("id")
+        else:
+            val = row[0]
+        return val or 1
+
+    def _build_remito_number(self, cur, doc_numero: Optional[str]) -> str:
+        candidate = (doc_numero or "").strip()
+        if candidate:
+            return candidate
+        cur.execute(
+            "SELECT COALESCE(MAX((numero::bigint)) FILTER (WHERE numero ~ '^[0-9]+$'), 0) + 1 AS next_val FROM app.remito"
+        )
+        row = cur.fetchone()
+        if not row:
+            return "1"
+        if isinstance(row, dict):
+            next_val = row.get("next_val")
+        else:
+            next_val = row[0]
+        try:
+            numeric = int(next_val)
+        except (TypeError, ValueError):
+            numeric = 1
+        return str(numeric)
+
+    def _insert_remito_detalle_from_document(self, cur, doc_id: int, remito_id: int) -> None:
+        cur.execute(
+            """
+            SELECT id_articulo, cantidad, observacion
+            FROM app.documento_detalle
+            WHERE id_documento = %s
+            ORDER BY nro_linea
+            """,
+            (doc_id,),
+        )
+        detalle = cur.fetchall()
+        if not detalle:
+            return
+
+        entries = []
+        for idx, rec in enumerate(detalle, 1):
+            art_id = rec[0]
+            cantidad = rec[1]
+            obs = rec[2] if len(rec) > 2 else None
+            entries.append((remito_id, idx, art_id, cantidad, obs))
+
+        cur.executemany(
+            """
+            INSERT INTO app.remito_detalle (
+                id_remito, nro_linea, id_articulo, cantidad, observacion
+            ) VALUES (%s, %s, %s, %s, %s)
+            """,
+            entries,
+        )
+
+    def _insert_remito_from_metadata(self, cur, doc_id: int, metadata: Dict[str, Any]) -> Optional[int]:
+        entidad_id = metadata.get("id_entidad_comercial")
+        if not entidad_id:
+            return None
+
+        deposit_id = metadata.get("id_deposito") or self._get_any_deposito_id(cur)
+        numero = self._build_remito_number(cur, metadata.get("numero_serie"))
+
+        cur.execute(
+            """
+            INSERT INTO app.remito (
+                numero, id_documento, id_entidad_comercial, id_deposito,
+                direccion_entrega, observacion, id_usuario
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                numero,
+                doc_id,
+                entidad_id,
+                deposit_id,
+                metadata.get("direccion_entrega"),
+                metadata.get("observacion"),
+                self.current_user_id,
+            ),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        remito_id = row[0] if not isinstance(row, dict) else row.get("id")
+        if not remito_id:
+            return None
+
+        self._insert_remito_detalle_from_document(cur, doc_id, remito_id)
+        return remito_id
+
+    def _fetch_document_metadata(self, cur, doc_id: int) -> Optional[Dict[str, Any]]:
+        cur.execute(
+            """
+            SELECT
+                d.id_entidad_comercial,
+                d.id_deposito,
+                d.direccion_entrega,
+                d.observacion,
+                d.numero_serie,
+                td.clase
+            FROM app.documento d
+            JOIN ref.tipo_documento td ON td.id = d.id_tipo_documento
+            WHERE d.id = %s
+            """,
+            (doc_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        if isinstance(row, dict):
+            return {
+                "id_entidad_comercial": row.get("id_entidad_comercial"),
+                "id_deposito": row.get("id_deposito"),
+                "direccion_entrega": row.get("direccion_entrega"),
+                "observacion": row.get("observacion"),
+                "numero_serie": row.get("numero_serie"),
+                "clase": row.get("clase"),
+            }
+
+        return {
+            "id_entidad_comercial": row[0],
+            "id_deposito": row[1],
+            "direccion_entrega": row[2],
+            "observacion": row[3],
+            "numero_serie": row[4],
+            "clase": row[5],
+        }
+
+    def _ensure_remito_for_document(self, cur, doc_id: int, *, doc_meta: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        metadata = doc_meta or self._fetch_document_metadata(cur, doc_id)
+        if not metadata:
+            return None
+
+        if str(metadata.get("clase") or "").upper() != "VENTA":
+            return None
+
+        entidad_id = metadata.get("id_entidad_comercial")
+        if not entidad_id:
+            return None
+
+        cur.execute("SELECT id FROM app.remito WHERE id_documento = %s LIMIT 1", (doc_id,))
+        existing = cur.fetchone()
+        if existing:
+            return existing.get("id") if isinstance(existing, dict) else existing[0]
+
+        return self._insert_remito_from_metadata(cur, doc_id, metadata)
 
     def update_document_afip_data(
         self,
@@ -4056,6 +4490,7 @@ class Database:
                 """,
                 (cae, cae_vencimiento, punto_venta, tipo_comprobante_afip, cuit_emisor, qr_data, doc_id),
             )
+            self._ensure_remito_for_document(cur, doc_id)
 
         # Opcional: registrar actividad (fuera de la transacción principal)
         self.log_activity(
@@ -4603,3 +5038,153 @@ class Database:
             limit=limit,
             sorts=[("fecha", "DESC")]
         )
+
+    def fetch_remitos(
+        self,
+        search: Optional[str] = None,
+        simple: Optional[str] = None,
+        advanced: Optional[Dict[str, Any]] = None,
+        sorts: Optional[Sequence[Tuple[str, str]]] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Fetch remitos with filtering and sorting."""
+        filters = ["1=1"]
+        params = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 3)
+
+        entidad = advanced.get("entidad")
+        if entidad and str(entidad) not in ("", "0", "Todas"):
+            if str(entidad).isdigit():
+                filters.append("id_entidad_comercial = %s")
+                params.append(int(entidad))
+            else:
+                filters.append("lower(entidad) LIKE %s")
+                params.append(f"%{entidad.lower().strip()}%")
+
+        if advanced.get("estado"):
+            filters.append("estado = %s")
+            params.append(advanced["estado"])
+
+        if advanced.get("deposito"):
+             if str(advanced["deposito"]).isdigit():
+                filters.append("id_deposito = %s")
+                params.append(int(advanced["deposito"]))
+
+        if advanced.get("documento"):
+             filters.append("(lower(documento_numero) LIKE %s)")
+             params.append(f"%{advanced['documento'].lower().strip()}%")
+
+        if advanced.get("desde"):
+            filters.append("fecha >= %s")
+            params.append(advanced["desde"])
+
+        if advanced.get("hasta"):
+            filters.append("fecha <= %s")
+            params.append(advanced["hasta"])
+
+        where_clause = " AND ".join(filters)
+
+        # Mapping for sort columns
+        sort_cols = {
+            "numero": "numero",
+            "fecha": "fecha",
+            "estado": "estado",
+            "entidad": "entidad",
+            "deposito": "deposito",
+            "documento_numero": "documento_numero",
+            "fecha_despacho": "fecha_despacho",
+            "fecha_entrega": "fecha_entrega"
+        }
+        order_by = self._build_order_by(sorts, sort_cols, default="fecha DESC, numero DESC")
+
+        query = f"""
+            SELECT * FROM app.v_remito_resumen
+            WHERE {where_clause}
+            ORDER BY {order_by}
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return _rows_to_dicts(cur)
+
+    def count_remitos(
+        self,
+        search: Optional[str] = None,
+        simple: Optional[str] = None,
+        advanced: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Count remitos with filtering."""
+        filters = ["1=1"]
+        params = []
+        advanced = advanced or {}
+
+        if search:
+            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
+            params.extend([f"%{search.lower().strip()}%"] * 3)
+
+        entidad = advanced.get("entidad")
+        if entidad and str(entidad) not in ("", "0", "Todas"):
+            if str(entidad).isdigit():
+                filters.append("id_entidad_comercial = %s")
+                params.append(int(entidad))
+            else:
+                filters.append("lower(entidad) LIKE %s")
+                params.append(f"%{entidad.lower().strip()}%")
+
+        if advanced.get("estado"):
+            filters.append("estado = %s")
+            params.append(advanced["estado"])
+
+        if advanced.get("deposito"):
+             if str(advanced["deposito"]).isdigit():
+                filters.append("id_deposito = %s")
+                params.append(int(advanced["deposito"]))
+
+        if advanced.get("documento"):
+             filters.append("(lower(documento_numero) LIKE %s)")
+             params.append(f"%{advanced['documento'].lower().strip()}%")
+
+        if advanced.get("desde"):
+            filters.append("fecha >= %s")
+            params.append(advanced["desde"])
+
+        if advanced.get("hasta"):
+            filters.append("fecha <= %s")
+            params.append(advanced["hasta"])
+
+        where_clause = " AND ".join(filters)
+
+        query = f"SELECT COUNT(*) FROM app.v_remito_resumen WHERE {where_clause}"
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                res = cur.fetchone()
+                return res[0] if res else 0
+
+    def fetch_remito_detalle(self, remito_id: int) -> List[Dict[str, Any]]:
+        """Obtiene el detalle de items de un remito."""
+        query = """
+            SELECT 
+                rd.nro_linea,
+                rd.id_articulo,
+                a.nombre AS articulo,
+                rd.cantidad,
+                rd.observacion
+            FROM app.remito_detalle rd
+            JOIN app.articulo a ON a.id = rd.id_articulo
+            WHERE rd.id_remito = %s
+            ORDER BY rd.nro_linea
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (remito_id,))
+                return _rows_to_dicts(cur)

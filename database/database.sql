@@ -416,6 +416,54 @@ LEFT JOIN ref.tipo_documento td ON doc.id_tipo_documento = td.id
 LEFT JOIN app.entidad_comercial ec ON doc.id_entidad_comercial = ec.id
 LEFT JOIN seguridad.usuario u ON m.id_usuario = u.id;
 
+DROP VIEW IF EXISTS app.v_remito_resumen CASCADE;
+CREATE OR REPLACE VIEW app.v_remito_resumen AS
+SELECT
+  r.id,
+  r.numero,
+  r.fecha,
+  r.estado,
+  r.id_entidad_comercial,
+  COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
+  r.id_deposito,
+  d.nombre AS deposito,
+  r.id_documento,
+  doc.numero_serie AS documento_numero,
+  doc.estado AS documento_estado,
+  r.direccion_entrega,
+  r.observacion,
+  r.fecha_despacho,
+  r.fecha_entrega,
+  r.id_usuario,
+  u.nombre AS usuario,
+  COALESCE(SUM(rd.cantidad), 0) AS total_unidades
+FROM app.remito r
+JOIN app.entidad_comercial ec ON ec.id = r.id_entidad_comercial
+JOIN ref.deposito d ON d.id = r.id_deposito
+LEFT JOIN app.documento doc ON doc.id = r.id_documento
+LEFT JOIN seguridad.usuario u ON u.id = r.id_usuario
+LEFT JOIN app.remito_detalle rd ON rd.id_remito = r.id
+GROUP BY
+  r.id,
+  r.numero,
+  r.fecha,
+  r.estado,
+  r.id_entidad_comercial,
+  ec.razon_social,
+  ec.apellido,
+  ec.nombre,
+  r.id_deposito,
+  d.nombre,
+  r.id_documento,
+  doc.numero_serie,
+  doc.estado,
+  r.direccion_entrega,
+  r.observacion,
+  r.fecha_despacho,
+  r.fecha_entrega,
+  r.id_usuario,
+  u.nombre;
+
 DROP VIEW IF EXISTS app.v_documento_resumen CASCADE;
 CREATE OR REPLACE VIEW app.v_documento_resumen AS
 SELECT

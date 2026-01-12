@@ -182,12 +182,18 @@ class BackupIncrementalService:
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
         WHERE tipo_backup = 'INCREMENTAL' AND estado = 'COMPLETADO'
+        """
+        params: List[Any] = []
+        if base_id is not None:
+            query += " AND backup_base_id = %s"
+            params.append(base_id)
+        query += """
         ORDER BY fecha_inicio DESC
         LIMIT 1
         """
         with self.db.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (base_id,) if base_id else ())
+                cur.execute(query, tuple(params))
                 row = cur.fetchone()
                 if not row:
                     return None

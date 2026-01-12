@@ -399,32 +399,63 @@ class BackupManager:
         result = {}
         
         full_schedule = self.schedules['FULL']
-        next_full = now.replace(day=1, hour=full_schedule['hour'], minute=full_schedule['minute'], second=0, microsecond=0)
+        full_hour = int(full_schedule.get('hour', 0))
+        full_minute = int(full_schedule.get('minute', 0))
+        full_day = int(full_schedule.get('day', 1))
+        next_full = self._build_scheduled_datetime(
+            year=now.year,
+            month=now.month,
+            day=full_day,
+            hour=full_hour,
+            minute=full_minute,
+        )
         if now >= next_full:
-            if now.month == 12:
-                next_full = next_full.replace(year=now.year + 1, month=1)
-            else:
-                next_full = next_full.replace(month=now.month + 1)
-        result['FULL'] = {'next_run': next_full, 'schedule': f"Día {full_schedule['day']} a {full_schedule['hour']:02d}:{full_schedule['minute']:02d}"}
-        
+            next_month = now.month + 1
+            next_year = now.year
+            if next_month > 12:
+                next_month = 1
+                next_year += 1
+            next_full = self._build_scheduled_datetime(
+                year=next_year,
+                month=next_month,
+                day=full_day,
+                hour=full_hour,
+                minute=full_minute,
+            )
+        result['FULL'] = {
+            'next_run': next_full,
+            'schedule': f"Día {full_day} a {full_hour:02d}:{full_minute:02d}"
+        }
+
         dif_schedule = self.schedules['DIFERENCIAL']
-        days_until_sunday = (6 - now.weekday()) % 7
-        if days_until_sunday == 0:
-            next_dif = now.replace(hour=dif_schedule['hour'], minute=dif_schedule['minute'], second=0, microsecond=0)
-            if now >= next_dif:
-                days_until_sunday = 7
-                next_dif = next_dif + timedelta(days=days_until_sunday)
-                next_dif = next_dif.replace(hour=dif_schedule['hour'], minute=dif_schedule['minute'], second=0, microsecond=0)
-        else:
-            next_dif = now + timedelta(days=days_until_sunday)
-            next_dif = next_dif.replace(hour=dif_schedule['hour'], minute=dif_schedule['minute'], second=0, microsecond=0)
-        result['DIFERENCIAL'] = {'next_run': next_dif, 'schedule': f"Domingos a {dif_schedule['hour']:02d}:{dif_schedule['minute']:02d}"}
-        
+        dif_weekday = int(dif_schedule.get('weekday', 6))
+        dif_hour = int(dif_schedule.get('hour', 23))
+        dif_minute = int(dif_schedule.get('minute', 30))
+        dif_days_ahead = (dif_weekday - now.weekday()) % 7
+        next_dif = now + timedelta(days=dif_days_ahead)
+        next_dif = next_dif.replace(hour=dif_hour, minute=dif_minute, second=0, microsecond=0)
+        if next_dif <= now:
+            next_dif = next_dif + timedelta(days=7)
+        weekday_names = {
+            0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
+            4: "Viernes", 5: "Sábado", 6: "Domingo"
+        }
+        weekday_label = weekday_names.get(dif_weekday, f"Día {dif_weekday}")
+        result['DIFERENCIAL'] = {
+            'next_run': next_dif,
+            'schedule': f"{weekday_label} a las {dif_hour:02d}:{dif_minute:02d}"
+        }
+
         inc_schedule = self.schedules['INCREMENTAL']
-        next_inc = now.replace(hour=inc_schedule['hour'], minute=inc_schedule['minute'], second=0, microsecond=0)
+        inc_hour = int(inc_schedule.get('hour', 23))
+        inc_minute = int(inc_schedule.get('minute', 0))
+        next_inc = now.replace(hour=inc_hour, minute=inc_minute, second=0, microsecond=0)
         if now >= next_inc:
             next_inc = next_inc + timedelta(days=1)
-        result['INCREMENTAL'] = {'next_run': next_inc, 'schedule': f"Diario a las {inc_schedule['hour']:02d}:{inc_schedule['minute']:02d}"}
+        result['INCREMENTAL'] = {
+            'next_run': next_inc,
+            'schedule': f"Diario a las {inc_hour:02d}:{inc_minute:02d}"
+        }
         
         return result
     

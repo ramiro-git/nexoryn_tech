@@ -2,7 +2,7 @@ import flet as ft
 import datetime
 import threading
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, Tuple
 from desktop_app.database import Database
 
 class DashboardView(ft.Container):
@@ -152,11 +152,27 @@ class DashboardView(ft.Container):
         self.sections_column.controls.append(
             self._section_container("VENTAS", ft.Icons.SHOPPING_CART_ROUNDED, self._build_ventas_section(), "documentos")
         )
+
+        # Operativa Section
+        chart_icon = getattr(ft.Icons, "SHOW_CHART_ROUNDED", None)
+        if not chart_icon:
+            chart_icon = getattr(ft.Icons, "SHOW_CHART", None)
+        if not chart_icon:
+            chart_icon = ft.Icons.DESCRIPTION_ROUNDED
+        self.sections_column.controls.append(
+            self._section_container("OPERATIVA Y MOVIMIENTOS", chart_icon, self._build_operativa_section(), "movimientos")
+        )
         
         # Stock Section
         self.sections_column.controls.append(
             self._section_container("STOCK e INVENTARIO", ft.Icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
         )
+        
+        # Analítica de Productos (ADMIN/GERENTE)
+        if self.role in ("ADMIN", "GERENTE"):
+            self.sections_column.controls.append(
+                self._section_container("ANALÍTICA DE PRODUCTOS", ft.Icons.ANALYTICS_ROUNDED, self._build_analitica_section(), "articulos")
+            )
         
         # Entidades Section
         self.sections_column.controls.append(
@@ -224,64 +240,408 @@ class DashboardView(ft.Container):
             ft.Text(str(value), size=16, weight=ft.FontWeight.BOLD, color=color),
         ], spacing=2)
 
+    def _format_number(self, value: Any, decimals: int = 0, prefix: str = "") -> str:
+        if value is None:
+            return "—"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return f"{prefix}{number:,.{decimals}f}"
+
+    def _as_number(self, value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _chart_panel(self, title: str, content: ft.Control, width: int = 360) -> ft.Container:
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(title, size=12, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT_MUTED),
+                content,
+            ], spacing=8, tight=True),
+            padding=15,
+            bgcolor="#F8FAFC",
+            border_radius=12,
+            border=ft.border.all(1, self.COLOR_BORDER),
+            width=width,
+        )
+
+    def _bar_chart(
+        self,
+        items: List[Tuple[str, Any]],
+        *,
+        color: str,
+        value_formatter: Callable[[Any], str],
+        empty_text: str = "Sin datos",
+    ) -> ft.Control:
+        if not items:
+            return ft.Text(empty_text, size=12, color=self.COLOR_TEXT_MUTED)
+
+        values = []
+        max_val = 0.0
+        for label, raw in items:
+            num = self._as_number(raw)
+            values.append((label, raw, num))
+            if num > max_val:
+                max_val = num
+
+        if max_val <= 0:
+            max_val = 1.0
+
+        bars = []
+        for label, raw, num in values:
+            ratio = max(min(num / max_val, 1.0), 0.0)
+            bars.append(ft.Column([
+                ft.Row([
+                    ft.Text(label, size=11, color=self.COLOR_TEXT_MUTED, expand=True),
+                    ft.Text(value_formatter(raw), size=11, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.ProgressBar(value=ratio, color=color, bgcolor=self.COLOR_BORDER),
+            ], spacing=4))
+
+        return ft.Column(bars, spacing=8)
+
+    def _pie_chart(self, data: Dict[str, float], colors: List[str] = None) -> ft.Control:
+        if not data:
+            return ft.Text("Sin datos", size=12, color=self.COLOR_TEXT_MUTED)
+        
+        if not colors:
+            colors = [self.COLOR_PRIMARY, self.COLOR_INFO, self.COLOR_SUCCESS, self.COLOR_WARNING, self.COLOR_ERROR, "#8B5CF6", "#EC4899"]
+        
+        sections = []
+        for i, (label, val) in enumerate(data.items()):
+            if val <= 0: continue
+            sections.append(
+                ft.PieChartSection(
+                    val,
+                    title=f"{val:,.0f}" if val > 1000 else str(val),
+                    title_style=ft.TextStyle(size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                    color=colors[i % len(colors)],
+                    radius=30,
+                )
+            )
+        
+        if not sections:
+            return ft.Text("Sin datos significativos", size=12, color=self.COLOR_TEXT_MUTED)
+
+        return ft.Row([
+            ft.PieChart(
+                sections=sections,
+                sections_space=2,
+                center_space_radius=20,
+                expand=True,
+                height=120,
+            ),
+            ft.Column([
+                ft.Row([
+                    ft.Container(width=10, height=10, bgcolor=colors[i % len(colors)], border_radius=2),
+                    ft.Text(label, size=10, color=self.COLOR_TEXT_MUTED)
+                ], spacing=5) for i, (label, val) in enumerate(data.items()) if val > 0
+            ], spacing=3, scroll=ft.ScrollMode.AUTO, height=120)
+        ], spacing=10, alignment=ft.MainAxisAlignment.CENTER)
+
+    def _line_chart(self, history: List[Dict[str, Any]]) -> ft.Control:
+        if not history:
+            return ft.Text("Sin historial disponible", size=12, color=self.COLOR_TEXT_MUTED)
+        
+        # Sort history by date ascending if it's descending
+        history = sorted(history, key=lambda x: x['mes'])
+        
+        data_points = []
+        max_val = 0
+        for i, h in enumerate(history):
+            val = float(h.get('total_ventas') or 0)
+            if val > max_val: max_val = val
+            data_points.append(ft.LineChartDataPoint(i, val))
+        
+        if max_val == 0: max_val = 1000
+
+        return ft.LineChart(
+            data_series=[
+                ft.LineChartData(
+                    data_points=data_points,
+                    stroke_width=3,
+                    color=self.COLOR_PRIMARY,
+                    curved=True,
+                    below_line_bgcolor=ft.Colors.with_opacity(0.1, self.COLOR_PRIMARY),
+                    below_line_gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_center,
+                        end=ft.alignment.bottom_center,
+                        colors=[ft.Colors.with_opacity(0.2, self.COLOR_PRIMARY), ft.Colors.with_opacity(0, self.COLOR_PRIMARY)]
+                    )
+                )
+            ],
+            bottom_axis=ft.ChartAxis(
+                labels=[
+                    ft.ChartAxisLabel(
+                        value=i,
+                        label=ft.Text(h['mes'].strftime('%b') if hasattr(h['mes'], 'strftime') else str(h['mes'])[:7], size=10, color=self.COLOR_TEXT_MUTED)
+                    ) for i, h in enumerate(history)
+                ],
+                labels_size=20,
+            ),
+            left_axis=ft.ChartAxis(
+                labels=[
+                    ft.ChartAxisLabel(value=0, label=ft.Text("0", size=10, color=self.COLOR_TEXT_MUTED)),
+                    ft.ChartAxisLabel(value=max_val, label=ft.Text(f"${max_val/1000:,.0f}k", size=10, color=self.COLOR_TEXT_MUTED)),
+                ],
+                labels_size=40,
+            ),
+            border=ft.Border(bottom=ft.BorderSide(1, self.COLOR_BORDER)),
+            horizontal_grid_lines=ft.ChartGridLines(interval=max_val/2, color=self.COLOR_BORDER, width=0.5),
+            expand=True,
+            height=150,
+        )
+
+    def _real_bar_chart(self, items: List[Dict[str, Any]], color: str = None) -> ft.Control:
+        if not items:
+            return ft.Text("Sin datos", size=12, color=self.COLOR_TEXT_MUTED)
+        
+        if not color: color = self.COLOR_PRIMARY
+        
+        groups = []
+        max_val = 0
+        for i, item in enumerate(items):
+            val = float(item.get('total_facturado') or item.get('cantidad_vendida') or 0)
+            if val > max_val: max_val = val
+            groups.append(
+                ft.BarChartGroup(
+                    x=i,
+                    bar_rods=[
+                        ft.BarChartRod(
+                            from_y=0,
+                            to_y=val,
+                            width=15,
+                            color=color,
+                            border_radius=3,
+                        )
+                    ]
+                )
+            )
+        
+        if max_val == 0: max_val = 1
+        
+        return ft.BarChart(
+            bar_groups=groups,
+            bottom_axis=ft.ChartAxis(
+                labels=[
+                    ft.ChartAxisLabel(
+                        value=i,
+                        label=ft.Text(item.get('nombre', '')[:8], size=9, color=self.COLOR_TEXT_MUTED, text_align=ft.TextAlign.CENTER)
+                    ) for i, item in enumerate(items)
+                ],
+                labels_size=25,
+            ),
+            left_axis=ft.ChartAxis(
+                labels=[
+                    ft.ChartAxisLabel(value=0, label=ft.Text("0", size=9, color=self.COLOR_TEXT_MUTED)),
+                    ft.ChartAxisLabel(value=max_val, label=ft.Text(f"{max_val:,.0f}", size=9, color=self.COLOR_TEXT_MUTED)),
+                ],
+                labels_size=35,
+            ),
+            border=ft.Border(bottom=ft.BorderSide(1, self.COLOR_BORDER)),
+            horizontal_grid_lines=ft.ChartGridLines(interval=max_val/2, color=self.COLOR_BORDER, width=0.5),
+            expand=True,
+            height=150,
+        )
+
     def _build_ventas_section(self) -> ft.Control:
         v = self.stats.get("ventas", {})
+        charts = self.stats.get("charts", {})
+        
         return ft.Column([
             ft.Row([
                 self._stat_item("Ventas Semana", f"${v.get('semana_total', 0)}"),
                 self._stat_item("Ventas Mes", f"${v.get('mes_total', 0)}", self.COLOR_PRIMARY),
                 self._stat_item("Ventas Año", f"${v.get('anio_total', 0)}"),
+                self._stat_item("Ticket Prom. Hoy", self._format_number(v.get("hoy_ticket_prom"), 2, "$"), self.COLOR_INFO),
                 self._stat_item("Presup. Pénd.", v.get("presupuestos_pend", 0)),
                 self._stat_item("Anulados Mes", v.get("anulados_mes", 0), self.COLOR_ERROR),
             ], wrap=True, spacing=40),
-            ft.Container(height=10),
+            ft.Divider(height=20, color="transparent"),
             ft.Row([
-                ft.Column([
-                    ft.Text("Ventas por Tipo (Mes)", size=12, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT_MUTED),
-                    ft.Row([
-                        self._badge(k, str(v)) for k, v in v.get("por_tipo", {}).items()
-                    ], wrap=True)
-                ], expand=True),
-                ft.Column([
-                    ft.Text("Por Forma de Pago", size=12, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT_MUTED),
-                    ft.Row([
-                        self._badge(k, f"${v}") for k, v in v.get("por_forma_pago", {}).items()
-                    ], wrap=True)
-                ], expand=True)
-            ], spacing=20)
+                self._chart_panel(
+                    "Tendencia de Ventas (Mensual)",
+                    self._line_chart(charts.get("ventas_mensuales", [])),
+                    width=550
+                ),
+                self._chart_panel(
+                    "Mix de Documentos",
+                    self._pie_chart(v.get("por_tipo", {})),
+                    width=350
+                ),
+                self._chart_panel(
+                    "Participación Formas de Pago",
+                    self._pie_chart(v.get("por_forma_pago", {})),
+                    width=350
+                ),
+            ], wrap=True, spacing=20)
         ])
 
     def _build_stock_section(self) -> ft.Control:
         s = self.stats.get("stock", {})
-        return ft.Row([
-            self._stat_item("Total Artículos", s.get("total", 0)),
-            self._stat_item("Activos", s.get("activos", 0), self.COLOR_SUCCESS),
-            self._stat_item("Stock Crítico", s.get("bajo_stock", 0), self.COLOR_WARNING),
-            self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR),
-            self._stat_item("Valor Inventario", f"${s.get('valor_inventario', 0):,.0f}", self.COLOR_INFO),
-            self._stat_item("Ingresos Mes", s.get("entradas_mes", 0)),
-            self._stat_item("Salidas Mes", s.get("salidas_mes", 0)),
-        ], wrap=True, spacing=40)
+        charts = self.stats.get("charts", {})
+        
+        return ft.Column([
+            ft.Row([
+                self._stat_item("Total Artículos", s.get("total", 0)),
+                self._stat_item("Activos", s.get("activos", 0), self.COLOR_SUCCESS),
+                self._stat_item("Stock Crítico", s.get("bajo_stock", 0), self.COLOR_WARNING),
+                self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR),
+                self._stat_item("Valor Inventario", f"${s.get('valor_inventario', 0):,.0f}", self.COLOR_INFO),
+                self._stat_item("Ingresos Mes", s.get("entradas_mes", 0)),
+                self._stat_item("Salidas Mes", s.get("salidas_mes", 0)),
+            ], wrap=True, spacing=40),
+            ft.Divider(height=20, color="transparent"),
+            ft.Row([
+                self._chart_panel(
+                    "Alertas de Reposición (Artículos con mayor faltante)",
+                    self._real_bar_chart([
+                        {"nombre": a['nombre'], "total_facturado": a['faltante']} 
+                        for a in charts.get("alertas_stock", [])
+                    ], color=self.COLOR_ERROR),
+                    width=650
+                ),
+                self._chart_panel(
+                    "Salud del Inventario",
+                    self._pie_chart({
+                        "Crítico": s.get("bajo_stock", 0),
+                        "Sin Stock": s.get("sin_stock", 0),
+                        "Optimo": (self._as_number(s.get("total", 0)) - self._as_number(s.get("bajo_stock", 0)) - self._as_number(s.get("sin_stock", 0)))
+                    }, colors=[self.COLOR_WARNING, self.COLOR_ERROR, self.COLOR_SUCCESS]),
+                    width=400
+                )
+            ], wrap=True, spacing=20)
+        ])
+
+    def _build_analitica_section(self) -> ft.Control:
+        charts = self.stats.get("charts", {})
+        return ft.Column([
+            ft.Row([
+                self._chart_panel(
+                    "TOP 5: Lo que más sale (Facturación)",
+                    self._real_bar_chart(charts.get("top_articulos", [])),
+                    width=600
+                ),
+                self._chart_panel(
+                    "BOTTOM 5: Lo que menos sale (Ventas Mes)",
+                    self._real_bar_chart(charts.get("bottom_articulos", []), color=self.COLOR_WARNING),
+                    width=600
+                ),
+            ], wrap=True, spacing=20),
+        ])
 
     def _build_entidades_section(self) -> ft.Control:
         e = self.stats.get("entidades", {})
-        return ft.Row([
-            self._stat_item("Clientes Totales", e.get("clientes_total", 0)),
-            self._stat_item("Proveedores", e.get("proveedores_total", 0)),
-            self._stat_item("Nuevos (Mes)", e.get("nuevos_mes", 0), self.COLOR_SUCCESS),
-            self._stat_item("Deuda Clientes", f"${e.get('deuda_clientes', 0)}", self.COLOR_ERROR),
-            self._stat_item("Cant. Deudores", e.get("deudores_cant", 0)),
-        ], wrap=True, spacing=40)
+        return ft.Column([
+            ft.Row([
+                self._stat_item("Clientes Totales", e.get("clientes_total", 0)),
+                self._stat_item("Proveedores", e.get("proveedores_total", 0)),
+                self._stat_item("Nuevos (Mes)", e.get("nuevos_mes", 0), self.COLOR_SUCCESS),
+                self._stat_item("Deuda Clientes", f"${e.get('deuda_clientes', 0)}", self.COLOR_ERROR),
+                self._stat_item("Cant. Deudores", e.get("deudores_cant", 0)),
+            ], wrap=True, spacing=40),
+            ft.Divider(height=20, color="transparent"),
+            ft.Row([
+                self._chart_panel(
+                    "Distribución Clientes/Prov.",
+                    self._pie_chart({
+                        "Clientes": e.get("clientes_total", 0),
+                        "Proveedores": e.get("proveedores_total", 0)
+                    }, colors=[self.COLOR_INFO, self.COLOR_PRIMARY]),
+                    width=300
+                ),
+                self._chart_panel(
+                    "Estado de Deuda",
+                    self._pie_chart({
+                        "Deudores": e.get("deudores_cant", 0),
+                        "Al día": (self._as_number(e.get("clientes_total", 0)) - self._as_number(e.get("deudores_cant", 0)))
+                    }, colors=[self.COLOR_ERROR, self.COLOR_SUCCESS]),
+                    width=300
+                )
+            ], spacing=20)
+        ])
+
+    def _build_operativa_section(self) -> ft.Control:
+        o = self.stats.get("operativas", {})
+        m = self.stats.get("movimientos", {})
+        return ft.Column([
+            ft.Row([
+                self._stat_item("Entregas Hoy", o.get("entregas_hoy", 0), self.COLOR_SUCCESS),
+                self._stat_item("Actividad Sistema", o.get("actividad_sistema", 0), self.COLOR_INFO),
+                self._stat_item("Mov. Ingresos", m.get("ingresos", 0), self.COLOR_SUCCESS),
+                self._stat_item("Mov. Salidas", m.get("salidas", 0), self.COLOR_WARNING),
+                self._stat_item("Ajustes", m.get("ajustes", 0), self.COLOR_ERROR),
+            ], wrap=True, spacing=40),
+            ft.Container(height=10),
+            ft.Row([
+                self._chart_panel(
+                    "Movimientos de Stock (Hoy)",
+                    self._bar_chart(
+                        [
+                            ("Ingresos", m.get("ingresos", 0)),
+                            ("Salidas", m.get("salidas", 0)),
+                            ("Ajustes", m.get("ajustes", 0)),
+                        ],
+                        color=self.COLOR_PRIMARY,
+                        value_formatter=lambda v: self._format_number(v),
+                        empty_text="Sin movimientos hoy",
+                    ),
+                ),
+                self._chart_panel(
+                    "Actividad Operativa (Hoy)",
+                    self._bar_chart(
+                        [
+                            ("Remitos pend.", o.get("remitos_pend", 0)),
+                            ("Entregas hoy", o.get("entregas_hoy", 0)),
+                            ("Docs hoy", o.get("mis_operaciones_hoy", 0)),
+                            ("Logs hoy", o.get("actividad_sistema", 0)),
+                        ],
+                        color=self.COLOR_INFO,
+                        value_formatter=lambda v: self._format_number(v),
+                        empty_text="Sin actividad hoy",
+                    ),
+                ),
+            ], wrap=True, spacing=20),
+        ])
 
     def _build_finanzas_section(self) -> ft.Control:
         f = self.stats.get("finanzas", {})
-        return ft.Row([
-            self._stat_item("Ingresos Hoy", f"${f.get('ingresos_hoy', 0)}", self.COLOR_SUCCESS),
-            self._stat_item("Ingresos Mes", f"${f.get('ingresos_mes', 0)}"),
-            self._stat_item("Egresos Mes", f"${f.get('egresos_mes', 0)}", self.COLOR_ERROR),
-            self._stat_item("Balance Mes", f"${f.get('balance_mes', 0)}", self.COLOR_PRIMARY),
-            self._stat_item("IVA Est. Mes", f"${f.get('iva_estimado', 0)}", self.COLOR_INFO),
-        ], wrap=True, spacing=40)
+        return ft.Column([
+            ft.Row([
+                self._stat_item("Ingresos Hoy", f"${f.get('ingresos_hoy', 0)}", self.COLOR_SUCCESS),
+                self._stat_item("Ingresos Mes", f"${f.get('ingresos_mes', 0)}"),
+                self._stat_item("Egresos Mes", f"${f.get('egresos_mes', 0)}", self.COLOR_ERROR),
+                self._stat_item("Balance Mes", f"${f.get('balance_mes', 0)}", self.COLOR_PRIMARY),
+                self._stat_item("IVA Est. Mes", f"${f.get('iva_estimado', 0)}", self.COLOR_INFO),
+            ], wrap=True, spacing=40),
+            ft.Divider(height=20, color="transparent"),
+            ft.Row([
+                self._chart_panel(
+                    "Ingresos vs Egresos (Mes)",
+                    self._pie_chart({
+                        "Ingresos": f.get("ingresos_mes", 0),
+                        "Egresos": f.get("egresos_mes", 0)
+                    }, colors=[self.COLOR_SUCCESS, self.COLOR_ERROR]),
+                    width=300
+                ),
+                self._chart_panel(
+                    "Distribución Financiera",
+                    self._bar_chart(
+                        [
+                            ("Ingresos", f.get("ingresos_mes", 0)),
+                            ("Egresos", f.get("egresos_mes", 0)),
+                            ("IVA Est.", f.get("iva_estimado", 0))
+                        ],
+                        color=self.COLOR_PRIMARY,
+                        value_formatter=lambda v: f"${v:,.0f}" if isinstance(v, (int, float)) else str(v)
+                    ),
+                    width=360
+                )
+            ], spacing=20)
+        ])
 
     def _build_sistema_section(self) -> ft.Control:
         sis = self.stats.get("sistema", {})

@@ -1,3 +1,5 @@
+import logging
+import sys
 import base64
 import datetime as dt
 import os
@@ -21,6 +23,8 @@ WSAA_WSDL_PROD = "https://wsaa.afip.gov.ar/ws/services/LoginCms?WSDL"
 WSFE_WSDL_HOMO = "https://wswhomo.afip.gov.ar/wsfev1/service.asmx?WSDL"
 WSFE_WSDL_PROD = "https://wsfe.afip.gov.ar/wsfev1/service.asmx?WSDL"
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class AfipToken:
@@ -30,6 +34,41 @@ class AfipToken:
 
 
 class AfipService:
+    def _find_openssl(self) -> Optional[str]:
+        # 1. System PATH
+        path = shutil.which("openssl")
+        if path: return path
+        
+        # 2. Common Git Bash locations (Windows)
+        git_paths = [
+            Path("C:/Program Files/Git/usr/bin/openssl.exe"),
+            Path("C:/Program Files/Git/bin/openssl.exe"),
+            Path("C:/Program Files (x86)/Git/usr/bin/openssl.exe"),
+            Path("C:/Program Files (x86)/Git/bin/openssl.exe"),
+        ]
+        for gp in git_paths:
+            if gp.exists():
+                return str(gp)
+
+        # 3. Look relative to the executable (Portable mode)
+        # If frozen, sys.executable is the .exe path
+        if getattr(sys, 'frozen', False):
+             root_dir = Path(sys.executable).parent
+        else:
+             root_dir = Path.cwd()
+
+        local_paths = [
+            root_dir / "openssl.exe",
+            root_dir / "bin" / "openssl.exe",
+            root_dir / "openssl" / "bin" / "openssl.exe",
+        ]
+        
+        for lp in local_paths:
+            if lp.exists():
+                return str(lp)
+                
+        return None
+
     def __init__(self, cuit: str, cert_path: str, key_path: str, production: bool = False):
         """
         Direct AFIP WSAA + WSFEv1 integration (no SDK).
@@ -50,7 +89,7 @@ class AfipService:
         self._transport = Transport(session=self._session, timeout=30)
         self._settings = Settings(strict=False, xml_huge_tree=True)
 
-        self._openssl_path = shutil.which("openssl")
+        self._openssl_path = self._find_openssl()
 
     def _wsaa_wsdl(self) -> str:
         return WSAA_WSDL_PROD if self.production else WSAA_WSDL_HOMO
@@ -246,7 +285,7 @@ class AfipService:
                             return int(nested.get(key) or 0)
             return 0
         except Exception as e:
-            print(f"Error obteniendo ultimo comprobante: {e}")
+            logger.error("Error obteniendo ultimo comprobante", exc_info=e)
             return 0
 
     def authorize_invoice(self, data: Dict[str, Any]) -> Dict[str, Any]:

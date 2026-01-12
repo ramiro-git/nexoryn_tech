@@ -3,6 +3,7 @@ import subprocess
 import logging
 import hashlib
 import tempfile
+import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
@@ -265,7 +266,7 @@ class RestoreService:
                     if not result.exitoso:
                         return result
                     backups_aplicados.extend(result.backups_aplicados)
-                    lsn_actual = result.lsn_fin
+                    lsn_actual = result.lsn_final
             
             fin_total = datetime.now()
             tiempo_total = (fin_total - inicio_total).total_seconds()
