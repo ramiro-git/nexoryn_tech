@@ -112,7 +112,7 @@ class BackupIncrementalService:
     
     def _get_last_full_backup(self) -> Optional[BackupInfo]:
         query = """
-        SELECT id, tipo_backup, archivo_nombre, fecha_inicio, fecha_fin,
+        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
         WHERE tipo_backup = 'FULL' AND estado = 'COMPLETADO'
@@ -148,7 +148,7 @@ class BackupIncrementalService:
             return None
         
         query = """
-        SELECT id, tipo_backup, archivo_nombre, fecha_inicio, fecha_fin,
+        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
         WHERE tipo_backup = 'DIFERENCIAL' AND estado = 'COMPLETADO'
@@ -178,7 +178,7 @@ class BackupIncrementalService:
     
     def _get_last_incremental_backup(self, base_id: Optional[int] = None) -> Optional[BackupInfo]:
         query = """
-        SELECT id, tipo_backup, archivo_nombre, fecha_inicio, fecha_fin,
+        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
         WHERE tipo_backup = 'INCREMENTAL' AND estado = 'COMPLETADO'
@@ -379,10 +379,10 @@ class BackupIncrementalService:
             raise RuntimeError(f"Backup INCREMENTAL fallido: {str(e)}")
     
     def create_backup(self, backup_type: str) -> str:
-        if backup_type not in ['FULL', 'DIFERENCIAL', 'INCREMENTAL']:
+        if backup_type not in ['FULL', 'DIFERENCIAL', 'INCREMENTAL', 'MANUAL']:
             raise ValueError(f"Tipo de backup inválido: {backup_type}")
         
-        if backup_type == 'FULL':
+        if backup_type in ['FULL', 'MANUAL']:
             return self._create_full_backup()
         
         elif backup_type == 'DIFERENCIAL':
@@ -407,7 +407,7 @@ class BackupIncrementalService:
     
     def get_backup_info(self, backup_id: int) -> Optional[BackupInfo]:
         query = """
-        SELECT id, tipo_backup, archivo_nombre, fecha_inicio, fecha_fin,
+        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
         WHERE id = %s
@@ -434,7 +434,7 @@ class BackupIncrementalService:
     
     def list_backups(self, tipo: Optional[str] = None, limit: int = 50) -> List[Dict]:
         query = """
-        SELECT id, tipo_backup, archivo_nombre, fecha_inicio, fecha_fin,
+        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, nube_subido, backup_base_id
         FROM seguridad.backup_manifest
         WHERE estado = 'COMPLETADO'
@@ -467,7 +467,7 @@ class BackupIncrementalService:
     
     def get_backup_chain(self, target_date: datetime) -> Optional[List[BackupInfo]]:
         query = """
-        SELECT id, tipo_backup, archivo_nombre, fecha_inicio, fecha_fin,
+        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
         WHERE estado = 'COMPLETADO' AND fecha_inicio <= %s

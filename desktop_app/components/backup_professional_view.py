@@ -9,10 +9,11 @@ except ImportError:
 
 
 class BackupProfessionalView:
-    def __init__(self, page: ft.Page, db, show_message: Callable):
+    def __init__(self, page: ft.Page, db, show_message: Callable, ask_confirm: Optional[Callable] = None):
         self.page = page
         self.db = db
         self.show_message = show_message
+        self.ask_confirm = ask_confirm
         
         # Colores
         self.COLOR_PRIMARY = "#4F46E5"
@@ -110,6 +111,32 @@ class BackupProfessionalView:
         # Filtros avanzados
         self.date_from_input = self._create_date_input("Desde")
         self.date_to_input = self._create_date_input("Hasta")
+        def _style_filter(control: Any):
+            # Same parameters as _style_input in ui_basic.py
+            if hasattr(control, "border_color"): control.border_color = "#475569"
+            if hasattr(control, "focused_border_color"): control.focused_border_color = self.COLOR_PRIMARY
+            if hasattr(control, "border_radius"): control.border_radius = 12
+            if hasattr(control, "text_size"): control.text_size = 14
+            if hasattr(control, "label_style"): control.label_style = ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD)
+            if hasattr(control, "content_padding"): control.content_padding = ft.padding.all(12)
+            if hasattr(control, "bgcolor"): control.bgcolor = "#F8FAFC"
+            if hasattr(control, "filled"): control.filled = True
+            if hasattr(control, "height"): control.height = 45
+
+        self.type_filter_input = ft.Dropdown(
+            label="Tipo de Backup",
+            width=180,
+            options=[
+                ft.dropdown.Option("Todas", "Todos los tipos"),
+                ft.dropdown.Option("FULL", "FULL (Completo)"),
+                ft.dropdown.Option("DIFERENCIAL", "DIFERENCIAL"),
+                ft.dropdown.Option("INCREMENTAL", "INCREMENTAL"),
+                ft.dropdown.Option("MANUAL", "Manual"),
+            ],
+            value="Todas",
+            on_change=lambda _: self.backups_table.trigger_refresh() if hasattr(self, "backups_table") else None
+        )
+        _style_filter(self.type_filter_input)
 
         # Tabla de backups con GenericTable
         self.backups_table = GenericTable(
@@ -173,23 +200,14 @@ class BackupProfessionalView:
                 )
             ],
             data_provider=self._backups_provider,
-            simple_filter=SimpleFilterConfig(
-                label="Tipo",
-                options=[
-                    (None, "Todos"),
-                    ("FULL", "FULL"),
-                    ("DIFERENCIAL", "DIFERENCIAL"),
-                    ("INCREMENTAL", "INCREMENTAL"),
-                    ("MANUAL", "Manual"),
-                ]
-            ),
             advanced_filters=[
+                AdvancedFilterControl(name="tipo", control=self.type_filter_input),
                 AdvancedFilterControl(name="date_from", control=self.date_from_input),
                 AdvancedFilterControl(name="date_to", control=self.date_to_input),
             ],
             show_mass_actions=False,
             auto_load=True,
-            page_size=10,
+            page_size=25,
             id_field="id"
         )
         self.backups_table.search_field.hint_text = "Buscar por nombre..."
@@ -242,22 +260,25 @@ class BackupProfessionalView:
         self.retention_full = ft.TextField(
             label="Retención FULL (meses)",
             value="12",
-            width=120,
-            keyboard_type=ft.KeyboardType.NUMBER
+            width=150,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            helper_text="Meses a conservar copias completas"
         )
         
         self.retention_dif = ft.TextField(
             label="Retención DIF (semanas)",
             value="8",
-            width=120,
-            keyboard_type=ft.KeyboardType.NUMBER
+            width=150,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            helper_text="Semanas a conservar copias diferenciales"
         )
         
         self.retention_inc = ft.TextField(
             label="Retención INC (días)",
             value="7",
-            width=120,
-            keyboard_type=ft.KeyboardType.NUMBER
+            width=150,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            helper_text="Días a conservar copias incrementales"
         )
         
         # Configuración de nube
@@ -297,12 +318,8 @@ class BackupProfessionalView:
             heading_row_color=ft.Colors.with_opacity(0.05, self.COLOR_PRIMARY),
         )
 
-    
-    def load_data(self):
+    def _update_metrics(self):
         try:
-            self.loading = True
-            self.page.update()
-            
             # Cargar estadísticas
             stats = self.backup_manager.get_backup_stats()
             
@@ -313,14 +330,31 @@ class BackupProfessionalView:
             backups = self.backup_manager.backup_incremental_service.list_backups(limit=1)
             if backups:
                 last_backup = backups[0]
-                self.last_backup_text.value = self._format_datetime(last_backup['fecha_inicio'])
+                self.last_backup_text.value = self._format_datetime(last_backup['fecha_inicio']) or "N/A"
+            else:
+                self.last_backup_text.value = "N/A"
             
             # Próximo backup
             next_times = self.backup_manager.get_next_backup_times()
-            closest_type = min(next_times.keys(),
-                              key=lambda k: next_times[k]['next_run'])
-            closest = next_times[closest_type]
-            self.next_backup_text.value = f"{closest_type} en {self._format_time_until(closest['next_run'])}"
+            if next_times:
+                closest_type = min(next_times.keys(),
+                                key=lambda k: next_times[k]['next_run'])
+                closest = next_times[closest_type]
+                self.next_backup_text.value = f"{closest_type} en {self._format_time_until(closest['next_run'])}"
+            else:
+                self.next_backup_text.value = "No programado"
+                
+        except Exception as e:
+            print(f"Error actualizando métricas: {e}")
+
+    
+    def load_data(self):
+        try:
+            self.loading = True
+            self.page.update()
+            
+            # Actualizar indicadores
+            self._update_metrics()
             
             # Cargar tabla de backups
             self._load_backups_table()
@@ -355,7 +389,7 @@ class BackupProfessionalView:
                 tf.update()
                 # Trigger table refresh
                 if hasattr(self, "backups_table"):
-                    self.backups_table.refresh()
+                    self.backups_table.trigger_refresh()
 
         dp = ft.DatePicker(
             on_change=on_date_change,
@@ -409,9 +443,10 @@ class BackupProfessionalView:
             s = search.lower()
             filtered = [b for b in filtered if s in str(b.get('archivo', '')).lower()]
 
-        # Filter by simple (Type)
-        if simple and simple != "Todos" and simple is not None:
-             filtered = [b for b in filtered if b.get('tipo') == simple]
+        # Filter by type (Now in advanced)
+        tipo = advanced.get("tipo") if advanced else None
+        if tipo and tipo != "Todas":
+             filtered = [b for b in filtered if b.get('tipo') == tipo]
 
         # Filter by date range
         if advanced:
@@ -435,8 +470,10 @@ class BackupProfessionalView:
                         new_filtered.append(b)
                         continue
                         
-                    # Normalize to date for comparison
+                    # Normalize to date for comparison, ensure both are naive or aware
                     b_date = created.replace(hour=0, minute=0, second=0, microsecond=0)
+                    if b_date.tzinfo is not None:
+                        b_date = b_date.replace(tzinfo=None)
                     
                     if d_from and b_date < d_from:
                         continue
@@ -462,8 +499,15 @@ class BackupProfessionalView:
     
     def _load_backups_table(self):
          # Logic moved to generic table provider
-         self.backups_table.refresh()
-    
+        try:
+            if self.db:
+                self.db.log_activity("BACKUP", "VIEW")
+        except: pass
+        self.backups_table.refresh()
+        # Ensure metrics are updated whenever table is refreshed
+        import threading
+        threading.Thread(target=self._update_metrics, daemon=True).start()
+
     def _load_logs(self):
         try:
             query = """
@@ -565,15 +609,38 @@ class BackupProfessionalView:
     def _execute_backup(self, backup_type: str):
         def run_backup():
             try:
+                # Log intent
+                try:
+                    self.db.log_activity("BACKUP", f"EXEC_INIT_{backup_type}", detalle={"tipo": backup_type})
+                except: pass
+
                 resultado = self.backup_manager.execute_scheduled_backup(backup_type)
                 
                 if resultado['exitoso']:
+                    # Log activity in system logs
+                    try:
+                        self.db.log_activity(
+                            entidad="SISTEMA",
+                            accion=f"BACKUP_{backup_type}",
+                            resultado="OK",
+                            detalle={"mensaje": f"Backup {backup_type} completado", "duracion": resultado.get('duracion_segundos')}
+                        )
+                    except: pass
+
                     self.show_message(
                         f"Backup {backup_type} creado exitosamente en {resultado['duracion_segundos']:.2f}s",
                         "success"
                     )
                     self.backups_table.refresh()
                 else:
+                    try:
+                        self.db.log_activity(
+                            entidad="SISTEMA",
+                            accion=f"BACKUP_{backup_type}",
+                            resultado="FAIL",
+                            detalle={"error": resultado.get('mensaje')}
+                        )
+                    except: pass
                     self.show_message(f"Error en backup {backup_type}: {resultado['mensaje']}", "error")
                     
             except Exception as e:
@@ -586,15 +653,29 @@ class BackupProfessionalView:
     def _validate_backup(self, backup: Dict):
         def run_validation():
             try:
+                # Log intent
+                try:
+                    self.db.log_activity("BACKUP", "VALIDATE_INIT", id_entidad=backup['id'])
+                except: pass
+
                 result = self.backup_manager.restore_service.validate_backup_chain(backup['id'])
                 
                 if result['valido']:
                     self.show_message("Backup validado correctamente", "success")
+                    try:
+                        self.db.log_activity("BACKUP", "VALIDATE_OK", id_entidad=backup['id'])
+                    except: pass
                 else:
                     self.show_message(f"Backup inválido: {result['mensaje']}", "warning")
+                    try:
+                        self.db.log_activity("BACKUP", "VALIDATE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
+                    except: pass
                     
             except Exception as e:
                 self.show_message(f"Error validando backup: {str(e)}", "error")
+                try:
+                    self.db.log_activity("BACKUP", "VALIDATE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                except: pass
         
         import threading
         threading.Thread(target=run_validation, daemon=True).start()
@@ -602,6 +683,11 @@ class BackupProfessionalView:
     def _upload_to_cloud(self, backup: Dict):
         def run_upload():
             try:
+                # Log intent
+                try:
+                    self.db.log_activity("BACKUP", "UPLOAD_INIT", id_entidad=backup['id'], detalle={"provider": self.cloud_provider.value})
+                except: pass
+
                 from pathlib import Path
                 backup_file = Path(backup['archivo'])
                 
@@ -613,53 +699,90 @@ class BackupProfessionalView:
                 
                 if result.exitoso:
                     self.show_message("Backup subido a la nube exitosamente", "success")
+                    try:
+                        self.db.log_activity("BACKUP", "UPLOAD_OK", id_entidad=backup['id'])
+                    except: pass
                 else:
                     self.show_message(f"Error subiendo a la nube: {result.mensaje}", "error")
+                    try:
+                        self.db.log_activity("BACKUP", "UPLOAD_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result.mensaje})
+                    except: pass
                     
             except Exception as e:
                 self.show_message(f"Error subiendo a la nube: {str(e)}", "error")
+                try:
+                    self.db.log_activity("BACKUP", "UPLOAD_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                except: pass
         
         import threading
         threading.Thread(target=run_upload, daemon=True).start()
     
     def _confirm_restore(self, backup: Dict):
-        def on_confirm(e):
-            self.page.close(dlg)
+        if not self.db: return
+
+        # Log intent
+        try:
+            self.db.log_activity("BACKUP", "RESTORE_INIT", id_entidad=backup['id'], detalle={"tipo": backup['tipo'], "fecha": str(backup['fecha_inicio'])})
+        except: pass
+
+        def on_confirm():
+            def run_restore():
+                try:
+                    # Log execution
+                    try:
+                        self.db.log_activity("BACKUP", "RESTORE_EXEC", id_entidad=backup['id'])
+                    except: pass
+
+                    self.show_message("Iniciando restauración... Esto puede tomar varios minutos.", "info")
+                    result = self.backup_manager.restore_from_backup_id(backup['id'])
+                    if result['exitoso']:
+                        self.show_message(f"Restauración completada: {result['mensaje']}", "success")
+                        try:
+                            self.db.log_activity("BACKUP", "RESTORE_OK", id_entidad=backup['id'])
+                        except: pass
+                    else:
+                        self.show_message(f"Error en restauración: {result['mensaje']}", "error")
+                        try:
+                            self.db.log_activity("BACKUP", "RESTORE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
+                        except: pass
+                except Exception as e:
+                    self.show_message(f"Error crítico en restauración: {str(e)}", "error")
+                    try:
+                        self.db.log_activity("BACKUP", "RESTORE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                    except: pass
+            
+            import threading
+            threading.Thread(target=run_restore, daemon=True).start()
+
+        if self.ask_confirm:
+            # En lugar de confirmación directa, abrimos el wizard que muestra la cadena
             self._run_restore_wizard(backup)
-        
-        def on_cancel(e):
-            self.page.close(dlg)
-        
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Confirmar Restauración"),
-            content=ft.Column([
-                ft.Icon(ft.Icons.WARNING_ROUNDED, size=48, color=self.COLOR_WARNING),
-                ft.Text(
-                    "Esta acción SOBREESCRIBIRÁ la base de datos actual.",
-                    size=14,
-                    text_align=ft.TextAlign.CENTER,
-                    weight=ft.FontWeight.BOLD
-                ),
-                ft.Text(
-                    f"Backup: {backup['archivo']}\nTipo: {backup['tipo']}\nFecha: {self._format_datetime(backup['fecha_inicio'])}",
-                    size=12,
-                    text_align=ft.TextAlign.CENTER,
-                    color=self.COLOR_TEXT_MUTED
-                ),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12, tight=True),
+        else:
+            # Fallback
+            self._manual_ask_confirm(
+                 "Confirmar Restauración",
+                f"¿Está seguro que desea restaurar el backup del {self._format_datetime(backup['fecha_inicio'])}?\n\n¡ATENCION! Los datos actuales serán reemplazados por los de esta copia.",
+                lambda: self._perform_restore(backup),
+                self.COLOR_SUCCESS
+            )
+
+    def _manual_ask_confirm(self, title, message, on_confirm, color):
+         dlg = ft.AlertDialog(
+            title=ft.Text(title, weight=ft.FontWeight.BOLD),
+            content=ft.Text(message, size=14),
             actions=[
-                ft.TextButton("Cancelar", on_click=on_cancel),
+                ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dlg)),
                 ft.ElevatedButton(
-                    "Continuar",
-                    on_click=on_confirm,
-                    bgcolor=self.COLOR_WARNING,
-                    color=ft.Colors.WHITE
+                    "Confirmar",
+                    on_click=lambda e: (self.page.close(dlg), on_confirm()),
+                    bgcolor=color,
+                    color=ft.Colors.WHITE,
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.page.open(dlg)
+         self.page.open(dlg)
     
     def _run_restore_wizard(self, backup: Dict):
         preview = self.backup_manager.restore_service.preview_restore(backup['fecha_inicio'])
@@ -733,6 +856,9 @@ class BackupProfessionalView:
         self.page.open(wizard_dlg)
     
     def _perform_restore(self, backup: Dict):
+        # This function is now integrated into _confirm_restore's on_confirm
+        # Keeping it for now, but it's effectively unused if _confirm_restore calls the new logic directly.
+        # If _run_restore_wizard still calls this, it needs to be updated.
         def run_restore():
             try:
                 self.show_message("Iniciando restauración... Esto puede tomar varios minutos.", "info")
@@ -754,59 +880,52 @@ class BackupProfessionalView:
         threading.Thread(target=run_restore, daemon=True).start()
     
     def _delete_backup(self, backup: Dict):
-        def on_confirm(e):
-            self.page.close(dlg)
-            
-            def run_delete():
+        if not self.db: return
+        import os
+        from pathlib import Path
+
+        def on_confirm():
+            try:
+                # Log intent
                 try:
-                    from pathlib import Path
-                    backup_file = Path(backup['archivo'])
-                    
-                    if backup_file.exists():
-                        backup_file.unlink()
-                        self.show_message("Backup eliminado exitosamente", "success")
-                        self.backups_table.refresh()
-                    else:
-                        self.show_message("El archivo de backup no existe", "warning")
-                        
-                except Exception as e:
-                    self.show_message(f"Error eliminando backup: {str(e)}", "error")
-            
-            import threading
-            threading.Thread(target=run_delete, daemon=True).start()
-        
-        def on_cancel(e):
-            self.page.close(dlg)
-        
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Eliminar Backup"),
-            content=ft.Column([
-                ft.Icon(ft.Icons.DELETE_ROUNDED, size=48, color=self.COLOR_ERROR),
-                ft.Text(
-                    "¿Estás seguro que deseas eliminar este backup?",
-                    size=14,
-                    text_align=ft.TextAlign.CENTER
-                ),
-                ft.Text(
-                    f"Archivo: {backup['archivo']}",
-                    size=12,
-                    text_align=ft.TextAlign.CENTER,
-                    color=self.COLOR_TEXT_MUTED
-                ),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12, tight=True),
-            actions=[
-                ft.TextButton("Cancelar", on_click=on_cancel),
-                ft.ElevatedButton(
-                    "Eliminar",
-                    on_click=on_confirm,
-                    bgcolor=self.COLOR_ERROR,
-                    color=ft.Colors.WHITE
-                ),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        self.page.open(dlg)
+                    self.db.log_activity("BACKUP", "DELETE_EXEC", id_entidad=backup['id'], detalle={"archivo": backup['archivo']})
+                except: pass
+
+                # 1. Eliminar archivo físico
+                path = Path(backup['archivo'])
+                if path.exists():
+                    os.remove(path)
+                else:
+                    # Intento con path relativo si el absoluto falla (fallback)
+                    self.show_message(f"El archivo no se encontró físicamente: {backup['archivo']}", "warning")
+                
+                # 2. Eliminar de la base de datos (marcar como eliminado o borrar manifest)
+                with self.db.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM seguridad.backup_manifest WHERE id = %s", (backup['id'],))
+                        conn.commit()
+                
+                self.show_message("Backup eliminado correctamente", "success")
+                self.backups_table.refresh()
+                try:
+                    self.db.log_activity("BACKUP", "DELETE_OK", id_entidad=backup['id'])
+                except: pass
+            except Exception as e:
+                self.show_message(f"Error eliminando backup: {str(e)}", "error")
+                try:
+                    self.db.log_activity("BACKUP", "DELETE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                except: pass
+
+        if self.ask_confirm:
+            self.ask_confirm(
+                "Eliminar Backup",
+                f"¿Está seguro que desea eliminar permanentemente este backup?\nArchivo: {backup['archivo']}",
+                "Eliminar permanentemente",
+                on_confirm,
+                button_color=self.COLOR_ERROR
+            )
+        else:
+            self._manual_ask_confirm("Eliminar Backup", f"¿Está seguro que desea eliminar este backup?", on_confirm, self.COLOR_ERROR)
     
     def _save_schedule(self):
         try:
@@ -825,6 +944,9 @@ class BackupProfessionalView:
             )
             
             self.show_message("Horarios de backups actualizados correctamente", "success")
+            try:
+                self.db.log_activity("BACKUP", "UPDATE_SCHEDULE", detalle={"FULL": self.full_schedule_day.value, "DIF": self.dif_schedule_weekday.value})
+            except: pass
             
         except Exception as e:
             self.show_message(f"Error guardando horarios: {str(e)}", "error")
@@ -843,8 +965,14 @@ class BackupProfessionalView:
                 }
 
                 self.show_message(f"Configuración de nube guardada: {self.cloud_provider.value}", "success")
+                try:
+                    self.db.log_activity("BACKUP", "UPDATE_CLOUD_CONFIG", detalle=cloud_config)
+                except: pass
             else:
                 self.show_message("Sincronización en la nube desactivada", "info")
+                try:
+                    self.db.log_activity("BACKUP", "DISABLE_CLOUD")
+                except: pass
 
         except Exception as e:
             self.show_message(f"Error guardando configuración de nube: {str(e)}", "error")
@@ -882,16 +1010,6 @@ class BackupProfessionalView:
                         ft.Text("Sistema de Backups Profesionales", size=24, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
                         ft.Text("FULL + DIFERENCIAL + INCREMENTAL - Restauración concatenable", size=12, color=self.COLOR_TEXT_MUTED),
                     ], spacing=2),
-                    ft.Row([
-                        ft.ElevatedButton(
-                            "Crear Backup",
-                            icon=ft.Icons.ADD_ROUNDED,
-                            bgcolor=self.COLOR_PRIMARY,
-                            color=ft.Colors.WHITE,
-                            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-                            on_click=self._trigger_backup
-                        ),
-                    ], spacing=8)
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
 
                 # Métricas
@@ -947,25 +1065,7 @@ class BackupProfessionalView:
                     border=ft.border.all(1, self.COLOR_BORDER),
                 ),
 
-                # Programación automática
-                ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Icon(ft.Icons.EVENT_ROUNDED, color=self.COLOR_PRIMARY, size=20),
-                            ft.Text("Programación Automática", size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
-                        ], spacing=8),
-                        ft.Container(height=8),
-                        self.schedule_cards_container,
-                    ]),
-                    padding=16,
-                    bgcolor=self.COLOR_CARD,
-                    border_radius=12,
-                    border=ft.border.all(1, self.COLOR_BORDER),
-                ),
-
-                # Configuración
-                ft.Text("Configuración de Backups", size=16, weight=ft.FontWeight.BOLD),
-                ft.Divider(),
+                ft.Container(height=4),
 
                 # Configuración FULL
                 ft.Container(
@@ -979,9 +1079,9 @@ class BackupProfessionalView:
                         ], spacing=12),
                         ft.Row([
                             self.full_schedule_day,
+                            ft.Text("a las", size=14, weight=ft.FontWeight.W_500),
                             self.full_schedule_hour,
-                            ft.Text("a las", size=12),
-                        ], spacing=8),
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ], spacing=12),
                     padding=16,
                     bgcolor=self.COLOR_CARD,
@@ -1003,9 +1103,9 @@ class BackupProfessionalView:
                         ], spacing=12),
                         ft.Row([
                             self.dif_schedule_weekday,
+                            ft.Text("a las", size=14, weight=ft.FontWeight.W_500),
                             self.dif_schedule_hour,
-                            ft.Text("a las", size=12),
-                        ], spacing=8),
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ], spacing=12),
                     padding=16,
                     bgcolor=self.COLOR_CARD,
@@ -1026,9 +1126,9 @@ class BackupProfessionalView:
                             ], spacing=2)
                         ], spacing=12),
                         ft.Row([
+                            ft.Text("Todos los días a las", size=14, weight=ft.FontWeight.W_500),
                             self.inc_schedule_hour,
-                            ft.Text("todos los días", size=12),
-                        ], spacing=8),
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ], spacing=12),
                     padding=16,
                     bgcolor=self.COLOR_CARD,
@@ -1043,7 +1143,10 @@ class BackupProfessionalView:
                     icon=ft.Icons.SAVE_ROUNDED,
                     bgcolor=self.COLOR_PRIMARY,
                     color=ft.Colors.WHITE,
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                        padding=ft.padding.symmetric(horizontal=20, vertical=12)
+                    ),
                     on_click=lambda e: self._save_schedule()
                 ),
 
@@ -1051,6 +1154,11 @@ class BackupProfessionalView:
 
                 # Configuración de retención
                 ft.Text("Política de Retención", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "Define cuánto tiempo se conservarán los archivos de backup antes de ser eliminados automáticamente para ahorrar espacio. "
+                    "El sistema mantiene una cadena de dependencia: los backups Incrementales dependen del Diferencial, y el Diferencial del FULL.",
+                    size=12, color=self.COLOR_TEXT_MUTED
+                ),
                 ft.Divider(),
 
                 ft.Row([
@@ -1078,7 +1186,10 @@ class BackupProfessionalView:
                     icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
                     bgcolor=self.COLOR_INFO,
                     color=ft.Colors.WHITE,
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                        padding=ft.padding.symmetric(horizontal=20, vertical=12)
+                    ),
                     on_click=lambda e: self._save_cloud_config()
                 ),
 
@@ -1088,11 +1199,10 @@ class BackupProfessionalView:
                 ft.Text("Historial de Backups", size=16, weight=ft.FontWeight.BOLD),
                 ft.Container(
                     content=self.backups_table.build(),
-                    height=400,
+                    height=600,
                     padding=16,
                     bgcolor=self.COLOR_CARD,
                     border_radius=12,
-                    # border=ft.border.all(1, self.COLOR_BORDER),
                 ),
             ], spacing=12, scroll=ft.ScrollMode.AUTO),
             expand=True

@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -27,6 +28,30 @@ def _to_id(val: Any) -> Optional[int]:
         return int(val)
     except (ValueError, TypeError):
         return None
+
+
+def _strip_accents(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _normalize_log_result_filter(value: Any) -> Optional[List[str]]:
+    if value is None:
+        return None
+    try:
+        raw = str(value).strip()
+    except Exception:
+        return None
+    if raw in ("", "Todas", "Todos", "---"):
+        return None
+    normalized = _strip_accents(raw).upper()
+    if normalized in ("FAIL", "FALLO", "FALLA", "FALLIDO", "ERROR", "ERR", "FAILED"):
+        return ["FAIL", "ERROR", "FALLO", "FALLA", "FALLIDO", "ERR", "FAILED"]
+    if normalized in ("WARNING", "WARN", "ADVERTENCIA", "ADVERTENCIAS"):
+        return ["WARNING", "WARN", "ADVERTENCIA"]
+    if normalized in ("OK", "EXITOSO", "EXITO", "SUCCESS", "SUCCESSFUL"):
+        return ["OK", "EXITOSO", "EXITO", "SUCCESS", "SUCCESSFUL"]
+    return [normalized]
 
 
 class Database:
@@ -2720,8 +2745,20 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(u.nombre ILIKE %s OR l.entidad ILIKE %s OR l.accion ILIKE %s)")
-            params.extend([f"%{search.strip()}%"] * 3)
+            search_term = search.strip()
+            search_filters = [
+                "u.nombre ILIKE %s",
+                "l.entidad ILIKE %s",
+                "l.accion ILIKE %s",
+                "l.resultado ILIKE %s",
+            ]
+            params.extend([f"%{search_term}%"] * 4)
+            result_terms = _normalize_log_result_filter(search_term)
+            if result_terms:
+                placeholders = ", ".join(["%s"] * len(result_terms))
+                search_filters.append(f"UPPER(l.resultado) IN ({placeholders})")
+                params.extend([term.upper() for term in result_terms])
+            filters.append("(" + " OR ".join(search_filters) + ")")
         
         user = advanced.get("usuario")
         if user:
@@ -2739,9 +2776,11 @@ class Database:
             params.append(f"%{acc.strip()}%")
             
         res = advanced.get("resultado")
-        if res and res != "Todas":
-            filters.append("l.resultado = %s")
-            params.append(res)
+        result_terms = _normalize_log_result_filter(res)
+        if result_terms:
+            placeholders = ", ".join(["%s"] * len(result_terms))
+            filters.append(f"UPPER(l.resultado) IN ({placeholders})")
+            params.extend([term.upper() for term in result_terms])
             
         ident = advanced.get("id_entidad")
         if ident:
@@ -2766,7 +2805,7 @@ class Database:
             params.append(f"%{ip.strip()}%")
 
         where_clause = " AND ".join(filters)
-        sort_columns = {"id": "l.id", "fecha": "l.fecha_hora", "usuario": "u.nombre", "entidad": "l.entidad", "accion": "l.accion", "resultado": "l.resultado"}
+        sort_columns = {"id": "l.id", "fecha": "l.fecha_hora", "usuario": "u.nombre", "entidad": "l.entidad", "accion": "l.accion", "resultado": "l.resultado", "id_entidad": "l.id_entidad"}
         order_by = self._build_order_by(sorts, sort_columns, default="l.fecha_hora DESC", tiebreaker="l.id DESC")
         query = f"""
             SELECT l.id, l.fecha_hora as fecha, u.nombre as usuario, l.entidad, l.id_entidad, l.accion, l.resultado, l.ip, l.detalle
@@ -2787,8 +2826,20 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(u.nombre ILIKE %s OR l.entidad ILIKE %s OR l.accion ILIKE %s)")
-            params.extend([f"%{search.strip()}%"] * 3)
+            search_term = search.strip()
+            search_filters = [
+                "u.nombre ILIKE %s",
+                "l.entidad ILIKE %s",
+                "l.accion ILIKE %s",
+                "l.resultado ILIKE %s",
+            ]
+            params.extend([f"%{search_term}%"] * 4)
+            result_terms = _normalize_log_result_filter(search_term)
+            if result_terms:
+                placeholders = ", ".join(["%s"] * len(result_terms))
+                search_filters.append(f"UPPER(l.resultado) IN ({placeholders})")
+                params.extend([term.upper() for term in result_terms])
+            filters.append("(" + " OR ".join(search_filters) + ")")
         
         user = advanced.get("usuario")
         if user:
@@ -2806,9 +2857,11 @@ class Database:
             params.append(f"%{acc.strip()}%")
             
         res = advanced.get("resultado")
-        if res and res != "Todas":
-            filters.append("l.resultado = %s")
-            params.append(res)
+        result_terms = _normalize_log_result_filter(res)
+        if result_terms:
+            placeholders = ", ".join(["%s"] * len(result_terms))
+            filters.append(f"UPPER(l.resultado) IN ({placeholders})")
+            params.extend([term.upper() for term in result_terms])
             
         ident = advanced.get("id_entidad")
         if ident:
@@ -3163,7 +3216,7 @@ class Database:
             filters.append("(nombre ILIKE %s OR email ILIKE %s)")
             params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
-        sort_columns = {"id": "id", "nombre": "nombre", "email": "email", "rol": "rol"}
+        sort_columns = {"id": "id", "nombre": "nombre", "email": "email", "rol": "rol", "activo": "activo", "ultimo_login": "ultimo_login"}
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC")
         query = f"SELECT * FROM seguridad.v_usuario_publico WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -3228,7 +3281,7 @@ class Database:
                 cur.execute(query)
                 return _rows_to_dicts(cur)
 
-    def fetch_active_sessions(self, search: str = "", limit: int = 10, offset: int = 0, **kwargs) -> List[Dict[str, Any]]:
+    def fetch_active_sessions(self, search: str = "", sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 10, offset: int = 0, **kwargs) -> List[Dict[str, Any]]:
         """Fetch users who have logged in recently. Approximate active status."""
         query = """
             WITH last_states AS (
@@ -3262,7 +3315,9 @@ class Database:
             s = f"%{search.strip()}%"
             params.extend([s, s])
             
-        query += " ORDER BY l.fecha_hora DESC LIMIT %s OFFSET %s"
+        sort_columns = {"nombre": "u.nombre", "email": "u.email", "rol": "r.nombre", "desde": "l.fecha_hora", "ip": "l.ip"}
+        order_by = self._build_order_by(sorts, sort_columns, default="l.fecha_hora DESC")
+        query += f" ORDER BY {order_by} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
 
         with self.pool.connection() as conn:

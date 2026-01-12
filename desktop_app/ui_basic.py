@@ -141,8 +141,18 @@ class SafeDataTable(ft.DataTable):
                 return
             raise
         except Exception:
-            # Ignorar otros errores
             pass
+
+
+def _parse_float(value: Any, label: str = "valor") -> float:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0.0
+    try:
+        # Soporte para coma como separador decimal
+        clean_value = str(value).replace(",", ".")
+        return float(clean_value)
+    except ValueError:
+        raise ValueError(f"El campo '{label}' debe ser un número válido. Recibido: '{value}'")
 
 
 def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
@@ -1770,10 +1780,12 @@ def main(page: ft.Page) -> None:
                 notas=nueva_entidad_notas.value,
                 # Pricing
                 id_lista_precio=nueva_entidad_lista_precio.value,
-                descuento=float(nueva_entidad_descuento.value or 0),
-                limite_credito=float(nueva_entidad_limite_credito.value or 0)
+                descuento=_parse_float(nueva_entidad_descuento.value, "Descuento"),
+                limite_credito=_parse_float(nueva_entidad_limite_credito.value, "Límite de Crédito")
             )
             close_form()
+            if db_conn:
+                db_conn.log_activity("ENTIDAD", "INSERT", id_entidad=eid, detalle={"nombre": nueva_entidad_nombre.value, "apellido": nueva_entidad_apellido.value})
             show_toast("Entidad creada", kind="success")
             entidades_table.refresh()
         except Exception as exc:
@@ -1929,11 +1941,13 @@ def main(page: ft.Page) -> None:
                 editing_entity_id,
                 updates=updates,
                 id_lista_precio=nueva_entidad_lista_precio.value,
-                descuento=float(nueva_entidad_descuento.value or 0),
-                limite_credito=float(nueva_entidad_limite_credito.value or 0)
+                descuento=_parse_float(nueva_entidad_descuento.value, "Descuento"),
+                limite_credito=_parse_float(nueva_entidad_limite_credito.value, "Límite de Crédito")
             )
             
             close_form()
+            if db_conn:
+                db_conn.log_activity("ENTIDAD", "UPDATE", id_entidad=editing_entity_id, detalle=changes)
             show_toast("Entidad actualizada", kind="success")
             entidades_table.refresh()
         except Exception as exc:
@@ -2030,7 +2044,7 @@ def main(page: ft.Page) -> None:
                 show_toast("Campos obligatorios marcados con * son requeridos", kind="warning")
                 return
 
-            costo_val = float(nuevo_articulo_costo.value or 0)
+            costo_val = _parse_float(nuevo_articulo_costo.value, "Costo")
             if costo_val <= 0:
                 show_toast("El costo debe ser mayor a 0", kind="warning")
                 return
@@ -2040,16 +2054,16 @@ def main(page: ft.Page) -> None:
                 marca=nuevo_articulo_marca.value,
                 rubro=nuevo_articulo_rubro.value,
                 costo=costo_val,
-                stock_minimo=float(nuevo_articulo_stock_minimo.value or 0),
+                stock_minimo=_parse_float(nuevo_articulo_stock_minimo.value, "Stock mínimo"),
                 ubicacion=nuevo_articulo_ubicacion.value,
                 activo=bool(nuevo_articulo_activo.value),
                 id_tipo_iva=int(nuevo_articulo_tipo_iva.value) if nuevo_articulo_tipo_iva.value else None,
                 id_unidad_medida=int(nuevo_articulo_unidad.value) if nuevo_articulo_unidad.value else None,
                 id_proveedor=int(nuevo_articulo_proveedor.value) if nuevo_articulo_proveedor.value else None,
                 observacion=nuevo_articulo_observacion.value,
-                descuento_base=float(nuevo_articulo_descuento_base.value or 0),
+                descuento_base=_parse_float(nuevo_articulo_descuento_base.value, "Descuento Base"),
                 redondeo=bool(nuevo_articulo_redondeo.value),
-                porcentaje_ganancia_2=float(nuevo_articulo_ganancia_2.value or 0)
+                porcentaje_ganancia_2=_parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2")
             )
 
             # Save prices
@@ -2064,16 +2078,18 @@ def main(page: ft.Page) -> None:
                         tf_porc = row.controls[2]
                         dd_tipo = row.controls[3]
                         try:
-                            price_val = float(tf_precio.value or 0) if tf_precio.value else None
+                            price_val = _parse_float(tf_precio.value, "Precio") if tf_precio.value else None
                             if price_val and price_val > 0:
                                 any_price = True
                             price_updates.append({
                                 "id_lista_precio": lp_id,
                                 "precio": price_val,
-                                "porcentaje": float(tf_porc.value or 0) if tf_porc.value else None,
+                                "porcentaje": _parse_float(tf_porc.value, "Porcentaje") if tf_porc.value else None,
                                 "id_tipo_porcentaje": int(dd_tipo.value) if dd_tipo.value else None
                             })
-                        except: pass
+                        except Exception as e:
+                            # Re-raise to be caught by outer try/except and shown as toast
+                            raise e
                 
                 if not any_price:
                     show_toast("Al menos una lista de precio debe tener un valor mayor a 0", kind="warning")
@@ -2082,7 +2098,7 @@ def main(page: ft.Page) -> None:
                 db_conn.update_article_prices(art_id, price_updates)
             
             # Initial Stock Movement
-            stock_ini = float(nuevo_articulo_stock_actual.value or 0)
+            stock_ini = _parse_float(nuevo_articulo_stock_actual.value, "Stock actual")
             if stock_ini > 0:
                 # Assuming type_id=1 for Adjustment/Initial Stock. 
                 # Better to lookup 'Saldo Inicial' or similar if dynamic, but hardcoded ID 1 is common or needs verifiction.
@@ -2109,6 +2125,8 @@ def main(page: ft.Page) -> None:
                     print(f"Error creating initial stock: {e}")
 
             close_form()
+            if db_conn:
+                db_conn.log_activity("ARTICULO", "INSERT", id_entidad=art_id, detalle={"nombre": nuevo_articulo_nombre.value})
             show_toast("Artículo creado", kind="success")
             articulos_table.refresh()
         except Exception as exc:
@@ -2124,7 +2142,8 @@ def main(page: ft.Page) -> None:
                 show_toast("Campos obligatorios marcados con * son requeridos", kind="warning")
                 return
 
-            if float(nuevo_articulo_costo.value or 0) <= 0:
+            costo_val = _parse_float(nuevo_articulo_costo.value, "Costo")
+            if costo_val <= 0:
                 show_toast("El costo debe ser mayor a 0", kind="warning")
                 return
 
@@ -2132,17 +2151,17 @@ def main(page: ft.Page) -> None:
                 "nombre": nuevo_articulo_nombre.value or "",
                 "marca": nuevo_articulo_marca.value,
                 "rubro": nuevo_articulo_rubro.value,
-                "costo": nuevo_articulo_costo.value,
-                "stock_minimo": nuevo_articulo_stock_minimo.value,
+                "costo": costo_val,
+                "stock_minimo": _parse_float(nuevo_articulo_stock_minimo.value, "Stock mínimo"),
                 "ubicacion": nuevo_articulo_ubicacion.value,
                 "activo": bool(nuevo_articulo_activo.value),
                 "id_tipo_iva": int(nuevo_articulo_tipo_iva.value) if nuevo_articulo_tipo_iva.value else None,
                 "id_unidad_medida": int(nuevo_articulo_unidad.value) if nuevo_articulo_unidad.value else None,
                 "id_proveedor": int(nuevo_articulo_proveedor.value) if nuevo_articulo_proveedor.value else None,
                 "observacion": nuevo_articulo_observacion.value,
-                "descuento_base": nuevo_articulo_descuento_base.value,
+                "descuento_base": _parse_float(nuevo_articulo_descuento_base.value, "Descuento Base"),
                 "redondeo": bool(nuevo_articulo_redondeo.value),
-                "porcentaje_ganancia_2": nuevo_articulo_ganancia_2.value
+                "porcentaje_ganancia_2": _parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2")
             }
             db_conn.update_article_fields(editing_article_id, updates)
             
@@ -2157,16 +2176,17 @@ def main(page: ft.Page) -> None:
                     tf_porc = row.controls[2]
                     dd_tipo = row.controls[3]
                     try:
-                        price_val = float(tf_precio.value or 0) if tf_precio.value else None
+                        price_val = _parse_float(tf_precio.value, "Precio") if tf_precio.value else None
                         if price_val and price_val > 0:
                             any_price = True
                         price_updates.append({
                             "id_lista_precio": lp_id,
                             "precio": price_val,
-                            "porcentaje": float(tf_porc.value or 0) if tf_porc.value else None,
+                            "porcentaje": _parse_float(tf_porc.value, "Porcentaje") if tf_porc.value else None,
                             "id_tipo_porcentaje": int(dd_tipo.value) if dd_tipo.value else None
                         })
-                    except: pass
+                    except Exception as e:
+                        raise e
             
             if not any_price:
                 show_toast("Al menos una lista de precio debe tener un valor mayor a 0", kind="warning")
@@ -2177,11 +2197,7 @@ def main(page: ft.Page) -> None:
                 db_conn.update_article_prices(editing_article_id, price_updates)
                 
             # Handle Stock Change (Auto-Adjustment)
-            try:
-                raw_stock = str(nuevo_articulo_stock_actual.value or "0").strip().replace(",", ".")
-                new_stock = float(raw_stock)
-            except:
-                new_stock = 0.0
+            new_stock = _parse_float(nuevo_articulo_stock_actual.value, "Stock")
 
             # Fetch current stock (fresh)
             # We need to know the current stock to calc diff. 
@@ -2233,6 +2249,8 @@ def main(page: ft.Page) -> None:
                     show_toast(f"Error ajustando stock: {e}", kind="error")
             
             close_form()
+            if db_conn:
+                db_conn.log_activity("ARTICULO", "UPDATE", id_entidad=editing_article_id, detalle=changes)
             show_toast("Artículo actualizado", kind="success")
             articulos_table.refresh()
         except Exception as exc:
@@ -2896,6 +2914,9 @@ def main(page: ft.Page) -> None:
 
     def toggle_usuario(uid: int, is_active: bool) -> None:
         if not db: return
+        if db.current_user_id and int(uid) == int(db.current_user_id):
+            show_toast("No puedes desactivar tu propio usuario", kind="error")
+            return
         if is_active:
             ask_confirm("Desactivar", "¿Desactivar usuario?", "Sí, desactivar", lambda: (db.update_user_fields(int(uid), {"activo": False}), usuarios_table.refresh(), show_toast("Usuario desactivado correctamente", kind="success")))
         else:
@@ -3379,7 +3400,8 @@ def main(page: ft.Page) -> None:
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.PERSON_OFF_ROUNDED if row.get("activo") else ft.Icons.PERSON_ADD_ROUNDED,
                     tooltip="Desactivar Usuario" if row.get("activo") else "Reactivar Usuario",
-                    icon_color="#DC2626" if row.get("activo") else "#10B981",
+                    icon_color=("#94A3B8" if (db.current_user_id and int(row.get("id")) == int(db.current_user_id)) else ("#DC2626" if row.get("activo") else "#10B981")),
+                    disabled=True if (db.current_user_id and int(row.get("id")) == int(db.current_user_id)) else False,
                     on_click=lambda e, rid=row.get("id"), is_active=row.get("activo"): toggle_usuario(int(rid), is_active) if rid else None
                 )
             ),
@@ -3523,7 +3545,7 @@ def main(page: ft.Page) -> None:
         # Actually, let's reuse the logic that exists if we can, or just print log.
         pass
 
-    backup_view_component = BackupProfessionalView(page, db, show_toast)
+    backup_view_component = BackupProfessionalView(page, db, show_toast, ask_confirm)
     
     # Wrap in a container to match layout expectations
     backups_view = ft.Container(
@@ -3688,6 +3710,8 @@ def main(page: ft.Page) -> None:
                 if not db:
                     return
                 db.confirm_document(doc_id)
+                if db:
+                    db.log_activity("DOCUMENTO", "CONFIRM", id_entidad=doc_id)
                 show_toast("Comprobante confirmado", kind="success")
                 if close_after:
                     close_form()
@@ -4664,13 +4688,15 @@ def main(page: ft.Page) -> None:
                 
                 monto_val = pago_monto.value.replace(",", ".")
                 
-                db.create_payment(
+                pid = db.create_payment(
                     id_documento=int(pago_documento.value), # This will fail if placeholder
                     id_forma_pago=int(pago_forma.value),
                     monto=float(monto_val),
                     referencia=pago_ref.value,
                     observacion=pago_obs.value
                 )
+                if db:
+                    db.log_activity("PAGO", "INSERT", id_entidad=pid, detalle={"monto": monto_val})
                 show_toast("Pago registrado", kind="success")
                 close_form()
                 pagos_table.refresh()
@@ -4866,8 +4892,8 @@ def main(page: ft.Page) -> None:
                 show_toast("Complete los campos obligatorios", kind="warning")
                 return
             try:
-                monto = float(pcc_monto.value.replace(",", "."))
-                db.registrar_pago_cuenta_corriente(
+                monto = _parse_float(pcc_monto.value, "Monto")
+                pago_id = db.registrar_pago_cuenta_corriente(
                     id_entidad=int(pcc_entidad.value),
                     id_forma_pago=int(pcc_forma.value),
                     monto=monto,
@@ -4875,6 +4901,8 @@ def main(page: ft.Page) -> None:
                     referencia=pcc_referencia.value,
                     observacion=pcc_obs.value
                 )
+                if db and pago_id:
+                    db.log_activity("PAGO_CC", "INSERT", id_entidad=pago_id, detalle={"entidad": pcc_entidad.value, "monto": monto, "forma": pcc_forma.value})
                 show_toast("Pago registrado correctamente", kind="success")
                 close_form()
                 cuentas_table.refresh()
@@ -4935,14 +4963,16 @@ def main(page: ft.Page) -> None:
                 show_toast("Complete todos los campos obligatorios", kind="warning")
                 return
             try:
-                monto = float(aj_monto.value.replace(",", "."))
-                db.ajustar_saldo_cc(
+                monto = _parse_float(aj_monto.value, "Monto")
+                ajuste_id = db.ajustar_saldo_cc(
                     id_entidad=int(aj_entidad.value),
                     tipo=aj_tipo.value,
                     monto=monto,
                     concepto=aj_concepto.value,
                     observacion=aj_obs.value
                 )
+                if db and ajuste_id:
+                    db.log_activity("AJUSTE_CC", "INSERT", id_entidad=ajuste_id, detalle={"entidad": aj_entidad.value, "tipo": aj_tipo.value, "monto": monto})
                 show_toast("Ajuste aplicado correctamente", kind="success")
                 close_form()
                 cuentas_table.refresh()
@@ -5088,7 +5118,7 @@ def main(page: ft.Page) -> None:
         options=[
             ft.dropdown.Option("Todas", "Todos"),
             ft.dropdown.Option("OK", "OK"),
-            ft.dropdown.Option("FAIL", "FALLO"),
+            ft.dropdown.Option("FALLO", "FALLO"),
             ft.dropdown.Option("WARNING", "ADVERTENCIA"),
         ],
         value="Todas"
@@ -5113,12 +5143,12 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("usuario", logs_adv_user),
             AdvancedFilterControl("entidad", logs_adv_ent),
             AdvancedFilterControl("accion", logs_adv_acc),
-            AdvancedFilterControl("resultado", logs_adv_res),
             AdvancedFilterControl("id_entidad", logs_adv_ide),
             AdvancedFilterControl("desde", logs_adv_desde),
             AdvancedFilterControl("hasta", logs_adv_hasta),
         ],
         show_inline_controls=False, show_mass_actions=False, show_selection=True, auto_load=False, page_size=50,
+        show_export_button=True, show_export_scope=True,
     )
 
     precios_view = make_card(
@@ -6452,14 +6482,19 @@ def main(page: ft.Page) -> None:
                 try:
                     # [Artículo, Lista, Cant, Precio, IVA, Delete]
                     # Cant is now a Column: controls[2].controls[0] is the TextField
-                    c_cant = float(row.controls[2].controls[0].value or 0)
-                    c_price = float(row.controls[3].value or 0)
-                    c_iva = float(row.controls[4].value or 0)
+                    c_cant = _parse_float(row.controls[2].controls[0].value, "Cantidad")
+                    c_price = _parse_float(row.controls[3].value, "Precio")
+                    c_iva = _parse_float(row.controls[4].value, "IVA")
                     
                     line_neto = c_cant * c_price
                     sub += line_neto
                     iva_tot += line_neto * (c_iva / 100.0)
-                except: pass
+                except Exception as e:
+                    # En recalculo automático, si falla un renglón lo salteamos silenciosamente 
+                    # o podríamos mostrar toast, pero recalcula en cada cambio.
+                    # Sin embargo, si el error es explícito de parseo, lo dejamos
+                    # para que el usuario sepa qué pasó si llamó a recalcular.
+                    pass
             
             try:
                 desc_pct = float(field_descuento.value or 0)
@@ -6704,9 +6739,9 @@ def main(page: ft.Page) -> None:
                 items.append({
                     "id_articulo": int(art_id),
                     "id_lista_precio": int(item_lista) if item_lista and item_lista != "" else None,
-                    "cantidad": float(controls[2].controls[0].value or 0),
-                    "precio_unitario": float(controls[3].value or 0),
-                    "porcentaje_iva": float(controls[4].value or 0)
+                    "cantidad": _parse_float(controls[2].controls[0].value, "Cantidad"),
+                    "precio_unitario": _parse_float(controls[3].value, "Precio Unitario"),
+                    "porcentaje_iva": _parse_float(controls[4].value, "Porcentaje IVA")
                 })
             
             if not items:
@@ -6727,40 +6762,42 @@ def main(page: ft.Page) -> None:
                         items=items,
                         observacion=field_obs.value,
                         numero_serie=field_numero.value,
-                        descuento_porcentaje=float(field_descuento.value or 0),
+                        descuento_porcentaje=_parse_float(field_descuento.value, "Descuento (%)"),
                         descuento_importe=float(doc_data.get("descuento_importe", 0)) if doc_data else 0,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
                         direccion_entrega=field_direccion.value,
                         id_lista_precio=doc_lista_precio,
-                        sena=float(field_sena.value or 0),
+                        sena=_parse_float(field_sena.value, "Seña"),
                         manual_values={
-                            "subtotal": float(sum_subtotal.value or 0),
-                            "iva_total": float(sum_iva.value or 0),
-                            "total": float(sum_total.value or 0),
+                            "subtotal": _parse_float(sum_subtotal.value, "Neto Manual"),
+                            "iva_total": _parse_float(sum_iva.value, "IVA Manual"),
+                            "total": _parse_float(sum_total.value, "Total Manual"),
                         } if manual_mode.value else None
                     )
                 else:
-                    db.create_document(
+                    doc_id = db.create_document(
                         id_tipo_documento=int(dropdown_tipo.value),
-                    id_entidad_comercial=int(dropdown_entidad.value),
-                    id_deposito=int(dropdown_deposito.value),
-                    items=items,
-                    observacion=field_obs.value,
-                    numero_serie=field_numero.value,
-                    descuento_porcentaje=float(field_descuento.value or 0),
-                    descuento_importe=0,
-                    fecha=field_fecha.value, 
-                    fecha_vencimiento=field_vto.value,
-                    direccion_entrega=field_direccion.value,
-                    id_lista_precio=doc_lista_precio,
-                    sena=float(field_sena.value or 0),
-                    manual_values={
-                        "subtotal": float(sum_subtotal.value or 0),
-                        "iva_total": float(sum_iva.value or 0),
-                        "total": float(sum_total.value or 0),
-                    } if manual_mode.value else None
-                )
+                        id_entidad_comercial=int(dropdown_entidad.value),
+                        id_deposito=int(dropdown_deposito.value),
+                        items=items,
+                        observacion=field_obs.value,
+                        numero_serie=field_numero.value,
+                        descuento_porcentaje=_parse_float(field_descuento.value, "Descuento (%)"),
+                        descuento_importe=0,
+                        fecha=field_fecha.value, 
+                        fecha_vencimiento=field_vto.value,
+                        direccion_entrega=field_direccion.value,
+                        id_lista_precio=doc_lista_precio,
+                        sena=_parse_float(field_sena.value, "Seña"),
+                        manual_values={
+                            "subtotal": _parse_float(sum_subtotal.value, "Neto Manual"),
+                            "iva_total": _parse_float(sum_iva.value, "IVA Manual"),
+                            "total": _parse_float(sum_total.value, "Total Manual"),
+                        } if manual_mode.value else None
+                    )
+                if db:
+                    db.log_activity("DOCUMENTO", "INSERT", id_entidad=doc_id, detalle={"tipo": dropdown_tipo.value, "items": len(items)})
                 show_toast("Comprobante creado con éxito", kind="success")
                 close_form()
                 # Refresh tables if they are visible
@@ -6784,8 +6821,8 @@ def main(page: ft.Page) -> None:
             sum_iva.value = str(doc_data["iva_total"])
             sum_total.value = str(doc_data["total"])
             try:
-                total_val = float(sum_total.value or 0)
-                sena_val = float(field_sena.value or 0)
+                total_val = _parse_float(sum_total.value, "Total")
+                sena_val = _parse_float(field_sena.value, "Seña")
                 sum_saldo.value = str(round(max(0, total_val - sena_val), 2))
             except Exception:
                 sum_saldo.value = "0.00"
