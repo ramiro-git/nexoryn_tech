@@ -82,6 +82,12 @@ class MassUpdateView(ft.Container):
         self.preview_data: List[Dict[str, Any]] = []
         self.selected_ids: set[int] = set()
         self._loading: bool = False
+        
+        # Lazy loading state
+        self._batch_size: int = 50
+        self._current_index: int = 0
+        self._all_preview_data: List[Dict[str, Any]] = []
+        self._is_loading_batch: bool = False
 
         # Loader
         self.loader = ft.ProgressBar(width=None, color="#6366F1", visible=False)
@@ -153,7 +159,7 @@ class MassUpdateView(ft.Container):
                 ft.DataColumn(ft.Text("Variación")),
             ],
             width=None,
-            expand=True,
+            # expand=True, # Removed expand to let ListView handle scrolling
             heading_row_color="#F1F5F9",
             data_row_color={"hovered": "#F8FAFC"},
         )
@@ -172,13 +178,48 @@ class MassUpdateView(ft.Container):
         self.btn_apply = ft.ElevatedButton(
             "APLICAR CAMBIOS SELECCIONADOS",
             icon=ft.Icons.SAVE_ROUNDED,
-            bgcolor="#EF4444",
+            bgcolor="#4F46E5",
             color="#FFFFFF",
             on_click=self._confirm_apply,
             disabled=True,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=4),
                 padding=20,
+            ),
+        )
+        
+        self.btn_load_more = ft.TextButton(
+            "Cargar más resultados...",
+            icon=ft.Icons.DOWNLOAD_ROUNDED,
+            on_click=lambda _: self._load_next_batch(),
+            visible=False,
+        )
+
+        # Preview Table Container (Scrollable)
+        self.scroll_container = ft.ListView(
+            [self.preview_table, self.btn_load_more],
+            expand=True,
+            on_scroll_interval=10,
+            on_scroll=self._on_preview_scroll,
+        )
+        self.scroll_container.visible = False
+
+        self.preview_empty_title = ft.Text("Sin vista previa", weight=ft.FontWeight.BOLD, color="#1E293B")
+        self.preview_empty_message = ft.Text("Genera la vista previa para ver articulos.", size=12, color="#64748B")
+        self.preview_empty = ft.Container(
+            visible=True,
+            expand=True,
+            alignment=ft.Alignment(0, 0),
+            padding=40,
+            content=ft.Column(
+                [
+                    self.preview_empty_title,
+                    self.preview_empty_message,
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=6,
+                tight=True,
             ),
         )
 
@@ -213,7 +254,16 @@ class MassUpdateView(ft.Container):
                         [
                             ft.Row(
                                 [
-                                    ft.Text("1. Filtrar Artículos", weight=ft.FontWeight.W_600, color="#1E293B", size=16),
+                                    ft.Row([
+                                        ft.Text("1. Filtrar Artículos", weight=ft.FontWeight.W_600, color="#1E293B", size=16),
+                                        ft.IconButton(
+                                            icon=ft.Icons.FILTER_ALT_OFF_ROUNDED,
+                                            icon_color="#64748B",
+                                            icon_size=20,
+                                            tooltip="Resetear filtros",
+                                            on_click=self._reset_filters,
+                                        ),
+                                    ], spacing=10),
                                     self.count_label,
                                 ],
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -248,18 +298,19 @@ class MassUpdateView(ft.Container):
                     padding=20,
                     border=ft.border.all(1, "#E2E8F0"),
                     border_radius=8,
-                    bgcolor="#F8FAFC",
+                    bgcolor="#FFFFFF",
                     expand=True,
                     content=ft.Column(
                         [
                             ft.Row(
                                 [
                                     ft.Text("3. Vista Previa y Selección", weight=ft.FontWeight.W_600, color="#1E293B", size=16),
-                                    ft.Text("Seleccione los ítems a actualizar", size=12, color="grey"),
+                                    ft.Text("Seleccione los ítems a actualizar (carga progresiva)", size=12, color="grey"),
                                 ],
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             ),
-                            ft.Column([self.preview_table], scroll=ft.ScrollMode.AUTO, expand=True),
+                            self.scroll_container,
+                            self.preview_empty,
                             ft.Row([self.btn_apply], alignment=ft.MainAxisAlignment.END),
                         ],
                         spacing=15,
@@ -271,9 +322,12 @@ class MassUpdateView(ft.Container):
             spacing=20,
             expand=True,
         )
-
+        
         # Initial Load
         self.load_catalogs()
+        
+        # Trigger initial count update
+        self._schedule_initial_count()
 
         # Bind events
         for ctrl in [
@@ -297,6 +351,148 @@ class MassUpdateView(ft.Container):
                 self.update()
         except Exception:
             pass
+    
+    def _schedule_initial_count(self) -> None:
+        """Schedule an async update of the article count after the page is mounted."""
+        async def _do_count():
+            await asyncio.sleep(0.1)  # Let the UI mount first
+            self._update_count(None)
+        if self.page:
+            self.page.run_task(_do_count)
+        else:
+            # Will be called again when mounted via did_mount if needed
+            pass
+    
+    def did_mount(self):
+        """Called when the component is mounted to the page."""
+        super().did_mount()
+        # Reset visual state on mount to avoid stale data
+        self._clear_preview_state()
+        # Trigger initial count now that page is available
+        self._schedule_initial_count()
+    
+    def _clear_preview_state(self):
+        """Reset all preview-related state."""
+        self.preview_table.rows.clear()
+        self.selected_ids.clear()
+        self._all_preview_data = []
+        self._current_index = 0
+        self._is_loading_batch = False
+        
+        self.btn_apply.disabled = True
+        self.btn_apply.text = "APLICAR CAMBIOS SELECCIONADOS"
+        self.btn_load_more.visible = False
+
+        self.preview_table.update()
+        self.btn_apply.update()
+        self.btn_load_more.update()
+        self._show_preview_placeholder("Sin vista previa", "Genera la vista previa para ver articulos.")
+
+        # Try reset scroll
+        try:
+            if hasattr(self, 'scroll_container'):
+                self.scroll_container.scroll_to(0, duration=0)
+        except:
+            pass
+
+    def _show_preview_placeholder(self, title: str, message: str) -> None:
+        self.preview_empty_title.value = title
+        self.preview_empty_message.value = message
+        self.preview_empty.visible = True
+        self.scroll_container.visible = False
+        self.preview_empty.update()
+        self.scroll_container.update()
+
+    def _show_preview_table(self) -> None:
+        self.preview_empty.visible = False
+        self.scroll_container.visible = True
+        self.preview_empty.update()
+        self.scroll_container.update()
+    
+    
+    def _on_preview_scroll(self, e: ft.OnScrollEvent) -> None:
+        """Handle scroll events to load more rows when near bottom."""
+        if self._is_loading_batch or self._loading:
+            return
+        
+        # Check if near bottom
+        scroll_offset = e.pixels
+        max_scroll = e.max_scroll_extent
+        
+        # If we are close to the bottom (100px)
+        if (max_scroll - scroll_offset) < 100:
+            self._load_next_batch()
+    
+    def _load_next_batch(self) -> None:
+        """Load the next batch of rows into the preview table."""
+        if self._is_loading_batch:
+            return
+        if self._current_index >= len(self._all_preview_data):
+            return
+        
+        self._is_loading_batch = True
+        
+        try:
+            end_index = min(self._current_index + self._batch_size, len(self._all_preview_data))
+            batch = self._all_preview_data[self._current_index:end_index]
+            
+            for r in batch:
+                rid = int(r["id"])
+                # Don't force add to selection here, respect current state
+                is_selected = rid in self.selected_ids
+                
+                self.preview_table.rows.append(
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(
+                                ft.Checkbox(
+                                    value=is_selected,
+                                    on_change=lambda e, rid=rid: self._toggle_one(rid, e.control.value),
+                                )
+                            ),
+                            ft.DataCell(ft.Text(str(rid))),
+                            ft.DataCell(ft.Text(r.get("nombre", ""))),
+                            ft.DataCell(ft.Text(f"${float(r.get('current', 0.0)):,.2f}")),
+                            ft.DataCell(
+                                ft.Text(
+                                    f"${float(r.get('new', 0.0)):,.2f}",
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#166534",
+                                )
+                            ),
+                            ft.DataCell(
+                                ft.Text(
+                                    f"{float(r.get('diff_pct', 0.0)):+.2f}%",
+                                    color="#EA580C" if float(r.get("diff_pct", 0.0)) != 0 else "#64748B",
+                                )
+                            ),
+                        ]
+                    )
+                )
+            
+            self._current_index = end_index
+            self.preview_table.update()
+            
+            # Update button text
+            self.btn_apply.text = f"APLICAR A {len(self.selected_ids)} ARTÍCULOS"
+            self.btn_apply.disabled = len(self.selected_ids) == 0
+            self.btn_apply.update()
+            
+            # Show loading indicator if more to load
+            remaining = len(self._all_preview_data) - self._current_index
+            if remaining > 0:
+                self.btn_load_more.visible = True
+                self.btn_load_more.text = f"Cargar {min(self._batch_size, remaining)} más... ({remaining} restantes)"
+                self.btn_load_more.update()
+                # self.show_toast(f"Cargados {self._current_index} de {len(self._all_preview_data)} artículos...", "info")
+            else:
+                self.btn_load_more.visible = False
+                self.btn_load_more.update()
+                
+        except Exception as e:
+            print(f"Error loading batch: {e}")
+        finally:
+            self._is_loading_batch = False
 
     def _set_loading(self, loading: bool) -> None:
         self._loading = loading
@@ -317,6 +513,25 @@ class MassUpdateView(ft.Container):
             return float(self.value_input.value or 0)
         except Exception:
             return 0.0
+
+    def _reset_filters(self, _):
+        self.filter_nombre.value = ""
+        self.filter_marca.value = ""
+        self.filter_rubro.value = ""
+        self.filter_proveedor.value = None
+        self.filter_lista.value = None
+        self.filter_iva.value = ""
+        self.filter_activo.value = ""
+
+        # Update controls
+        self.filter_nombre.update()
+        self.filter_marca.update()
+        self.filter_rubro.update()
+        self.filter_iva.update()
+        self.filter_activo.update()
+
+        # Update count and clear preview
+        self._update_count(None)
 
     # -----------------------------
     # Catalogs / Filters
@@ -385,14 +600,8 @@ class MassUpdateView(ft.Container):
             self.count_label.value = f"{count} artículos coincidentes"
             self.count_label.update()
 
-            # Clear preview when filters change as it is invalid
-            if len(self.preview_table.rows) > 0:
-                self.preview_table.rows.clear()
-                self.preview_table.update()
-                self.selected_ids.clear()
-                self.btn_apply.disabled = True
-                self.btn_apply.text = "APLICAR CAMBIOS SELECCIONADOS"
-                self.btn_apply.update()
+            # Always clear preview when filters change (invalidates current preview)
+            self._clear_preview_state()
 
         except Exception as e:
             print(f"Error count: {e}")
@@ -436,52 +645,45 @@ class MassUpdateView(ft.Container):
                 limit=None,  # full list (ojo si son miles)
             )
 
+            # Clear state
             self.preview_table.rows.clear()
             self.selected_ids.clear()
+            self._all_preview_data = rows
+            self._current_index = 0
+            
+            # Reset scroll to top
+            try:
+                self.scroll_container.scroll_to(0, duration=0)
+            except:
+                pass
 
+            # Select all by default when generating new preview
             for r in rows:
-                rid = int(r["id"])
-                self.selected_ids.add(rid)  # select all by default
-
-                self.preview_table.rows.append(
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(
-                                ft.Checkbox(
-                                    value=True,
-                                    on_change=lambda e, rid=rid: self._toggle_one(rid, e.control.value),
-                                )
-                            ),
-                            ft.DataCell(ft.Text(str(rid))),
-                            ft.DataCell(ft.Text(r.get("nombre", ""))),
-                            ft.DataCell(ft.Text(f"${float(r.get('current', 0.0)):,.2f}")),
-                            ft.DataCell(
-                                ft.Text(
-                                    f"${float(r.get('new', 0.0)):,.2f}",
-                                    weight=ft.FontWeight.BOLD,
-                                    color="#166534",
-                                )
-                            ),
-                            ft.DataCell(
-                                ft.Text(
-                                    f"{float(r.get('diff_pct', 0.0)):+.2f}%",
-                                    color="#EA580C" if float(r.get("diff_pct", 0.0)) != 0 else "#64748B",
-                                )
-                            ),
-                        ]
-                    )
-                )
-
-            self.preview_table.update()
-
-            self.btn_apply.text = f"APLICAR A {len(self.selected_ids)} ARTÍCULOS"
-            self.btn_apply.disabled = len(self.selected_ids) == 0
-            self.btn_apply.update()
+                self.selected_ids.add(int(r["id"]))
 
             if not rows:
+                self.preview_table.update()
+                self._show_preview_placeholder(
+                    "Sin resultados",
+                    "No se encontraron articulos con los filtros actuales.",
+                )
+                self.btn_apply.text = "APLICAR CAMBIOS SELECCIONADOS"
+                self.btn_apply.disabled = True
+                self.btn_apply.update()
+                self.btn_load_more.visible = False
+                self.btn_load_more.update()
                 self.show_toast("No se encontraron artículos con los filtros actuales.", "info")
             else:
-                self.show_toast(f"Vista previa lista: {len(rows)} artículos.", "success")
+                self._show_preview_table()
+                # Load first batch only (lazy loading)
+                self._load_next_batch()
+
+                total = len(rows)
+                loaded = min(self._batch_size, total)
+                if total > self._batch_size:
+                    self.show_toast(f"Vista previa lista: {total} artículos. Mostrando {loaded}, scrollea para cargar más.", "success")
+                else:
+                    self.show_toast(f"Vista previa lista: {total} artículos.", "success")
 
             self._ui_update()
 
@@ -498,17 +700,17 @@ class MassUpdateView(ft.Container):
         checked = bool(e.control.value)
         self.selected_ids.clear()
 
+        # Update visual checkboxes in loaded rows
         for row in self.preview_table.rows:
             # Checkbox visual
             cb = row.cells[0].content
             if hasattr(cb, "value"):
                 cb.value = checked
-            # ID
-            art_id_cell = row.cells[1].content
-            if hasattr(art_id_cell, "value"):
-                art_id = int(art_id_cell.value)
-                if checked:
-                    self.selected_ids.add(art_id)
+
+        # If selecting all, include ALL items (even those not loaded yet)
+        if checked:
+            for r in self._all_preview_data:
+                self.selected_ids.add(int(r["id"]))
 
         self.preview_table.update()
         self._update_apply_btn()
@@ -598,6 +800,7 @@ class MassUpdateView(ft.Container):
             self.btn_apply.disabled = True
             self.btn_apply.text = "APLICAR CAMBIOS SELECCIONADOS"
             self.btn_apply.update()
+            self._show_preview_placeholder("Sin vista previa", "Genera la vista previa para ver articulos.")
 
             self.show_toast(f"Actualización completada. {affected} artículos modificados.", "success")
 

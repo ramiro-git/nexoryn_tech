@@ -1139,7 +1139,8 @@ class Database:
         operation: str, # 'PCT_ADD', 'PCT_SUB', 'AMT_ADD', 'AMT_SUB', 'SET_VAL'
         value: float,
         list_id: Optional[int] = None,
-        limit: int = 5
+        limit: Optional[int] = 5,
+        offset: int = 0
     ) -> List[Dict[str, Any]]:
         """
         Preview the effect of a mass update on a few articles.
@@ -1159,7 +1160,7 @@ class Database:
                 SELECT id, nombre, costo as current_val 
                 FROM app.articulo 
                 WHERE {where_clause} 
-                LIMIT %s
+                LIMIT %s OFFSET %s
             """
         elif target == "LISTA_PRECIO" and list_id:
              query = f"""
@@ -1167,13 +1168,13 @@ class Database:
                 FROM app.articulo a
                 JOIN app.articulo_precio ap ON ap.id_articulo = a.id
                 WHERE ap.id_lista_precio = {int(list_id)} AND {where_clause}
-                LIMIT %s
+                LIMIT %s OFFSET %s
              """
         else:
             return []
 
         # Add limit to params
-        params.append(limit)
+        params.extend([limit, offset])
 
         results = []
         with self.pool.connection() as conn:
@@ -2701,29 +2702,110 @@ class Database:
                 result = cur.fetchone()
                 return result.get("total", 0) if isinstance(result, dict) else result[0]
 
-    def create_lista_precio(self, nombre: str, activa: bool = True, orden: int = 0) -> int:
-        query = "INSERT INTO ref.lista_precio (nombre, activa, orden) VALUES (%s, %s, %s) RETURNING id"
+    def _next_lista_precio_orden(self, cur: Any, start: int = 1, exclude_id: Optional[int] = None) -> int:
+        start_val = max(1, int(start))
+        query = "SELECT orden FROM ref.lista_precio"
+        params: List[Any] = []
+        if exclude_id:
+            query += " WHERE id <> %s"
+            params.append(int(exclude_id))
+        query += " ORDER BY orden ASC"
+        if params:
+            cur.execute(query, params)
+        else:
+            cur.execute(query)
+        rows = cur.fetchall()
+        next_order = start_val
+        for row in rows:
+            value = row.get("orden") if isinstance(row, dict) else row[0]
+            if value is None:
+                continue
+            try:
+                value_int = int(value)
+            except (TypeError, ValueError):
+                continue
+            if value_int < next_order:
+                continue
+            if value_int == next_order:
+                next_order += 1
+                continue
+            break
+        return next_order
+
+    def get_next_lista_precio_orden(self, start: int = 1, *, exclude_id: Optional[int] = None) -> int:
+        try:
+            start_val = int(start)
+        except (TypeError, ValueError):
+            start_val = 1
+        if start_val < 1:
+            start_val = 1
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, (nombre.strip(), activa, orden))
-                res = cur.fetchone()
-                conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+                return self._next_lista_precio_orden(cur, start_val, exclude_id)
+
+    def create_lista_precio(self, nombre: str, activa: bool = True, orden: int = 0) -> int:
+        query = "INSERT INTO ref.lista_precio (nombre, activa, orden) VALUES (%s, %s, %s) RETURNING id"
+        if not isinstance(nombre, str) or not nombre.strip():
+            raise ValueError("El nombre no puede estar vacío.")
+        try:
+            orden_val = 0
+            if orden is not None and str(orden).strip() != "":
+                try:
+                    orden_val = int(str(orden).strip())
+                except (TypeError, ValueError):
+                    raise ValueError("El orden debe ser un número entero.")
+            if orden_val <= 0:
+                orden_val = 1
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    orden_val = self._next_lista_precio_orden(cur, orden_val)
+                    cur.execute(query, (nombre.strip(), activa, orden_val))
+                    res = cur.fetchone()
+                    conn.commit()
+                    return res.get("id") if isinstance(res, dict) else res[0]
+        except IntegrityError as e:
+            if getattr(e, "diag", None) and getattr(e.diag, "constraint_name", None) == "lista_precio_nombre_key":
+                raise ValueError("Ya existe una lista de precios con ese nombre. Usá otro nombre.")
+            if "lista_precio_nombre_key" in str(e):
+                raise ValueError("Ya existe una lista de precios con ese nombre. Usá otro nombre.")
+            raise ValueError(f"Error al crear lista de precios: {e}")
 
     def update_lista_precio_fields(self, id: int, updates: Dict[str, Any]) -> None:
         allowed = {"nombre", "activa", "orden"}
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered: return
+        if "orden" in filtered:
+            orden_val = 0
+            if filtered["orden"] is not None and str(filtered["orden"]).strip() != "":
+                try:
+                    orden_val = int(str(filtered["orden"]).strip())
+                except (TypeError, ValueError):
+                    raise ValueError("El orden debe ser un número entero.")
+            if orden_val <= 0:
+                orden_val = 1
+            filtered["orden"] = orden_val
         set_clause = ", ".join([f"{k} = %s" for k in filtered.keys()])
         params = [v.strip() if isinstance(v, str) else v for v in filtered.values()]
         params.append(id)
         query = f"UPDATE ref.lista_precio SET {set_clause} WHERE id = %s"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
-                cur.execute(query, params)
-                conn.commit()
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    self._setup_session(cur)
+                    if "orden" in filtered:
+                        params = [v.strip() if isinstance(v, str) else v for v in filtered.values()]
+                        params.append(id)
+                        orden_idx = list(filtered.keys()).index("orden")
+                        params[orden_idx] = self._next_lista_precio_orden(cur, int(params[orden_idx]), exclude_id=id)
+                    cur.execute(query, params)
+                    conn.commit()
+        except IntegrityError as e:
+            if getattr(e, "diag", None) and getattr(e.diag, "constraint_name", None) == "lista_precio_nombre_key":
+                raise ValueError("Ya existe una lista de precios con ese nombre. Usá otro nombre.")
+            if "lista_precio_nombre_key" in str(e):
+                raise ValueError("Ya existe una lista de precios con ese nombre. Usá otro nombre.")
+            raise ValueError(f"Error al actualizar lista de precios: {e}")
 
     def delete_listas_precio(self, ids: Sequence[int]) -> None:
         query = "DELETE FROM ref.lista_precio WHERE id = ANY(%s)"

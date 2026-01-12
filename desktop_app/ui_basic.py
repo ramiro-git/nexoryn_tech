@@ -3272,7 +3272,21 @@ def main(page: ft.Page) -> None:
         show_inline_controls=True, show_selection=False, show_mass_actions=False, auto_load=False, page_size=20, show_export_scope=False,
     )
     nueva_lp_nom = ft.TextField(label="Nombre Lista", width=220); _style_input(nueva_lp_nom)
-    nueva_lp_orden = ft.TextField(label="Orden", width=80, value="0", input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9]")); _style_input(nueva_lp_orden)
+    def _next_lp_order_value() -> str:
+        if not db:
+            return "1"
+        try:
+            return str(db.get_next_lista_precio_orden())
+        except Exception:
+            return "1"
+
+    nueva_lp_orden = ft.TextField(
+        label="Orden",
+        width=80,
+        value=_next_lp_order_value(),
+        input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9]"),
+    )
+    _style_input(nueva_lp_orden)
 
     def agregar_lp(_: Any = None):
         nom = (nueva_lp_nom.value or "").strip()
@@ -3280,7 +3294,7 @@ def main(page: ft.Page) -> None:
         if not nom: return
         try:
             db.create_lista_precio(nom, orden=int(orden_val))
-            nueva_lp_nom.value = ""; nueva_lp_orden.value = "0"
+            nueva_lp_nom.value = ""; nueva_lp_orden.value = _next_lp_order_value()
             precios_table.refresh(); show_toast("Lista agregada", kind="success")
         except Exception as exc: show_toast(f"Error: {exc}", kind="error")
 
