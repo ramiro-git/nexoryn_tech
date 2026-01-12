@@ -333,11 +333,16 @@ class Database:
             res["por_tipo"] = {r[0]: r[1] for r in cur.fetchall()}
             
             cur.execute("""
-                SELECT fp.descripcion, SUM(p.monto)
-                FROM app.pago p
-                JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
-                WHERE p.fecha >= date_trunc('month', now())
-                GROUP BY fp.descripcion
+                SELECT 
+                    COALESCE(fp.descripcion, 'Efectivo'), 
+                    SUM(COALESCE(p.monto, d.total))
+                FROM app.v_documento_resumen d
+                LEFT JOIN app.pago p ON p.id_documento = d.id
+                LEFT JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
+                WHERE d.clase = 'VENTA' 
+                  AND d.estado != 'ANULADO'
+                  AND d.fecha >= date_trunc('month', now())
+                GROUP BY COALESCE(fp.descripcion, 'Efectivo')
             """)
             res["por_forma_pago"] = {r[0]: float(r[1] or 0) for r in cur.fetchall()}
             
@@ -689,7 +694,7 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def get_top_articulos(self, limit: int = 10) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM app.v_top_articulos_mes LIMIT %s"
+        query = "SELECT * FROM app.v_top_articulos_mes WHERE total_facturado > 0 LIMIT %s"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (limit,))
@@ -707,6 +712,7 @@ class Database:
             WHERE a.activo = true
               AND (d.id IS NULL OR (d.fecha >= date_trunc('month', now()) AND d.estado IN ('CONFIRMADO', 'PAGADO')))
             GROUP BY a.id, a.nombre
+            HAVING COALESCE(SUM(dd.total_linea), 0) > 0
             ORDER BY total_facturado ASC, cantidad_vendida ASC
             LIMIT %s
         """
