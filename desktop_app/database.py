@@ -827,8 +827,15 @@ class Database:
 
         advanced = advanced or {}
 
+        if not tipo:
+            tipo = advanced.get("tipo")
+        if isinstance(tipo, str):
+            tipo = tipo.strip()
+            if tipo.lower() in {"todos", "todas"}:
+                tipo = None
+
         if tipo:
-            tipo_upper = tipo.upper()
+            tipo_upper = str(tipo).upper()
             if tipo_upper == "CLIENTE":
                 filters.append("tipo IN ('CLIENTE', 'AMBOS')")
             elif tipo_upper == "PROVEEDOR":
@@ -849,15 +856,25 @@ class Database:
             filters.append("cuit ILIKE %s")
             params.append(f"%{cuit.strip()}%")
 
-        localidad = advanced.get("localidad")
-        if isinstance(localidad, str) and localidad.strip():
-            filters.append("localidad ILIKE %s")
-            params.append(f"%{localidad.strip()}%")
+        id_localidad = _to_id(advanced.get("id_localidad"))
+        if id_localidad is not None:
+            filters.append("id_localidad = %s")
+            params.append(id_localidad)
 
-        provincia = advanced.get("provincia")
-        if isinstance(provincia, str) and provincia.strip():
-            filters.append("provincia ILIKE %s")
-            params.append(f"%{provincia.strip()}%")
+        id_provincia = _to_id(advanced.get("id_provincia"))
+        if id_provincia is not None:
+            filters.append("id_provincia = %s")
+            params.append(id_provincia)
+
+        id_lista_precio = _to_id(advanced.get("id_lista_precio"))
+        if id_lista_precio is not None:
+            filters.append("id_lista_precio = %s")
+            params.append(id_lista_precio)
+
+        id_condicion_iva = _to_id(advanced.get("id_condicion_iva"))
+        if id_condicion_iva is not None:
+            filters.append("id_condicion_iva = %s")
+            params.append(id_condicion_iva)
 
         activo = advanced.get("activo")
         if isinstance(activo, str):
@@ -894,13 +911,30 @@ class Database:
             "notas": "notas",
             "localidad": "localidad",
             "provincia": "provincia",
-            "condicion_iva": "condicion_iva"
+            "condicion_iva": "condicion_iva",
+            "lista_precio": "lista_precio",
         }
+        skip_text = set()
+        if id_localidad is not None:
+            skip_text.add("localidad")
+        if id_provincia is not None:
+            skip_text.add("provincia")
+        if id_lista_precio is not None:
+            skip_text.add("lista_precio")
+        if id_condicion_iva is not None:
+            skip_text.add("condicion_iva")
         for key, col in text_fields.items():
+            if key in skip_text:
+                continue
             val = advanced.get(key)
-            if isinstance(val, str) and val.strip():
+            if isinstance(val, str):
+                val = val.strip()
+                if not val:
+                    continue
+                if key == "condicion_iva" and val.lower() in {"todos", "todas"}:
+                    continue
                 filters.append(f"{col} ILIKE %s")
-                params.append(f"%{val.strip()}%")
+                params.append(f"%{val}%")
 
         return " AND ".join(filters), params
 
@@ -925,10 +959,15 @@ class Database:
             "razon_social": "razon_social",
             "cuit": "cuit",
             "domicilio": "domicilio",
+            "telefono": "telefono",
+            "email": "email",
             "localidad": "localidad",
+            "id_localidad": "localidad",
             "provincia": "provincia",
+            "id_provincia": "provincia",
             "condicion_iva": "condicion_iva",
             "lista_precio": "lista_precio",
+            "id_lista_precio": "lista_precio",
             "descuento": "descuento",
             "saldo_cuenta": "saldo_cuenta",
             "fecha_creacion": "fecha_creacion",
@@ -953,6 +992,9 @@ class Database:
                 email,
                 notas,
                 fecha_creacion,
+                id_localidad,
+                id_provincia,
+                id_lista_precio,
                 lista_precio,
                 descuento,
                 saldo_cuenta,
@@ -1825,9 +1867,33 @@ class Database:
         return self.create_entity_full(**kwargs)
 
     def update_entity_fields(self, entity_id: int, updates: Dict[str, Any]) -> None:
-        allowed = {"nombre", "apellido", "razon_social", "cuit", "domicilio", "telefono", "email", "activo", "tipo", "notas", "id_localidad", "id_condicion_iva", "condicion_iva", "lista_precio", "id_lista_precio"}
-        filtered = {k: v for k, v in updates.items() if k in allowed}
-        if not filtered:
+        allowed = {
+            "nombre",
+            "apellido",
+            "razon_social",
+            "cuit",
+            "domicilio",
+            "telefono",
+            "email",
+            "activo",
+            "tipo",
+            "notas",
+            "id_localidad",
+            "id_provincia",
+            "id_condicion_iva",
+            "condicion_iva",
+            "lista_precio",
+            "id_lista_precio",
+        }
+        missing = object()
+        lista_raw = updates.get("id_lista_precio", missing)
+        lista_nombre = updates.get("lista_precio", missing)
+        filtered = {
+            k: v
+            for k, v in updates.items()
+            if k in allowed and k not in {"id_lista_precio", "lista_precio"}
+        }
+        if not filtered and lista_raw is missing and lista_nombre is missing:
             return
 
         if "activo" in filtered and isinstance(filtered["activo"], str):
@@ -1839,43 +1905,124 @@ class Database:
             else:
                 raise ValueError("Valor inválido para activo (usa true/false).")
 
-        if "condicion_iva" in filtered:
-            iva_nombre = filtered.pop("condicion_iva")
-            if iva_nombre:
-                with self.pool.connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT id FROM ref.condicion_iva WHERE nombre = %s", (iva_nombre,))
-                        res = cur.fetchone()
-                        iva_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
-                if iva_id:
-                    filtered["id_condicion_iva"] = iva_id
-                else:
-                    raise ValueError(f"Condición de IVA inválida: {iva_nombre}")
+        lista_update = lista_raw is not missing or lista_nombre is not missing
+        lista_id: Optional[int] = None
 
-        if "lista_precio" in filtered:
-            lista_nombre = filtered.pop("lista_precio")
-            if lista_nombre:
-                with self.pool.connection() as conn:
-                    with conn.cursor() as cur:
+        with self._transaction() as cur:
+            if "condicion_iva" in filtered:
+                iva_nombre = filtered.pop("condicion_iva")
+                if iva_nombre:
+                    cur.execute("SELECT id FROM ref.condicion_iva WHERE nombre = %s", (iva_nombre,))
+                    res = cur.fetchone()
+                    iva_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                    if iva_id:
+                        filtered["id_condicion_iva"] = iva_id
+                    else:
+                        raise ValueError(f"Condición de IVA inválida: {iva_nombre}")
+
+            if lista_update:
+                if lista_raw is not missing:
+                    if lista_raw is None or str(lista_raw).strip() == "":
+                        lista_id = None
+                    else:
+                        try:
+                            lista_id = int(lista_raw)
+                        except (TypeError, ValueError):
+                            raise ValueError("Lista de Precio inválida.")
+                else:
+                    if lista_nombre:
                         cur.execute("SELECT id FROM ref.lista_precio WHERE nombre = %s", (lista_nombre,))
                         res = cur.fetchone()
                         lista_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
-                if lista_id:
-                    filtered["id_lista_precio"] = lista_id
+                        if not lista_id:
+                            raise ValueError(f"Lista de Precio inválida: {lista_nombre}")
+                    else:
+                        lista_id = None
+
+            if "id_provincia" in filtered and "id_localidad" not in filtered:
+                prov_raw = filtered.pop("id_provincia")
+                if prov_raw is None or str(prov_raw).strip() == "":
+                    filtered["id_localidad"] = None
                 else:
-                    raise ValueError(f"Lista de Precio inválida: {lista_nombre}")
+                    try:
+                        prov_id = int(prov_raw)
+                    except (TypeError, ValueError):
+                        raise ValueError("Provincia inválida.")
+                    cur.execute(
+                        """
+                        SELECT l.nombre
+                        FROM app.entidad_comercial e
+                        LEFT JOIN ref.localidad l ON l.id = e.id_localidad
+                        WHERE e.id = %s
+                        """,
+                        (entity_id,),
+                    )
+                    res = cur.fetchone()
+                    current_localidad = res.get("nombre") if isinstance(res, dict) else (res[0] if res else None)
+                    loc_id = None
+                    if current_localidad:
+                        cur.execute(
+                            """
+                            SELECT id
+                            FROM ref.localidad
+                            WHERE id_provincia = %s AND lower(nombre) = lower(%s)
+                            LIMIT 1
+                            """,
+                            (prov_id, current_localidad),
+                        )
+                        res = cur.fetchone()
+                        loc_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                    if not loc_id:
+                        # Keep province/locality consistent by picking a valid locality in the new province.
+                        cur.execute(
+                            "SELECT id FROM ref.localidad WHERE id_provincia = %s ORDER BY nombre LIMIT 1",
+                            (prov_id,),
+                        )
+                        res = cur.fetchone()
+                        loc_id = res.get("id") if isinstance(res, dict) else (res[0] if res else None)
+                    filtered["id_localidad"] = loc_id
+            else:
+                filtered.pop("id_provincia", None)
 
-        assignments = ", ".join(f"{col} = %s" for col in filtered)
+            if "id_localidad" in filtered:
+                raw_localidad = filtered["id_localidad"]
+                if raw_localidad is None or str(raw_localidad).strip() == "":
+                    filtered["id_localidad"] = None
+                else:
+                    try:
+                        filtered["id_localidad"] = int(raw_localidad)
+                    except (TypeError, ValueError):
+                        raise ValueError("Localidad inválida.")
 
-        params = [filtered[col] for col in filtered]
-        params.append(entity_id)
-        query = f"UPDATE app.entidad_comercial SET {assignments} WHERE id = %s"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                self._setup_session(cur)
+            if filtered:
+                assignments = ", ".join(f"{col} = %s" for col in filtered)
+                params = [filtered[col] for col in filtered]
+                params.append(entity_id)
+                query = f"UPDATE app.entidad_comercial SET {assignments} WHERE id = %s"
                 cur.execute(query, params)
-                conn.commit()
-                self.invalidate_catalog_cache("proveedores")
+
+            if lista_update:
+                if lista_id is None or str(lista_id).strip() == "":
+                    cur.execute("DELETE FROM app.lista_cliente WHERE id_entidad_comercial = %s", (entity_id,))
+                else:
+                    cur.execute(
+                        "SELECT descuento, limite_credito FROM app.lista_cliente WHERE id_entidad_comercial = %s",
+                        (entity_id,),
+                    )
+                    res = cur.fetchone()
+                    descuento = res.get("descuento") if isinstance(res, dict) else (res[0] if res else 0)
+                    limite_credito = res.get("limite_credito") if isinstance(res, dict) else (res[1] if res else 0)
+                    q_list = """
+                        INSERT INTO app.lista_cliente (id_entidad_comercial, id_lista_precio, descuento, limite_credito)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (id_entidad_comercial) DO UPDATE SET
+                            id_lista_precio = EXCLUDED.id_lista_precio,
+                            descuento = EXCLUDED.descuento,
+                            limite_credito = EXCLUDED.limite_credito
+                    """
+                    cur.execute(q_list, (entity_id, int(lista_id), descuento, limite_credito))
+
+        self.invalidate_catalog_cache("proveedores")
 
     def bulk_update_entities(self, ids: Sequence[int], updates: Dict[str, Any]) -> None:
         for entity_id in ids:

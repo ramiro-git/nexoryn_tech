@@ -155,6 +155,19 @@ def _parse_float(value: Any, label: str = "valor") -> float:
         raise ValueError(f"El campo '{label}' debe ser un número válido. Recibido: '{value}'")
 
 
+def _parse_positive_float_optional(value: Any, label: str = "valor") -> float:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0.0
+    try:
+        clean_value = str(value).replace(",", ".")
+        parsed = float(clean_value)
+    except ValueError:
+        raise ValueError(f"El campo '{label}' debe ser un número válido. Recibido: '{value}'")
+    if parsed <= 0:
+        raise ValueError(f"El campo '{label}' debe ser mayor a 0 o dejarse vacío.")
+    return parsed
+
+
 def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
     if value is None:
         return "—"
@@ -338,6 +351,28 @@ def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, wid
     _maybe_set(dd, "enable_search", True)
     _style_input(dd)
     return dd
+
+
+def _cancel_button(label: str, on_click: Optional[Callable], icon: Optional[Any] = ft.Icons.CLOSE_ROUNDED) -> ft.ElevatedButton:
+    style_kwargs = dict(
+        shape=ft.RoundedRectangleBorder(radius=8),
+        color=COLOR_TEXT,
+        bgcolor="#F1F5F9",
+    )
+    try:
+        style = ft.ButtonStyle(elevation=0, shadow_color="#00000000", **style_kwargs)
+    except TypeError:
+        try:
+            style = ft.ButtonStyle(elevation=0, **style_kwargs)
+        except TypeError:
+            style = ft.ButtonStyle(**style_kwargs)
+    btn = ft.ElevatedButton(label, icon=icon, on_click=on_click, style=style)
+    if hasattr(btn, "elevation"):
+        try:
+            btn.elevation = 0
+        except Exception:
+            pass
+    return btn
 
 
 def _date_field(page: ft.Page, label: str, width: int = 180) -> ft.TextField:
@@ -688,7 +723,7 @@ def main(page: ft.Page) -> None:
         )
         confirm_dialog.shape = ft.RoundedRectangleBorder(radius=16)
         confirm_dialog.actions = [
-            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+            _cancel_button("Cancelar", on_click=close),
             ft.ElevatedButton(
                 confirm_label, 
                 bgcolor=final_color, 
@@ -813,11 +848,15 @@ def main(page: ft.Page) -> None:
 
     def province_loader(query, offset, limit):
         if not db: return [], False
-        rows = db.list_provincias()
-        if query:
-            rows = [r for r in rows if query.lower() in r["nombre"].lower()]
-        items = [{"value": r["id"], "label": r["nombre"]} for r in rows[offset:offset+limit]]
-        return items, (offset + limit < len(rows))
+        rows = db.fetch_provincias(search=query, limit=limit, offset=offset)
+        items = [{"value": r["id"], "label": r["nombre"]} for r in rows]
+        return items, len(rows) >= limit
+
+    def localidad_search_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_localidades(search=query, offset=offset, limit=limit)
+        items = [{"value": r["id"], "label": f"{r['nombre']} ({r['provincia']})"} for r in rows]
+        return items, len(rows) >= limit
 
     def locality_loader(query, offset, limit):
         if not db: return [], False
@@ -1177,10 +1216,20 @@ def main(page: ft.Page) -> None:
     _style_input(entidades_advanced_razon)
     entidades_advanced_domicilio = ft.TextField(label="Domicilio", width=200, on_change=_ent_live)
     _style_input(entidades_advanced_domicilio)
-    entidades_advanced_localidad = ft.TextField(label="Localidad", width=180, on_change=_ent_live)
-    _style_input(entidades_advanced_localidad)
-    entidades_advanced_provincia = ft.TextField(label="Provincia", width=150, on_change=_ent_live)
-    _style_input(entidades_advanced_provincia)
+    entidades_advanced_localidad = AsyncSelect(
+        label="Localidad",
+        loader=localidad_search_loader,
+        width=200,
+        on_change=lambda _: _ent_live(None),
+        show_label=False,
+    )
+    entidades_advanced_provincia = AsyncSelect(
+        label="Provincia",
+        loader=province_loader,
+        width=180,
+        on_change=lambda _: _ent_live(None),
+        show_label=False,
+    )
     entidades_advanced_email = ft.TextField(label="Email", width=200, on_change=_ent_live)
     _style_input(entidades_advanced_email)
     entidades_advanced_telefono = ft.TextField(label="Teléfono", width=150, on_change=_ent_live)
@@ -1201,6 +1250,13 @@ def main(page: ft.Page) -> None:
     entidades_advanced_hasta.on_submit = _ent_live
 
     entidades_advanced_iva = _dropdown("Condición IVA", [("", "Todos")], on_change=_ent_live, width=200)
+    entidades_advanced_lista_precio = AsyncSelect(
+        label="Lista Precio",
+        loader=price_list_loader,
+        width=200,
+        on_change=lambda _: _ent_live(None),
+        show_label=False,
+    )
 
     entidades_advanced_tipo = _dropdown(
         "Tipo",
@@ -1241,9 +1297,9 @@ def main(page: ft.Page) -> None:
 
     entidades_table = GenericTable(
         columns=[
-            ColumnConfig(key="apellido", label="Apellido", width=120),
-            ColumnConfig(key="nombre", label="Nombre", width=120),
-            ColumnConfig(key="razon_social", label="Razón Social", width=180),
+            ColumnConfig(key="apellido", label="Apellido", width=120, editable=True),
+            ColumnConfig(key="nombre", label="Nombre", width=120, editable=True),
+            ColumnConfig(key="razon_social", label="Razón Social", width=180, editable=True),
             ColumnConfig(
                 key="tipo", 
                 label="Tipo", 
@@ -1252,7 +1308,7 @@ def main(page: ft.Page) -> None:
                 editable=True,
                 inline_editor=dropdown_editor(lambda: ["CLIENTE", "PROVEEDOR", "AMBOS"], width=150, empty_label="Seleccionar...")
             ),
-            ColumnConfig(key="cuit", label="CUIT", width=110),
+            ColumnConfig(key="cuit", label="CUIT", width=110, editable=True),
             ColumnConfig(
                 key="condicion_iva", 
                 label="IVA", 
@@ -1265,30 +1321,78 @@ def main(page: ft.Page) -> None:
                 )
             ),
             ColumnConfig(
-                key="lista_precio",
+                key="id_lista_precio",
                 label="Lista Precio",
                 width=140,
                 editable=True,
-                formatter=lambda v, _: v or "—",
-                inline_editor=dropdown_editor(
-                    lambda: [l["nombre"] for l in db.fetch_listas_precio(limit=100) if l["activa"]],
-                    width=200,
-                    empty_label="Seleccionar..."
-                )
+                formatter=lambda _, row: row.get("lista_precio") or "—",
+                inline_editor=lambda value, row, setter: AsyncSelect(
+                    label="Lista Precio",
+                    loader=price_list_loader,
+                    width=240,
+                    value=value,
+                    on_change=setter,
+                    initial_items=(
+                        [{"value": row.get("id_lista_precio"), "label": row.get("lista_precio")}]
+                        if row.get("id_lista_precio") and row.get("lista_precio")
+                        else None
+                    ),
+                ),
             ),
             ColumnConfig(key="domicilio", label="Domicilio", width=180, editable=True),
             ColumnConfig(key="telefono", label="Teléfono", width=120, editable=True),
             ColumnConfig(key="email", label="Email", width=180, editable=True),
-            ColumnConfig(key="localidad", label="Localidad", width=140, editable=True, inline_editor=dropdown_editor(lambda: [l["nombre"] for l in db.fetch_localidades(limit=500)], width=250, empty_label="Seleccionar...")),
-            ColumnConfig(key="provincia", label="Provincia", width=110, editable=True, inline_editor=dropdown_editor(lambda: [p["nombre"] for p in db.list_provincias()], width=200, empty_label="Seleccionar...")),
+            ColumnConfig(
+                key="id_localidad",
+                label="Localidad",
+                width=140,
+                editable=True,
+                formatter=lambda _, row: row.get("localidad") or "—",
+                inline_editor=lambda value, row, setter: AsyncSelect(
+                    label="Localidad",
+                    loader=localidad_search_loader,
+                    width=300,
+                    value=value,
+                    on_change=setter,
+                    initial_items=(
+                        [{"value": row.get("id_localidad"), "label": f"{row.get('localidad')} ({row.get('provincia')})"}]
+                        if row.get("id_localidad") and row.get("localidad")
+                        else None
+                    ),
+                ),
+            ),
+            ColumnConfig(
+                key="id_provincia",
+                label="Provincia",
+                width=110,
+                editable=True,
+                formatter=lambda _, row: row.get("provincia") or "—",
+                inline_editor=lambda value, row, setter: AsyncSelect(
+                    label="Provincia",
+                    loader=province_loader,
+                    width=240,
+                    value=value,
+                    on_change=setter,
+                    initial_items=(
+                        [{"value": row.get("id_provincia"), "label": row.get("provincia")}]
+                        if row.get("id_provincia") and row.get("provincia")
+                        else None
+                    ),
+                ),
+            ),
             ColumnConfig(
                 key="notas",
                 label="Notas",
+                sortable=False,
                 renderer=lambda row: ft.IconButton(
                     icon=ft.Icons.INFO_OUTLINE_ROUNDED,
                     tooltip="Ver notas" if row.get("notas") else "Sin notas",
                     icon_color=COLOR_INFO if row.get("notas") else ft.Colors.GREY_400,
-                    on_click=lambda _: open_form("Notas de Entidad", ft.Column([ft.Text(row.get("notas"), selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300), [ft.ElevatedButton("Cerrar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9"))]) if row.get("notas") else None,
+                    on_click=lambda _: open_form(
+                        "Notas de Entidad",
+                        ft.Column([ft.Text(row.get("notas"), selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300),
+                        [],
+                    ) if row.get("notas") else None,
                 ),
                 width=50,
             ),
@@ -1357,8 +1461,8 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("razon_social", entidades_advanced_razon),
             AdvancedFilterControl("cuit", entidades_advanced_cuit),
             AdvancedFilterControl("domicilio", entidades_advanced_domicilio),
-            AdvancedFilterControl("localidad", entidades_advanced_localidad),
-            AdvancedFilterControl("provincia", entidades_advanced_provincia),
+            AdvancedFilterControl("id_localidad", entidades_advanced_localidad),
+            AdvancedFilterControl("id_provincia", entidades_advanced_provincia),
             AdvancedFilterControl("email", entidades_advanced_email),
             AdvancedFilterControl("telefono", entidades_advanced_telefono),
             AdvancedFilterControl("notas", entidades_advanced_notas),
@@ -1366,6 +1470,7 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("desde", entidades_advanced_desde),
             AdvancedFilterControl("hasta", entidades_advanced_hasta),
             AdvancedFilterControl("condicion_iva", entidades_advanced_iva),
+            AdvancedFilterControl("id_lista_precio", entidades_advanced_lista_precio),
         ],
         inline_edit_callback=lambda row_id, changes: db.update_entity_fields(int(row_id), changes) if db else None,
         mass_edit_callback=lambda ids, updates: db.bulk_update_entities([int(i) for i in ids], updates) if db else None,
@@ -1662,6 +1767,48 @@ def main(page: ft.Page) -> None:
     _style_input(nueva_entidad_apellido)
     nueva_entidad_razon_social = ft.TextField(label="Razón social *", width=510)
     _style_input(nueva_entidad_razon_social)
+    razon_social_state = {"manual": False, "auto": ""}
+
+    def _compute_razon_social() -> str:
+        nombre = (nueva_entidad_nombre.value or "").strip()
+        apellido = (nueva_entidad_apellido.value or "").strip()
+        if not nombre or not apellido:
+            return ""
+        return f"{nombre} {apellido}".strip()
+
+    def _maybe_autofill_razon_social(_: Any = None) -> None:
+        if editing_entity_id is not None:
+            return
+        auto_val = _compute_razon_social()
+        if not auto_val:
+            return
+        current = (nueva_entidad_razon_social.value or "").strip()
+        if razon_social_state["manual"] and current:
+            return
+        if current and current != razon_social_state["auto"]:
+            return
+        razon_social_state["auto"] = auto_val
+        razon_social_state["manual"] = False
+        nueva_entidad_razon_social.value = auto_val
+        try:
+            nueva_entidad_razon_social.update()
+        except Exception:
+            pass
+
+    def _on_razon_social_change(_: Any = None) -> None:
+        if editing_entity_id is not None:
+            return
+        current = (nueva_entidad_razon_social.value or "").strip()
+        auto_val = _compute_razon_social()
+        razon_social_state["auto"] = auto_val
+        if not current:
+            razon_social_state["manual"] = False
+            return
+        razon_social_state["manual"] = current != auto_val
+
+    nueva_entidad_nombre.on_change = _maybe_autofill_razon_social
+    nueva_entidad_apellido.on_change = _maybe_autofill_razon_social
+    nueva_entidad_razon_social.on_change = _on_razon_social_change
     nueva_entidad_tipo = _dropdown(
         "Tipo *",
         [("", "—"), ("CLIENTE", "Cliente"), ("PROVEEDOR", "Proveedor"), ("AMBOS", "Ambos")],
@@ -1694,26 +1841,22 @@ def main(page: ft.Page) -> None:
         if not db:
             return
         try:
-            provincias = db.list_provincias()
-            nueva_entidad_provincia.options = [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in provincias]
-
             condiciones = db.fetch_condiciones_iva(limit=50)
             nueva_entidad_condicion_iva.options = [ft.dropdown.Option(str(c["id"]), c["nombre"]) for c in condiciones]
             
-            # Load Price Lists
-            listas = db.fetch_listas_precio(limit=100)
-            nueva_entidad_lista_precio.options = [ft.dropdown.Option("", "—")] + [
-                ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas
-            ]
-
             # Also update the advanced filter dropdown and trigger UI refresh
             entidades_advanced_iva.options = [ft.dropdown.Option("", "Todos")] + [ft.dropdown.Option(c["nombre"], c["nombre"]) for c in condiciones]
             
             try:
                 nueva_entidad_condicion_iva.update()
-                nueva_entidad_lista_precio.update()
                 entidades_advanced_iva.update()
             except:
+                pass
+
+            try:
+                nueva_entidad_provincia.prefetch()
+                nueva_entidad_lista_precio.prefetch()
+            except Exception:
                 pass
         except Exception as e:
             print(f"Error loading entity dropdowns: {e}")
@@ -1731,7 +1874,14 @@ def main(page: ft.Page) -> None:
             return
 
         nueva_entidad_localidad.set_busy(True)
-        nueva_entidad_localidad.prefetch(on_done=lambda: setattr(nueva_entidad_localidad, "disabled", False))
+        def _done():
+            nueva_entidad_localidad.set_busy(False)
+            nueva_entidad_localidad.disabled = False
+            try:
+                nueva_entidad_localidad.update()
+            except Exception:
+                pass
+        nueva_entidad_localidad.prefetch(on_done=_done)
         nueva_entidad_localidad.update()
     
     nueva_entidad_provincia.on_change = _on_provincia_change
@@ -1752,8 +1902,8 @@ def main(page: ft.Page) -> None:
         f_cuit = bool((nueva_entidad_cuit.value or "").strip())
         f_iva = bool((nueva_entidad_condicion_iva.value or "").strip())
         f_tel = bool((nueva_entidad_telefono.value or "").strip())
-        f_prov = bool((nueva_entidad_provincia.value or "").strip())
-        f_loc = bool((nueva_entidad_localidad.value or "").strip())
+        f_prov = bool(str(nueva_entidad_provincia.value or "").strip())
+        f_loc = bool(str(nueva_entidad_localidad.value or "").strip())
 
         if not (has_name or has_razon):
             show_toast("Completá Nombre y Apellido O Razón Social.", kind="warning")
@@ -1781,7 +1931,7 @@ def main(page: ft.Page) -> None:
                 # Pricing
                 id_lista_precio=nueva_entidad_lista_precio.value,
                 descuento=_parse_float(nueva_entidad_descuento.value, "Descuento"),
-                limite_credito=_parse_float(nueva_entidad_limite_credito.value, "Límite de Crédito")
+                limite_credito=_parse_positive_float_optional(nueva_entidad_limite_credito.value, "Límite de Crédito")
             )
             close_form()
             if db_conn:
@@ -1794,6 +1944,8 @@ def main(page: ft.Page) -> None:
     def open_nueva_entidad(_: Any = None) -> None:
         nonlocal editing_entity_id
         editing_entity_id = None
+        razon_social_state["manual"] = False
+        razon_social_state["auto"] = ""
         nueva_entidad_nombre.value = ""
         nueva_entidad_apellido.value = ""
         nueva_entidad_razon_social.value = ""
@@ -1802,31 +1954,31 @@ def main(page: ft.Page) -> None:
         nueva_entidad_telefono.value = ""
         nueva_entidad_email.value = ""
         nueva_entidad_domicilio.value = ""
-        nueva_entidad_lista_precio.value = ""
+        nueva_entidad_lista_precio.value = None
         nueva_entidad_descuento.value = "0"
-        nueva_entidad_limite_credito.value = "0"
+        nueva_entidad_limite_credito.value = ""
         nueva_entidad_activo.value = True
 
         nueva_entidad_descuento.value = "0"
-        nueva_entidad_limite_credito.value = "0"
+        nueva_entidad_limite_credito.value = ""
         nueva_entidad_activo.value = True
         
         # Reset new fields
-        nueva_entidad_provincia.value = ""
-        nueva_entidad_localidad.value = ""
+        nueva_entidad_provincia.value = None
+        nueva_entidad_localidad.value = None
         nueva_entidad_localidad.options = []
         nueva_entidad_localidad.disabled = True
         nueva_entidad_condicion_iva.value = ""
         nueva_entidad_notas.value = ""
 
+        try:
+            nueva_entidad_localidad.clear_cache()
+        except Exception:
+            pass
+
         _reload_entity_dropdowns()
         open_form("Nueva entidad", _prepare_entity_form_content(), [
-            ft.ElevatedButton(
-                "Cancelar", 
-                icon=ft.Icons.CLOSE_ROUNDED, 
-                on_click=close_form, 
-                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")
-            ),
+            _cancel_button("Cancelar", on_click=close_form),
             ft.ElevatedButton(
                 "Crear", 
                 icon=ft.Icons.ADD, 
@@ -1859,10 +2011,19 @@ def main(page: ft.Page) -> None:
             nueva_entidad_telefono.value = ent.get("telefono", "")
             nueva_entidad_email.value = ent.get("email", "")
             nueva_entidad_domicilio.value = ent.get("domicilio", "")
-            nueva_entidad_lista_precio.value = str(ent["id_lista_precio"]) if ent.get("id_lista_precio") else ""
+            lp_id = ent.get("id_lista_precio")
+            if lp_id:
+                nueva_entidad_lista_precio.options = [ft.dropdown.Option(str(lp_id), ent.get("lista_precio") or "")]
+                nueva_entidad_lista_precio.value = str(lp_id)
+            else:
+                nueva_entidad_lista_precio.options = []
+                nueva_entidad_lista_precio.value = None
             nueva_entidad_descuento.value = str(ent.get("descuento", 0))
-            nueva_entidad_limite_credito.value = str(ent.get("limite_credito", 0))
-            nueva_entidad_limite_credito.value = str(ent.get("limite_credito", 0))
+            limite_credito = ent.get("limite_credito")
+            if limite_credito is None or float(limite_credito or 0) <= 0:
+                nueva_entidad_limite_credito.value = ""
+            else:
+                nueva_entidad_limite_credito.value = str(limite_credito)
             nueva_entidad_activo.value = bool(ent.get("activo", True))
             
             # Load new fields
@@ -1873,20 +2034,31 @@ def main(page: ft.Page) -> None:
             pid = ent.get("id_provincia")
             lid = ent.get("id_localidad")
             if pid:
+                nueva_entidad_provincia.options = [ft.dropdown.Option(str(pid), ent.get("provincia") or "")]
                 nueva_entidad_provincia.value = str(pid)
                 # Manually trigger locality reload
                 _on_provincia_change(None)
                 if lid:
+                    nueva_entidad_localidad.options = [ft.dropdown.Option(str(lid), ent.get("localidad") or "")]
                     nueva_entidad_localidad.value = str(lid)
                     nueva_entidad_localidad.disabled = False
             else:
-                nueva_entidad_provincia.value = ""
-                nueva_entidad_localidad.value = ""
+                nueva_entidad_provincia.value = None
+                nueva_entidad_provincia.options = []
+                nueva_entidad_localidad.value = None
+                nueva_entidad_localidad.options = []
                 nueva_entidad_localidad.disabled = True
+
+            try:
+                nueva_entidad_provincia.prefetch()
+                nueva_entidad_lista_precio.prefetch()
+                if pid:
+                    nueva_entidad_localidad.prefetch()
+            except Exception:
+                pass
             
             open_form("Editar entidad", _prepare_entity_form_content(), [
-                ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, 
-                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+                _cancel_button("Cancelar", on_click=close_form),
                 ft.ElevatedButton("Guardar Cambios", icon=ft.Icons.SAVE_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF",
                                   style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=guardar_edicion_entidad),
             ])
@@ -1909,8 +2081,8 @@ def main(page: ft.Page) -> None:
         f_cuit = bool((nueva_entidad_cuit.value or "").strip())
         f_iva = bool((nueva_entidad_condicion_iva.value or "").strip())
         f_tel = bool((nueva_entidad_telefono.value or "").strip())
-        f_prov = bool((nueva_entidad_provincia.value or "").strip())
-        f_loc = bool((nueva_entidad_localidad.value or "").strip())
+        f_prov = bool(str(nueva_entidad_provincia.value or "").strip())
+        f_loc = bool(str(nueva_entidad_localidad.value or "").strip())
 
         if not (has_name or has_razon):
             show_toast("Completá Nombre y Apellido O Razón Social.", kind="warning")
@@ -1935,14 +2107,23 @@ def main(page: ft.Page) -> None:
                 "id_condicion_iva": int(nueva_entidad_condicion_iva.value) if nueva_entidad_condicion_iva.value else None,
                 "notas": nueva_entidad_notas.value,
             }
+            descuento_val = _parse_float(nueva_entidad_descuento.value, "Descuento")
+            limite_credito_val = _parse_positive_float_optional(
+                nueva_entidad_limite_credito.value,
+                "Límite de Crédito",
+            )
+            changes = dict(updates)
+            changes["id_lista_precio"] = nueva_entidad_lista_precio.value or None
+            changes["descuento"] = descuento_val
+            changes["limite_credito"] = limite_credito_val
             
             # Atomic update
             db_conn.update_entity_full(
                 editing_entity_id,
                 updates=updates,
                 id_lista_precio=nueva_entidad_lista_precio.value,
-                descuento=_parse_float(nueva_entidad_descuento.value, "Descuento"),
-                limite_credito=_parse_float(nueva_entidad_limite_credito.value, "Límite de Crédito")
+                descuento=descuento_val,
+                limite_credito=limite_credito_val,
             )
             
             close_form()
@@ -2163,6 +2344,7 @@ def main(page: ft.Page) -> None:
                 "redondeo": bool(nuevo_articulo_redondeo.value),
                 "porcentaje_ganancia_2": _parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2")
             }
+            changes = dict(updates)
             db_conn.update_article_fields(editing_article_id, updates)
             
             # Update complex prices
@@ -2395,8 +2577,7 @@ def main(page: ft.Page) -> None:
             "Nuevo artículo",
             _prepare_article_form_content(),
             [
-                ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, 
-                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+                _cancel_button("Cancelar", on_click=close_form),
                 ft.ElevatedButton(
                     "Crear",
                     icon=ft.Icons.ADD,
@@ -2607,8 +2788,7 @@ def main(page: ft.Page) -> None:
             "Editar artículo",
             _prepare_article_form_content(),
             [
-                ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, 
-                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+                _cancel_button("Cancelar", on_click=close_form),
                 ft.ElevatedButton(
                     "Guardar Cambios",
                     icon=ft.Icons.SAVE_ROUNDED,
@@ -3494,7 +3674,7 @@ def main(page: ft.Page) -> None:
         ], spacing=0, width=400)
         
         open_form("Nuevo Usuario", content, [
-            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+            _cancel_button("Cancelar", on_click=close_form),
             ft.ElevatedButton("Crear Usuario", bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=crear_usuario)
         ])
 
@@ -3872,7 +4052,7 @@ def main(page: ft.Page) -> None:
                 height=550,
             )
             
-            actions = [ft.ElevatedButton("Cerrar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9"))]
+            actions = [_cancel_button("Cerrar", on_click=close_form)]
             if estado == "BORRADOR":
                 actions.insert(0, ft.ElevatedButton(
                     "Confirmar Comprobante",
@@ -4937,7 +5117,7 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Registrar Pago/Cobro", content, [
-            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+            _cancel_button("Cancelar", on_click=close_form),
             ft.ElevatedButton("Registrar", bgcolor=COLOR_SUCCESS, color="#FFFFFF", on_click=_save_pago_cc, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
         ])
 
@@ -5007,7 +5187,7 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Ajuste de Saldo", content, [
-            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
+            _cancel_button("Cancelar", on_click=close_form),
             ft.ElevatedButton("Aplicar Ajuste", bgcolor=COLOR_WARNING, color="#FFFFFF", on_click=_save_ajuste, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
         ])
 
@@ -5352,7 +5532,13 @@ def main(page: ft.Page) -> None:
 
     wire_refresh(
         entidades_table,
-        [entidades_advanced_cuit, entidades_advanced_localidad, entidades_advanced_provincia, entidades_advanced_activo],
+        [
+            entidades_advanced_cuit,
+            entidades_advanced_localidad,
+            entidades_advanced_provincia,
+            entidades_advanced_lista_precio,
+            entidades_advanced_activo,
+        ],
     )
     wire_refresh(
         articulos_table,

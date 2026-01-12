@@ -396,6 +396,17 @@ class AsyncSelect(ft.Column):
         self._items = []
         self._has_more = True
         self._error = None
+        self._loading = False
+        self._loading_more = False
+
+        cache_key = self._get_cache_key("", 0)
+        if cache_key in self._cache:
+            cached_items, cached_has_more = self._cache[cache_key]
+            self._items = list(cached_items)
+            self._has_more = cached_has_more
+        else:
+            self._loading = True
+            self._update_trigger_icon(True)
         
         # Get page reference - try self.page first, then traverse parent hierarchy
         page = self._get_page()
@@ -416,10 +427,11 @@ class AsyncSelect(ft.Column):
             
             # Show the manual modal
             self._dialog.visible = True
-            page.update()
+            self._update_dialog_ui()
             
-            # Start loading
-            page.run_task(self._load_items, "", 0, True)
+            # Start loading (only if cache is empty)
+            if self._loading:
+                page.run_task(self._load_items, "", 0, True)
 
     def _get_page(self):
         """Get page reference, traversing parent hierarchy if needed."""
