@@ -251,7 +251,7 @@ class GenericTable:
         self._last_error: Optional[str] = None
         self._search_timer: Optional[threading.Timer] = None
         self.select_all_global = False
-        
+
         self.selection_bar_text = ft.Text("", size=12, color=ft.Colors.BLUE_700)
         self.selection_bar_btn = ft.TextButton("Seleccionar todo", on_click=lambda _: self._toggle_global_selection(True))
         self.selection_bar = ft.Container(
@@ -438,7 +438,6 @@ class GenericTable:
                     ft.Row(
                         [
                             self.select_all_checkbox,
-                            ft.Text("Sel", size=12, weight=ft.FontWeight.BOLD),
                         ],
                         spacing=6,
                     )
@@ -570,6 +569,11 @@ class GenericTable:
             width=200,
             visible=self.show_export_scope,
         )
+        if self.selected_ids:
+            self.export_scope.options.append(
+                ft.dropdown.Option("Selected", f"Seleccionados ({len(self.selected_ids)})")
+            )
+            self.export_scope.value = "Selected"
         _style_input(self.export_format)
         _style_input(self.export_scope)
 
@@ -638,6 +642,16 @@ class GenericTable:
             # Fetch data based on scope
             if scope == "Page":
                 rows = self.current_rows
+            elif scope == "Selected":
+                # Si es seleccionado, traemos todo pero filtramos en memoria por ID
+                # (Más seguro que confiar solo en current_rows si la seleccion es global)
+                self._notify("Preparando seleccionados...", kind="info")
+                search = self.search_field.value.strip() if self.search_field.value else None
+                simple_value = (self.simple_filter_dropdown.value if self.simple_filter_dropdown else None)
+                if simple_value == _ALL_VALUE: simple_value = None
+                advanced_payload = {flt.name: flt.getter(flt.control) for flt in self.advanced_filters}
+                all_rows, _ = self.data_provider(0, 1000000, search, simple_value, advanced_payload, list(self.sorts))
+                rows = [r for r in all_rows if r.get(self.id_field) in self.selected_ids]
             else:
                 # Fetch all filtered data
                 search = self.search_field.value.strip() if self.search_field.value else None
@@ -1389,17 +1403,19 @@ class GenericTable:
                 self.select_all_global = False
                 self.selection_bar.visible = False
 
-        self._update_selected_label()
-        self._set_status("")
-        self._sync_select_all_checkbox()
+        self._sync_selection_state()
         self.update()
 
-    def _update_selected_label(self) -> None:
+    def _sync_selection_state(self) -> None:
+        """Centralized synchronization of all selection-related UI elements."""
         count = len(self.selected_ids)
         self.selected_label.value = f"{count} seleccionado(s)"
+        
+        # Enable/Disable mass actions
         has_targets = count > 0
         can_edit = (self.mass_edit_callback is not None) or (self.inline_edit_callback is not None)
         ready = bool(self._mass_field_key) and (self._mass_value is not None)
+        
         if hasattr(self.mass_edit_button, "disabled"):
             self.mass_edit_button.disabled = not (has_targets and can_edit and ready)
         if hasattr(self.mass_delete_button, "disabled"):
@@ -1408,6 +1424,39 @@ class GenericTable:
             self.mass_activate_button.disabled = not (has_targets and self.mass_activate_callback is not None)
         if hasattr(self.mass_deactivate_button, "disabled"):
             self.mass_deactivate_button.disabled = not (has_targets and self.mass_deactivate_callback is not None)
+
+        # Sync header checkbox
+        if self.show_selection and self.select_all_checkbox:
+            if not self._current_page_ids:
+                self.select_all_checkbox.value = False
+            else:
+                is_all_page = all(rid in self.selected_ids for rid in self._current_page_ids)
+                self.select_all_checkbox.value = is_all_page
+                
+                # Check if we should show/hide global selection bar
+                if is_all_page and self.total_rows > self.page_size and not self.select_all_global:
+                    self.selection_bar_text.value = f"Has seleccionado los {len(self._current_page_ids)} elementos de esta página."
+                    self.selection_bar_btn.text = f"Seleccionar los {self.total_rows} resultados"
+                    self.selection_bar_btn.on_click = lambda _: self._toggle_global_selection(True)
+                    self.selection_bar.visible = True
+                elif not is_all_page:
+                    self.selection_bar.visible = False
+
+            try: self.select_all_checkbox.update()
+            except: pass
+            
+        # Update row checkboxes visual state if they exist on the page
+        for rid, cb in self._row_selection_controls.items():
+            try:
+                cb.value = rid in self.selected_ids
+                cb.update()
+            except: pass
+            
+        self._set_status("")
+
+    def _update_selected_label(self) -> None:
+        # Legacy method, now calls centralized sync
+        self._sync_selection_state()
 
     def _sync_select_all_checkbox(self) -> None:
         if not self.show_selection or self.select_all_checkbox is None:
@@ -1426,23 +1475,12 @@ class GenericTable:
             return
         if checked:
             self.selected_ids.update(self._current_page_ids)
-            # Show the global selection bar if we have more results than this page
-            if (self.total_rows > self.page_size) and not self.select_all_global:
-                self.selection_bar_text.value = f"Has seleccionado los {len(self._current_page_ids)} elementos de esta página."
-                self.selection_bar_btn.text = f"Seleccionar los {self.total_rows} resultados"
-                self.selection_bar_btn.on_click = lambda _: self._toggle_global_selection(True)
-                self.selection_bar.visible = True
         else:
             for rid in self._current_page_ids:
                 self.selected_ids.discard(rid)
             self.select_all_global = False
-            self.selection_bar.visible = False
             
-        for rid, cb in self._row_selection_controls.items():
-            cb.value = rid in self.selected_ids or self.select_all_global
-        self._update_selected_label()
-        self._set_status("")
-        self._sync_select_all_checkbox()
+        self._sync_selection_state()
         self.update()
 
     def _toggle_global_selection(self, value: bool) -> None:
@@ -1716,29 +1754,34 @@ class GenericTable:
 
         current_val = row.get(col.key)
         
-        # Determine input type
-        # Ideally we check col type, or based on current val
-        input_control: ft.Control
+        # Variable to store the new value from the editor
+        new_val_holder = {"value": current_val}
         
-        def save(e):
-            new_val = input_control.value
-            if col.key == "activa" or col.key == "activo" or col.key == "afecta_stock" or col.key == "afecta_cuenta_corriente":
-                 # Convert specific known boolean columns
-                 # (Hack: usually we should rely on Col Config type, but simple check works for now)
-                 pass # Dropdown handles boolean value conversion usually
+        def setter(val: Any) -> None:
+            new_val_holder["value"] = val
+        
+        def save(e=None):
+            new_val = new_val_holder["value"]
             
-            # Simple bool check from dropdown
+            # Handle value from different control types
             if isinstance(input_control, ft.Dropdown):
+                new_val = input_control.value
                 if new_val == "true": new_val = True
                 elif new_val == "false": new_val = False
                 elif new_val == "": new_val = None
+            elif isinstance(input_control, ft.TextField):
+                new_val = input_control.value
+            elif isinstance(input_control, ft.Switch):
+                new_val = input_control.value
+            # For custom controls (AsyncSelect, etc.), use the holder value
             
             # Call update
             try:
                 if self.inline_edit_callback:
                     self.inline_edit_callback(row_id, {col.key: new_val})
                     self._notify("Actualizado", kind="success")
-                    self._edit_dialog.open = False
+                    if hasattr(self._edit_dialog, "open"):
+                        self._edit_dialog.open = False
                     self.update()
                     self._refresh_data()
             except Exception as ex:
@@ -1751,11 +1794,62 @@ class GenericTable:
                 self._edit_dialog.open = False
                 self.update()
 
-        # Build Input
-        if isinstance(current_val, bool) or col.key in ["activa", "activo", "afecta_stock", "afecta_cuenta_corriente", "redondeo"]:
-             input_control = ft.Dropdown(
+        # Build Input - Use inline_editor if available
+        input_control: ft.Control
+        
+        if col.inline_editor is not None:
+            # Use the configured inline_editor
+            try:
+                # For AsyncSelect, we need special handling - open its modal directly
+                # and save on selection, without the intermediate edit dialog
+                def async_select_setter(val: Any) -> None:
+                    new_val_holder["value"] = val
+                    # Auto-save when AsyncSelect value is selected
+                    try:
+                        if self.inline_edit_callback:
+                            self.inline_edit_callback(row_id, {col.key: val})
+                            self._notify("Actualizado", kind="success")
+                            self._refresh_data()
+                    except Exception as ex:
+                        self._notify(f"Error: {ex}", kind="error")
+                
+                input_control = col.inline_editor(current_val, row, setter)
+                
+                # Check if it's an AsyncSelect by checking for _open_dialog method
+                if hasattr(input_control, "_open_dialog") and hasattr(input_control, "loader"):
+                    # This is an AsyncSelect - open its dialog directly and save on selection
+                    input_control._on_change_callback = async_select_setter
+                    # Set page reference if needed
+                    if self.root and self.root.page:
+                        input_control._page_ref = self.root.page
+                    # Open the AsyncSelect's own dialog directly
+                    input_control._open_dialog()
+                    return  # Don't open the standard edit dialog
+                
+                # For Switch, also wire up the setter on change
+                if isinstance(input_control, ft.Switch):
+                    original_on_change = input_control.on_change
+                    def switch_change(e, orig=original_on_change):
+                        setter(e.control.value)
+                        if orig: orig(e)
+                    input_control.on_change = switch_change
+            except Exception:
+                # Fallback to TextField if inline_editor fails
+                input_control = ft.TextField(
+                    label=col.label,
+                    value=str(current_val) if current_val is not None else "",
+                    autofocus=True,
+                    on_submit=save,
+                    filled=True,
+                    bgcolor="#F8FAFC",
+                    border_color="#475569",
+                    border_radius=12
+                )
+        elif isinstance(current_val, bool) or col.key in ["activa", "activo", "afecta_stock", "afecta_cuenta_corriente", "redondeo"]:
+            # Fallback for known boolean columns
+            input_control = ft.Dropdown(
                 label=col.label,
-                value=str(current_val).lower(),
+                value=str(current_val).lower() if current_val is not None else "false",
                 options=[
                     ft.dropdown.Option("true", "Sí"),
                     ft.dropdown.Option("false", "No")
@@ -1781,11 +1875,11 @@ class GenericTable:
         self._edit_dialog.content = ft.Column([
             ft.Text(f"Valor actual: {current_val}"),
             input_control
-        ], tight=True, width=300)
+        ], tight=True, width=350)
         
         self._edit_dialog.actions = [
             ft.TextButton("Cancelar", on_click=close),
-            ft.ElevatedButton("Guardar", on_click=save, bgcolor="#4F46E5", color="white")
+            ft.ElevatedButton("Guardar", on_click=save, bgcolor="#4F46E5", color="white", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
         ]
         
         if self.root and self.root.page:
@@ -1795,3 +1889,4 @@ class GenericTable:
                 self.root.page.dialog = self._edit_dialog
                 self._edit_dialog.open = True
                 self.root.page.update()
+

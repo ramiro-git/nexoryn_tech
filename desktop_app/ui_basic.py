@@ -678,7 +678,7 @@ def main(page: ft.Page) -> None:
         )
         confirm_dialog.shape = ft.RoundedRectangleBorder(radius=16)
         confirm_dialog.actions = [
-            ft.TextButton("Cancelar", on_click=close, style=ft.ButtonStyle(color=COLOR_TEXT_MUTED, shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
             ft.ElevatedButton(
                 confirm_label, 
                 bgcolor=final_color, 
@@ -753,6 +753,26 @@ def main(page: ft.Page) -> None:
             _style_input(dd)
             return dd
 
+        return build
+
+    def async_select_editor(loader: Callable[[str, int, int], Any], *, label: str, width: int) -> Any:
+        def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
+            return AsyncSelect(
+                label=label,
+                loader=loader,
+                width=width,
+                value=value,
+                on_change=setter,
+            )
+        return build
+
+    def boolean_editor() -> Any:
+        """Editor para campos booleanos usando Switch."""
+        def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
+            return ft.Switch(
+                value=bool(value),
+                on_change=lambda e: setter(e.control.value),
+            )
         return build
 
     # --- AsyncSelect Loaders ---
@@ -895,7 +915,12 @@ def main(page: ft.Page) -> None:
         # Update label real-time
         s = articulos_advanced_costo_slider
         articulos_advanced_costo_label.value = f"Costo: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
-        try: articulos_advanced_costo_label.update()
+        articulos_advanced_costo_min_field.value = str(s.start_value)
+        articulos_advanced_costo_max_field.value = str(s.end_value)
+        try: 
+            articulos_advanced_costo_label.update()
+            articulos_advanced_costo_min_field.update()
+            articulos_advanced_costo_max_field.update()
         except: pass
 
     def _reset_cost_filter(ctrl, val):
@@ -903,10 +928,29 @@ def main(page: ft.Page) -> None:
         s.start_value = s.min
         s.end_value = s.max
         articulos_advanced_costo_label.value = f"Costo: entre {_format_money(s.min)} y {_format_money(s.max)}"
+        articulos_advanced_costo_min_field.value = str(s.min)
+        articulos_advanced_costo_max_field.value = str(s.max)
         try: 
             s.update()
             articulos_advanced_costo_label.update()
+            articulos_advanced_costo_min_field.update()
+            articulos_advanced_costo_max_field.update()
         except: pass
+
+    def _art_costo_manual_change(e):
+        try:
+            val_min = float(articulos_advanced_costo_min_field.value or 0)
+            val_max = float(articulos_advanced_costo_max_field.value or 10000)
+            s = articulos_advanced_costo_slider
+            s.start_value = max(s.min, min(val_min, s.max))
+            s.end_value = min(s.max, max(val_max, s.min))
+            _art_slider_change(None)
+            s.update()
+            _art_live(None)
+        except: pass
+
+    articulos_advanced_costo_min_field = ft.TextField(label="Mín. (Costo)", width=105, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_min_field)
+    articulos_advanced_costo_max_field = ft.TextField(label="Máx. (Costo)", width=105, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_max_field)
 
     def _get_costo_min_value(_: Any) -> Optional[float]:
         slider = articulos_advanced_costo_slider
@@ -955,17 +999,23 @@ def main(page: ft.Page) -> None:
         on_change_end=_art_live,
     )
     
-    articulos_advanced_costo_label = ft.Text("Filtro de Costo", size=12, weight=ft.FontWeight.BOLD)
+    articulos_advanced_costo_label = ft.Text(f"Costo: entre {_format_money(0)} y {_format_money(10000)}", size=12, weight=ft.FontWeight.BOLD)
     articulos_advanced_costo_ctrl = ft.Column([
         articulos_advanced_costo_label,
+        ft.Row([articulos_advanced_costo_min_field, articulos_advanced_costo_max_field], spacing=10),
         articulos_advanced_costo_slider
-    ], spacing=0, width=350)
+    ], spacing=5, width=350)
 
     # Stock range filter
     def _art_stock_slider_change(e):
         s = articulos_advanced_stock_slider
         articulos_advanced_stock_label.value = f"Stock: entre {int(s.start_value)} y {int(s.end_value)} un."
-        try: articulos_advanced_stock_label.update()
+        articulos_advanced_stock_min_field.value = str(int(s.start_value))
+        articulos_advanced_stock_max_field.value = str(int(s.end_value))
+        try: 
+            articulos_advanced_stock_label.update()
+            articulos_advanced_stock_min_field.update()
+            articulos_advanced_stock_max_field.update()
         except: pass
 
     def _reset_stock_filter(ctrl, val):
@@ -973,10 +1023,29 @@ def main(page: ft.Page) -> None:
         s.start_value = s.min
         s.end_value = s.max
         articulos_advanced_stock_label.value = f"Stock: entre {int(s.min)} y {int(s.max)} un."
+        articulos_advanced_stock_min_field.value = str(int(s.min))
+        articulos_advanced_stock_max_field.value = str(int(s.max))
         try:
             s.update()
             articulos_advanced_stock_label.update()
+            articulos_advanced_stock_min_field.update()
+            articulos_advanced_stock_max_field.update()
         except: pass
+
+    def _art_stock_manual_change(e):
+        try:
+            val_min = float(articulos_advanced_stock_min_field.value or -1000)
+            val_max = float(articulos_advanced_stock_max_field.value or 10000)
+            s = articulos_advanced_stock_slider
+            s.start_value = max(s.min, min(val_min, s.max))
+            s.end_value = min(s.max, max(val_max, s.min))
+            _art_stock_slider_change(None)
+            s.update()
+            _art_live(None)
+        except: pass
+
+    articulos_advanced_stock_min_field = ft.TextField(label="Mín. (Stock)", width=105, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_min_field)
+    articulos_advanced_stock_max_field = ft.TextField(label="Máx. (Stock)", width=105, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_max_field)
 
     def _get_stock_min_value(_: Any) -> Optional[float]:
         slider = articulos_advanced_stock_slider
@@ -1009,11 +1078,12 @@ def main(page: ft.Page) -> None:
         on_change=_art_stock_slider_change,
         on_change_end=_art_live,
     )
-    articulos_advanced_stock_label = ft.Text("Filtro de Stock", size=12, weight=ft.FontWeight.BOLD)
+    articulos_advanced_stock_label = ft.Text(f"Stock: entre -1000 y 10000 un.", size=12, weight=ft.FontWeight.BOLD)
     articulos_advanced_stock_ctrl = ft.Column([
         articulos_advanced_stock_label,
+        ft.Row([articulos_advanced_stock_min_field, articulos_advanced_stock_max_field], spacing=10),
         articulos_advanced_stock_slider
-    ], spacing=0, width=350)
+    ], spacing=5, width=350)
 
     articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo (stock)", value=False, on_change=_art_live)
     
@@ -1208,7 +1278,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.Icons.INFO_OUTLINE_ROUNDED,
                     tooltip="Ver notas" if row.get("notas") else "Sin notas",
                     icon_color=COLOR_INFO if row.get("notas") else ft.Colors.GREY_400,
-                    on_click=lambda _: open_form("Notas de Entidad", ft.Column([ft.Text(row.get("notas"), selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300), [ft.TextButton("Cerrar", on_click=close_form)]) if row.get("notas") else None,
+                    on_click=lambda _: open_form("Notas de Entidad", ft.Column([ft.Text(row.get("notas"), selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300), [ft.ElevatedButton("Cerrar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9"))]) if row.get("notas") else None,
                 ),
                 width=50,
             ),
@@ -1260,6 +1330,7 @@ def main(page: ft.Page) -> None:
                                 show_toast(f"Entidad {'activada' if not is_act else 'desactivada'}", kind="success"),
                                 entidades_table.refresh()
                             ) if db else None,
+                            button_color=COLOR_SUCCESS if not is_act else COLOR_ERROR
                         )
                         if rid is not None
                         else None
@@ -1297,6 +1368,7 @@ def main(page: ft.Page) -> None:
         page_size=12,
         page_size_options=(10, 25, 50),
         show_export_button=True,
+        show_export_scope=True,
     )
     entidades_table.search_field.hint_text = "Búsqueda global (nombre/razón social/cuit)…"
     
@@ -1434,7 +1506,7 @@ def main(page: ft.Page) -> None:
                 label="Proveedor",
                 editable=True,
                 formatter=lambda v, row: next((p["nombre"] for p in proveedores_values if str(p["id"]) == str(v or row.get("id_proveedor"))), "—"),
-                inline_editor=dropdown_editor(lambda: [p["nombre"] for p in proveedores_values], width=200, empty_label="Seleccionar..."),
+                inline_editor=async_select_editor(supplier_loader, label="Seleccionar Proveedor", width=300),
                 width=180,
             ),
             ColumnConfig(
@@ -1442,6 +1514,7 @@ def main(page: ft.Page) -> None:
                 label="Ubicación",
                 width=120,
                 editable=True,
+                inline_editor=dropdown_editor(lambda: [d["nombre"] for d in (db.fetch_depositos() if db else [])], width=200, empty_label="Seleccionar ubicación..."),
             ),
             ColumnConfig(
                 key="activo",
@@ -1496,6 +1569,7 @@ def main(page: ft.Page) -> None:
                                 show_toast(f"Artículo {'activado' if not is_act else 'desactivada'}", kind="success"),
                                 articulos_table.refresh()
                             ) if db else None,
+                            button_color=COLOR_SUCCESS if not is_act else COLOR_ERROR
                         )
                         if rid is not None
                         else None
@@ -1533,6 +1607,7 @@ def main(page: ft.Page) -> None:
         page_size=12,
         page_size_options=(10, 25, 50),
         show_export_button=True,
+        show_export_scope=True,
     )
     articulos_table.search_field.hint_text = "Búsqueda global (nombre)…"
     
@@ -1734,9 +1809,20 @@ def main(page: ft.Page) -> None:
 
         _reload_entity_dropdowns()
         open_form("Nueva entidad", _prepare_entity_form_content(), [
-            ft.TextButton("Cancelar", on_click=close_form),
-            ft.ElevatedButton("Crear", icon=ft.Icons.ADD, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
-                              style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)), on_click=crear_entidad),
+            ft.ElevatedButton(
+                "Cancelar", 
+                icon=ft.Icons.CLOSE_ROUNDED, 
+                on_click=close_form, 
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")
+            ),
+            ft.ElevatedButton(
+                "Crear", 
+                icon=ft.Icons.ADD, 
+                bgcolor=COLOR_ACCENT, 
+                color="#FFFFFF", 
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), 
+                on_click=crear_entidad
+            ),
         ])
 
     def open_editar_entidad(ent_id: int) -> None:
@@ -1787,9 +1873,10 @@ def main(page: ft.Page) -> None:
                 nueva_entidad_localidad.disabled = True
             
             open_form("Editar entidad", _prepare_entity_form_content(), [
-                ft.TextButton("Cancelar", on_click=close_form),
+                ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, 
+                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
                 ft.ElevatedButton("Guardar Cambios", icon=ft.Icons.SAVE_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF",
-                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)), on_click=guardar_edicion_entidad),
+                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=guardar_edicion_entidad),
             ])
         except Exception as exc:
             show_toast(f"Error: {exc}", kind="error")
@@ -2090,7 +2177,12 @@ def main(page: ft.Page) -> None:
                 db_conn.update_article_prices(editing_article_id, price_updates)
                 
             # Handle Stock Change (Auto-Adjustment)
-            new_stock = float(nuevo_articulo_stock_actual.value or 0)
+            try:
+                raw_stock = str(nuevo_articulo_stock_actual.value or "0").strip().replace(",", ".")
+                new_stock = float(raw_stock)
+            except:
+                new_stock = 0.0
+
             # Fetch current stock (fresh)
             # We need to know the current stock to calc diff. 
             # `fetch_article_by_id` usually joins stock, let's verify or fetch separate.
@@ -2100,7 +2192,7 @@ def main(page: ft.Page) -> None:
             
             diff = new_stock - current_stock
             
-            if abs(diff) > 0.0001: # Float epsilon
+            if abs(diff) > 0.01: # Aumentado el epsilon para evitar micro-ajustes por decimales y errores de redondeo
                 try:
                     mtypes = db_conn.fetch_tipos_movimiento_articulo()
                     # Find Adjustment types
@@ -2285,13 +2377,14 @@ def main(page: ft.Page) -> None:
             "Nuevo artículo",
             _prepare_article_form_content(),
             [
-                ft.TextButton("Cancelar", on_click=close_form),
+                ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, 
+                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
                 ft.ElevatedButton(
                     "Crear",
                     icon=ft.Icons.ADD,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                     on_click=crear_articulo,
                 ),
             ],
@@ -2355,10 +2448,11 @@ def main(page: ft.Page) -> None:
                     show_toast("Error al cambiar estado", kind="error")
 
             status_btn = ft.ElevatedButton(
-                "Desactivar Artículo" if is_active else "Activar Artículo",
+                "Desactivar" if is_active else "Activar",
                 icon=ft.Icons.DO_NOT_DISTURB_ON_ROUNDED if is_active else ft.Icons.CHECK_CIRCLE_ROUNDED,
                 bgcolor=COLOR_ERROR if is_active else COLOR_SUCCESS,
                 color="#FFFFFF",
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                 on_click=toggle_status
             )
 
@@ -2390,13 +2484,24 @@ def main(page: ft.Page) -> None:
                 ft.Text("Estructura de Precios", size=16, weight=ft.FontWeight.BOLD),
                 ft.Container(content=ft.Column([prices_table], scroll=ft.ScrollMode.ADAPTIVE), height=250),
                 ft.Container(height=10),
-                ft.Row([status_btn], alignment=ft.MainAxisAlignment.END)
             ], spacing=10, width=750, scroll=ft.ScrollMode.ADAPTIVE)
 
             open_form(
                 f"Detalles: {art.get('nombre')}",
                 content,
-                [ft.TextButton("Cerrar", on_click=close_form)]
+                [
+                    status_btn,
+                    ft.ElevatedButton(
+                        "Cerrar", 
+                        icon=ft.Icons.CLOSE_ROUNDED,
+                        on_click=close_form,
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                            color=COLOR_TEXT,
+                            bgcolor="#F1F5F9"
+                        )
+                    )
+                ]
             )
             
         except Exception as exc:
@@ -2484,7 +2589,8 @@ def main(page: ft.Page) -> None:
             "Editar artículo",
             _prepare_article_form_content(),
             [
-                ft.TextButton("Cancelar", on_click=close_form),
+                ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, 
+                                  style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
                 ft.ElevatedButton(
                     "Guardar Cambios",
                     icon=ft.Icons.SAVE_ROUNDED,
@@ -3056,7 +3162,7 @@ def main(page: ft.Page) -> None:
         columns=[
             ColumnConfig(key="nombre", label="Depósito", editable=True, width=200),
             ColumnConfig(key="ubicacion", label="Ubicación", editable=True, width=200),
-            ColumnConfig(key="activo", label="Activo", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(key="activo", label="Activo", editable=True, width=100, formatter=_format_bool, inline_editor=boolean_editor()),
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
@@ -3085,7 +3191,7 @@ def main(page: ft.Page) -> None:
     fpay_table = GenericTable(
         columns=[
             ColumnConfig(key="descripcion", label="Forma de Pago", editable=True, width=320),
-            ColumnConfig(key="activa", label="Activa", editable=True, width=100, formatter=_format_bool),
+            ColumnConfig(key="activa", label="Activa", editable=True, width=100, formatter=_format_bool, inline_editor=boolean_editor()),
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
@@ -3187,10 +3293,10 @@ def main(page: ft.Page) -> None:
     dtype_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Nombre", editable=True, width=160),
-            ColumnConfig(key="clase", label="Clase", editable=True, width=100),
+            ColumnConfig(key="clase", label="Clase", editable=True, width=100, inline_editor=dropdown_editor(lambda: ["VENTA", "COMPRA"], width=120, empty_label="Seleccionar...")),
             ColumnConfig(key="letra", label="Letra", editable=True, width=60),
-            ColumnConfig(key="afecta_stock", label="Stk", editable=True, width=60, formatter=_format_bool),
-            ColumnConfig(key="afecta_cuenta_corriente", label="Cta", editable=True, width=60, formatter=_format_bool),
+            ColumnConfig(key="afecta_stock", label="Stk", editable=True, width=60, formatter=_format_bool, inline_editor=boolean_editor()),
+            ColumnConfig(key="afecta_cuenta_corriente", label="Cta", editable=True, width=60, formatter=_format_bool, inline_editor=boolean_editor()),
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
@@ -3230,7 +3336,7 @@ def main(page: ft.Page) -> None:
     mtype_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Nombre", editable=True, width=240),
-            ColumnConfig(key="signo_stock", label="Signo", editable=True, width=80),
+            ColumnConfig(key="signo_stock", label="Signo", editable=True, width=80, inline_editor=dropdown_editor(lambda: ["1", "-1"], width=100, empty_label="Seleccionar...")),
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
@@ -3352,7 +3458,7 @@ def main(page: ft.Page) -> None:
         ], spacing=0, width=400)
         
         open_form("Nuevo Usuario", content, [
-            ft.TextButton("Cancelar", on_click=close_form),
+            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
             ft.ElevatedButton("Crear Usuario", bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=crear_usuario)
         ])
 
@@ -3728,7 +3834,7 @@ def main(page: ft.Page) -> None:
                 height=550,
             )
             
-            actions = [ft.TextButton("Cerrar", on_click=close_form)]
+            actions = [ft.ElevatedButton("Cerrar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9"))]
             if estado == "BORRADOR":
                 actions.insert(0, ft.ElevatedButton(
                     "Confirmar Comprobante",
@@ -4173,7 +4279,7 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("total_min", doc_adv_total_container, getter=lambda _: doc_adv_total.start_value, setter=reset_range_slider),
             AdvancedFilterControl("total_max", doc_adv_total_container, getter=lambda _: doc_adv_total.end_value, setter=reset_range_slider),
         ],
-        show_inline_controls=False, show_mass_actions=False, auto_load=True, page_size=50, show_export_button=True,
+        show_inline_controls=False, show_mass_actions=False, auto_load=True, page_size=50, show_export_button=True, show_export_scope=True,
     )
     # Manual wire for RangeSlider since it's inside a container in AdvancedFilterControl
     # Reset on_change to standard refreshing
@@ -4282,6 +4388,7 @@ def main(page: ft.Page) -> None:
         page_size=40,
         page_size_options=(20, 40, 80),
         show_export_button=True,
+        show_export_scope=True,
     )
     remitos_table.search_field.hint_text = "Buscar remito o cliente..."
 
@@ -4584,10 +4691,11 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Nuevo Pago", content, [
-            ft.TextButton(
+            ft.ElevatedButton(
                 "Cancelar", 
+                icon=ft.Icons.CLOSE_ROUNDED,
                 on_click=close_form,
-                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")
             ),
             ft.ElevatedButton(
                 "Registrar Pago", 
@@ -4787,7 +4895,7 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Registrar Pago/Cobro", content, [
-            ft.TextButton("Cancelar", on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
             ft.ElevatedButton("Registrar", bgcolor=COLOR_SUCCESS, color="#FFFFFF", on_click=_save_pago_cc, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
         ])
 
@@ -4855,7 +4963,7 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Ajuste de Saldo", content, [
-            ft.TextButton("Cancelar", on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.ElevatedButton("Cancelar", icon=ft.Icons.CLOSE_ROUNDED, on_click=close_form, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")),
             ft.ElevatedButton("Aplicar Ajuste", bgcolor=COLOR_WARNING, color="#FFFFFF", on_click=_save_ajuste, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
         ])
 

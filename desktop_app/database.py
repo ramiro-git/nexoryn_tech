@@ -813,26 +813,26 @@ class Database:
                 params.append(tipo_upper)
 
         if search:
-            search_pattern = f"%{search.strip().lower()}%"
+            search_pattern = f"%{search.strip()}%"
             filters.append(
-                "(lower(nombre_completo) LIKE %s OR lower(razon_social) LIKE %s OR lower(cuit) LIKE %s)"
+                "(nombre_completo ILIKE %s OR razon_social ILIKE %s OR cuit ILIKE %s)"
             )
             params.extend([search_pattern] * 3)
 
         cuit = advanced.get("cuit")
         if isinstance(cuit, str) and cuit.strip():
-            filters.append("lower(cuit) LIKE %s")
-            params.append(f"%{cuit.strip().lower()}%")
+            filters.append("cuit ILIKE %s")
+            params.append(f"%{cuit.strip()}%")
 
         localidad = advanced.get("localidad")
         if isinstance(localidad, str) and localidad.strip():
-            filters.append("lower(localidad) LIKE %s")
-            params.append(f"%{localidad.strip().lower()}%")
+            filters.append("localidad ILIKE %s")
+            params.append(f"%{localidad.strip()}%")
 
         provincia = advanced.get("provincia")
         if isinstance(provincia, str) and provincia.strip():
-            filters.append("lower(provincia) LIKE %s")
-            params.append(f"%{provincia.strip().lower()}%")
+            filters.append("provincia ILIKE %s")
+            params.append(f"%{provincia.strip()}%")
 
         activo = advanced.get("activo")
         if isinstance(activo, str):
@@ -874,8 +874,8 @@ class Database:
         for key, col in text_fields.items():
             val = advanced.get(key)
             if isinstance(val, str) and val.strip():
-                filters.append(f"lower({col}) LIKE %s")
-                params.append(f"%{val.strip().lower()}%")
+                filters.append(f"{col} ILIKE %s")
+                params.append(f"%{val.strip()}%")
 
         return " AND ".join(filters), params
 
@@ -1001,14 +1001,14 @@ class Database:
             filters.append("activo = FALSE")
 
         if search:
-            pattern = f"%{search.strip().lower()}%"
-            filters.append("lower(nombre) LIKE %s")
+            pattern = f"%{search.strip()}%"
+            filters.append("nombre ILIKE %s")
             params.append(pattern)
 
         def add_like(field: str, value: Any) -> None:
             if isinstance(value, str) and value.strip():
-                filters.append(f"lower({field}) LIKE %s")
-                params.append(f"%{value.strip().lower()}%")
+                filters.append(f"{field} ILIKE %s")
+                params.append(f"%{value.strip()}%")
 
         add_like("nombre", advanced.get("nombre"))
         
@@ -1408,8 +1408,8 @@ class Database:
         filters: List[str] = ["COALESCE(stock_actual, 0) < COALESCE(stock_minimo, 0)"]
         params: List[Any] = []
         if search:
-            filters.append("lower(nombre) LIKE %s")
-            params.append(f"%{search.strip().lower()}%")
+            filters.append("nombre ILIKE %s")
+            params.append(f"%{search.strip()}%")
         where_clause = " AND ".join(filters)
 
         sort_columns = {
@@ -1492,13 +1492,13 @@ class Database:
         filters: List[str] = ["1=1"]
         params: List[Any] = []
         if isinstance(search, str) and search.strip():
-            pattern = f"%{search.strip().lower()}%"
+            pattern = f"%{search.strip()}%"
             cols = list(columns) if columns else ["nombre"]
             if len(cols) == 1:
-                filters.append(f"lower({cols[0]}) LIKE %s")
+                filters.append(f"{cols[0]} ILIKE %s")
                 params.append(pattern)
             else:
-                filters.append("(" + " OR ".join([f"lower({col}) LIKE %s" for col in cols]) + ")")
+                filters.append("(" + " OR ".join([f"{col} ILIKE %s" for col in cols]) + ")")
                 params.extend([pattern] * len(cols))
         return " AND ".join(filters), params
 
@@ -1664,8 +1664,8 @@ class Database:
         filters: List[str] = ["COALESCE(stock_actual, 0) < COALESCE(stock_minimo, 0)"]
         params: List[Any] = []
         if search:
-            filters.append("lower(nombre) LIKE %s")
-            params.append(f"%{search.strip().lower()}%")
+            filters.append("nombre ILIKE %s")
+            params.append(f"%{search.strip()}%")
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM app.v_articulo_detallado WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -2279,8 +2279,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("(lower(l.nombre) LIKE %s OR lower(p.nombre) LIKE %s)")
-            params.extend([f"%{search.lower()}%"] * 2)
+            filters.append("(l.nombre ILIKE %s OR p.nombre ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "l.id", "nombre": "l.nombre", "provincia": "p.nombre"}
         order_by = self._build_order_by(sorts, sort_columns, default="l.nombre ASC", tiebreaker="l.id ASC")
@@ -2309,8 +2309,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("(lower(l.nombre) LIKE %s OR lower(p.nombre) LIKE %s)")
-            params.extend([f"%{search.lower()}%"] * 2)
+            filters.append("(l.nombre ILIKE %s OR p.nombre ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM ref.localidad l JOIN ref.provincia p ON l.id_provincia = p.id WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -2720,23 +2720,23 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(u.nombre) LIKE %s OR lower(l.entidad) LIKE %s OR lower(l.accion) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(u.nombre ILIKE %s OR l.entidad ILIKE %s OR l.accion ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
         
         user = advanced.get("usuario")
         if user:
-            filters.append("lower(u.nombre) LIKE %s")
-            params.append(f"%{user.lower().strip()}%")
+            filters.append("u.nombre ILIKE %s")
+            params.append(f"%{user.strip()}%")
         
         ent = advanced.get("entidad")
         if ent:
-            filters.append("lower(l.entidad) LIKE %s")
-            params.append(f"%{ent.lower().strip()}%")
+            filters.append("l.entidad ILIKE %s")
+            params.append(f"%{ent.strip()}%")
         
         acc = advanced.get("accion")
         if acc:
-            filters.append("lower(l.accion) LIKE %s")
-            params.append(f"%{acc.lower().strip()}%")
+            filters.append("l.accion ILIKE %s")
+            params.append(f"%{acc.strip()}%")
             
         res = advanced.get("resultado")
         if res and res != "Todas":
@@ -2762,7 +2762,7 @@ class Database:
 
         ip = advanced.get("ip")
         if ip:
-            filters.append("l.ip LIKE %s")
+            filters.append("l.ip ILIKE %s")
             params.append(f"%{ip.strip()}%")
 
         where_clause = " AND ".join(filters)
@@ -2787,23 +2787,23 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(u.nombre) LIKE %s OR lower(l.entidad) LIKE %s OR lower(l.accion) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(u.nombre ILIKE %s OR l.entidad ILIKE %s OR l.accion ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
         
         user = advanced.get("usuario")
         if user:
-            filters.append("lower(u.nombre) LIKE %s")
-            params.append(f"%{user.lower().strip()}%")
+            filters.append("u.nombre ILIKE %s")
+            params.append(f"%{user.strip()}%")
         
         ent = advanced.get("entidad")
         if ent:
-            filters.append("lower(l.entidad) LIKE %s")
-            params.append(f"%{ent.lower().strip()}%")
+            filters.append("l.entidad ILIKE %s")
+            params.append(f"%{ent.strip()}%")
         
         acc = advanced.get("accion")
         if acc:
-            filters.append("lower(l.accion) LIKE %s")
-            params.append(f"%{acc.lower().strip()}%")
+            filters.append("l.accion ILIKE %s")
+            params.append(f"%{acc.strip()}%")
             
         res = advanced.get("resultado")
         if res and res != "Todas":
@@ -2829,7 +2829,7 @@ class Database:
 
         ip = advanced.get("ip")
         if ip:
-            filters.append("l.ip LIKE %s")
+            filters.append("l.ip ILIKE %s")
             params.append(f"%{ip.strip()}%")
 
         where_clause = " AND ".join(filters)
@@ -2847,8 +2847,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(numero ILIKE %s OR entidad ILIKE %s OR documento_numero ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
 
         estado = advanced.get("estado")
         if estado and estado not in ("Todos", "Todas", "---", ""):
@@ -2862,13 +2862,13 @@ class Database:
 
         entidad = advanced.get("entidad")
         if entidad:
-            filters.append("lower(entidad) LIKE %s")
-            params.append(f"%{entidad.lower().strip()}%")
+            filters.append("entidad ILIKE %s")
+            params.append(f"%{entidad.strip()}%")
 
         documento = advanced.get("documento")
         if documento:
-            filters.append("lower(documento_numero) LIKE %s")
-            params.append(f"%{documento.lower().strip()}%")
+            filters.append("documento_numero ILIKE %s")
+            params.append(f"%{documento.strip()}%")
 
         desde = advanced.get("desde")
         if desde:
@@ -2921,8 +2921,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(numero ILIKE %s OR entidad ILIKE %s OR documento_numero ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
 
         estado = advanced.get("estado")
         if estado and estado not in ("Todos", "Todas", "---", ""):
@@ -2936,13 +2936,13 @@ class Database:
 
         entidad = advanced.get("entidad")
         if entidad:
-            filters.append("lower(entidad) LIKE %s")
-            params.append(f"%{entidad.lower().strip()}%")
+            filters.append("entidad ILIKE %s")
+            params.append(f"%{entidad.strip()}%")
 
         documento = advanced.get("documento")
         if documento:
-            filters.append("lower(documento_numero) LIKE %s")
-            params.append(f"%{documento.lower().strip()}%")
+            filters.append("documento_numero ILIKE %s")
+            params.append(f"%{documento.strip()}%")
 
         desde = advanced.get("desde")
         if desde:
@@ -3031,8 +3031,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("lower(tipo) LIKE %s")
-            params.append(f"%{search.lower().strip()}%")
+            filters.append("tipo ILIKE %s")
+            params.append(f"%{search.strip()}%")
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "id", "tipo": "tipo"}
         order_by = self._build_order_by(sorts, sort_columns, default="tipo ASC", tiebreaker="id ASC")
@@ -3047,8 +3047,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("lower(tipo) LIKE %s")
-            params.append(f"%{search.lower().strip()}%")
+            filters.append("tipo ILIKE %s")
+            params.append(f"%{search.strip()}%")
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM ref.tipo_porcentaje WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -3074,8 +3074,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("(lower(nombre) LIKE %s OR lower(clase) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(nombre ILIKE %s OR clase ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "id", "nombre": "nombre", "clase": "clase", "letra": "letra"}
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC")
@@ -3090,8 +3090,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("(lower(nombre) LIKE %s OR lower(clase) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(nombre ILIKE %s OR clase ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM ref.tipo_documento WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -3117,8 +3117,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("lower(nombre) LIKE %s")
-            params.append(f"%{search.lower().strip()}%")
+            filters.append("nombre ILIKE %s")
+            params.append(f"%{search.strip()}%")
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "id", "nombre": "nombre", "signo_stock": "signo_stock"}
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC")
@@ -3133,8 +3133,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("lower(nombre) LIKE %s")
-            params.append(f"%{search.lower().strip()}%")
+            filters.append("nombre ILIKE %s")
+            params.append(f"%{search.strip()}%")
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM ref.tipo_movimiento_articulo WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -3160,8 +3160,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("(lower(nombre) LIKE %s OR lower(email) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(nombre ILIKE %s OR email ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "id", "nombre": "nombre", "email": "email", "rol": "rol"}
         order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC")
@@ -3176,8 +3176,8 @@ class Database:
         filters = ["1=1"]
         params = []
         if search:
-            filters.append("(lower(nombre) LIKE %s OR lower(email) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(nombre ILIKE %s OR email ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) as total FROM seguridad.usuario WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -3445,18 +3445,18 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(entidad) LIKE %s OR lower(tipo_documento) LIKE %s OR numero_serie LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(entidad ILIKE %s OR tipo_documento ILIKE %s OR numero_serie ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
         
         ent = advanced.get("entidad")
         if ent:
-            filters.append("lower(entidad) LIKE %s")
-            params.append(f"%{ent.lower().strip()}%")
+            filters.append("entidad ILIKE %s")
+            params.append(f"%{ent.strip()}%")
         
         tipo = advanced.get("tipo")
         if tipo and tipo not in ("Todos", "Todas", "---"):
-            filters.append("lower(tipo_documento) LIKE %s")
-            params.append(f"%{tipo.lower().strip()}%")
+            filters.append("tipo_documento ILIKE %s")
+            params.append(f"%{tipo.strip()}%")
             
         desde = advanced.get("desde")
         if desde:
@@ -3489,7 +3489,7 @@ class Database:
 
         numero = advanced.get("numero")
         if numero:
-            filters.append("numero_serie LIKE %s")
+            filters.append("numero_serie ILIKE %s")
             params.append(f"%{numero.strip()}%")
 
         id_entidad = _to_id(advanced.get("id_entidad"))
@@ -3523,18 +3523,18 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(entidad) LIKE %s OR lower(tipo_documento) LIKE %s OR numero_serie LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(entidad ILIKE %s OR tipo_documento ILIKE %s OR numero_serie ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
             
         ent = advanced.get("entidad")
         if ent:
-            filters.append("lower(entidad) LIKE %s")
-            params.append(f"%{ent.lower().strip()}%")
+            filters.append("entidad ILIKE %s")
+            params.append(f"%{ent.strip()}%")
         
         tipo = advanced.get("tipo")
         if tipo and tipo not in ("Todos", "Todas", "---"):
-            filters.append("lower(tipo_documento) LIKE %s")
-            params.append(f"%{tipo.lower().strip()}%")
+            filters.append("tipo_documento ILIKE %s")
+            params.append(f"%{tipo.strip()}%")
             
         desde = advanced.get("desde")
         if desde:
@@ -3568,7 +3568,7 @@ class Database:
 
         numero = advanced.get("numero")
         if numero:
-            filters.append("numero_serie LIKE %s")
+            filters.append("numero_serie ILIKE %s")
             params.append(f"%{numero.strip()}%")
 
         id_entidad = _to_id(advanced.get("id_entidad"))
@@ -3589,8 +3589,8 @@ class Database:
         filters = ["doc.id_entidad_comercial = %s", "doc.estado NOT IN ('ANULADO', 'PAGADO')"]
         params: List[Any] = [id_entidad]
         if search:
-            filters.append("(lower(doc.numero_serie) LIKE %s OR lower(td.nombre) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(doc.numero_serie ILIKE %s OR td.nombre ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         where_clause = " AND ".join(filters)
         query = f"""
             SELECT doc.id, doc.fecha, doc.numero_serie, doc.total, doc.estado, td.nombre AS tipo_documento
@@ -3656,8 +3656,8 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(articulo) LIKE %s OR lower(tipo_movimiento) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(articulo ILIKE %s OR tipo_movimiento ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
         
         # Advanced Filters
         art = advanced.get("articulo")
@@ -3726,8 +3726,8 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(articulo) LIKE %s OR lower(tipo_movimiento) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(articulo ILIKE %s OR tipo_movimiento ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
             
         # Advanced Filters
         art = advanced.get("articulo")
@@ -3781,13 +3781,13 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s OR lower(d.numero_serie) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 5)
+            filters.append("(p.referencia ILIKE %s OR fp.descripcion ILIKE %s OR (ec.apellido || ' ' || ec.nombre) ILIKE %s OR ec.razon_social ILIKE %s OR d.numero_serie ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 5)
         
         ref = advanced.get("referencia")
         if ref:
-            filters.append("lower(p.referencia) LIKE %s")
-            params.append(f"%{ref.lower().strip()}%")
+            filters.append("p.referencia ILIKE %s")
+            params.append(f"%{ref.strip()}%")
         
         forma = advanced.get("forma")
         if forma and str(forma) not in ("0", "Todos", "Todas", "---"):
@@ -3795,8 +3795,8 @@ class Database:
                 filters.append("p.id_forma_pago = %s")
                 params.append(int(forma))
             else:
-                filters.append("lower(fp.descripcion) LIKE %s")
-                params.append(f"%{forma.lower().strip()}%")
+                filters.append("fp.descripcion ILIKE %s")
+                params.append(f"%{forma.strip()}%")
             
         desde = advanced.get("desde")
         if desde:
@@ -3815,8 +3815,8 @@ class Database:
                 filters.append("d.id_entidad_comercial = %s")
                 params.append(int(entidad))
             else:
-                filters.append("lower(ec.apellido || ' ' || ec.nombre) LIKE %s")
-                params.append(f"%{entidad.lower().strip()}%")
+                filters.append("(ec.apellido || ' ' || ec.nombre) ILIKE %s")
+                params.append(f"%{entidad.strip()}%")
 
         m_min = advanced.get("monto_min")
         if m_min is not None:
@@ -3860,13 +3860,13 @@ class Database:
         params = []
         advanced = advanced or {}
         if search:
-            filters.append("(lower(p.referencia) LIKE %s OR lower(fp.descripcion) LIKE %s OR lower(ec.apellido || ' ' || ec.nombre) LIKE %s OR lower(ec.razon_social) LIKE %s OR lower(d.numero_serie) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 5)
+            filters.append("(p.referencia ILIKE %s OR fp.descripcion ILIKE %s OR (ec.apellido || ' ' || ec.nombre) ILIKE %s OR ec.razon_social ILIKE %s OR d.numero_serie ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 5)
             
         ref = advanced.get("referencia")
         if ref:
-            filters.append("lower(p.referencia) LIKE %s")
-            params.append(f"%{ref.lower().strip()}%")
+            filters.append("p.referencia ILIKE %s")
+            params.append(f"%{ref.strip()}%")
         
         forma = advanced.get("forma")
         if forma and str(forma) not in ("0", "Todos", "Todas", "---"):
@@ -3874,8 +3874,8 @@ class Database:
                 filters.append("p.id_forma_pago = %s")
                 params.append(int(forma))
             else:
-                filters.append("lower(fp.descripcion) LIKE %s")
-                params.append(f"%{forma.lower().strip()}%")
+                filters.append("fp.descripcion ILIKE %s")
+                params.append(f"%{forma.strip()}%")
             
         desde = advanced.get("desde")
         if desde:
@@ -3893,8 +3893,8 @@ class Database:
                 filters.append("d.id_entidad_comercial = %s")
                 params.append(int(entidad))
             else:
-                filters.append("lower(ec.apellido || ' ' || ec.nombre) LIKE %s")
-                params.append(f"%{entidad.lower().strip()}%")
+                filters.append("(ec.apellido || ' ' || ec.nombre) ILIKE %s")
+                params.append(f"%{entidad.strip()}%")
 
         m_min = advanced.get("monto_min")
         if m_min is not None:
@@ -4756,8 +4756,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(entidad) LIKE %s OR lower(cuit) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(entidad ILIKE %s OR cuit ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
 
         # Filtro tipo entidad
         tipo = advanced.get("tipo_entidad") or simple
@@ -4812,8 +4812,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(entidad) LIKE %s OR lower(cuit) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(entidad ILIKE %s OR cuit ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
 
         tipo = advanced.get("tipo_entidad") or simple
         if tipo and tipo not in ("", "Todos", "Todas"):
@@ -4855,8 +4855,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(entidad) LIKE %s OR lower(concepto) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(entidad ILIKE %s OR concepto ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
 
         # Filtro por entidad específica
         entidad = advanced.get("id_entidad") or advanced.get("entidad")
@@ -4865,8 +4865,8 @@ class Database:
                 filters.append("id_entidad_comercial = %s")
                 params.append(int(entidad))
             else:
-                filters.append("lower(entidad) LIKE %s")
-                params.append(f"%{entidad.lower().strip()}%")
+                filters.append("entidad ILIKE %s")
+                params.append(f"%{entidad.strip()}%")
 
         # Tipo movimiento
         tipo = advanced.get("tipo_movimiento")
@@ -4919,8 +4919,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(entidad) LIKE %s OR lower(concepto) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 2)
+            filters.append("(entidad ILIKE %s OR concepto ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 2)
 
         entidad = advanced.get("id_entidad") or advanced.get("entidad")
         if entidad and str(entidad) not in ("", "0", "Todos"):
@@ -4928,8 +4928,8 @@ class Database:
                 filters.append("id_entidad_comercial = %s")
                 params.append(int(entidad))
             else:
-                filters.append("lower(entidad) LIKE %s")
-                params.append(f"%{entidad.lower().strip()}%")
+                filters.append("entidad ILIKE %s")
+                params.append(f"%{entidad.strip()}%")
 
         tipo = advanced.get("tipo_movimiento")
         if tipo and tipo not in ("", "Todos"):
@@ -5060,8 +5060,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(numero ILIKE %s OR entidad ILIKE %s OR documento_numero ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
 
         entidad = advanced.get("entidad")
         if entidad and str(entidad) not in ("", "0", "Todas"):
@@ -5069,8 +5069,8 @@ class Database:
                 filters.append("id_entidad_comercial = %s")
                 params.append(int(entidad))
             else:
-                filters.append("lower(entidad) LIKE %s")
-                params.append(f"%{entidad.lower().strip()}%")
+                filters.append("entidad ILIKE %s")
+                params.append(f"%{entidad.strip()}%")
 
         if advanced.get("estado"):
             filters.append("estado = %s")
@@ -5082,8 +5082,8 @@ class Database:
                 params.append(int(advanced["deposito"]))
 
         if advanced.get("documento"):
-             filters.append("(lower(documento_numero) LIKE %s)")
-             params.append(f"%{advanced['documento'].lower().strip()}%")
+             filters.append("(documento_numero ILIKE %s)")
+             params.append(f"%{advanced['documento'].strip()}%")
 
         if advanced.get("desde"):
             filters.append("fecha >= %s")
@@ -5133,8 +5133,8 @@ class Database:
         advanced = advanced or {}
 
         if search:
-            filters.append("(lower(numero) LIKE %s OR lower(entidad) LIKE %s OR lower(documento_numero) LIKE %s)")
-            params.extend([f"%{search.lower().strip()}%"] * 3)
+            filters.append("(numero ILIKE %s OR entidad ILIKE %s OR documento_numero ILIKE %s)")
+            params.extend([f"%{search.strip()}%"] * 3)
 
         entidad = advanced.get("entidad")
         if entidad and str(entidad) not in ("", "0", "Todas"):
@@ -5142,8 +5142,8 @@ class Database:
                 filters.append("id_entidad_comercial = %s")
                 params.append(int(entidad))
             else:
-                filters.append("lower(entidad) LIKE %s")
-                params.append(f"%{entidad.lower().strip()}%")
+                filters.append("entidad ILIKE %s")
+                params.append(f"%{entidad.strip()}%")
 
         if advanced.get("estado"):
             filters.append("estado = %s")
@@ -5155,8 +5155,8 @@ class Database:
                 params.append(int(advanced["deposito"]))
 
         if advanced.get("documento"):
-             filters.append("(lower(documento_numero) LIKE %s)")
-             params.append(f"%{advanced['documento'].lower().strip()}%")
+             filters.append("(documento_numero ILIKE %s)")
+             params.append(f"%{advanced['documento'].strip()}%")
 
         if advanced.get("desde"):
             filters.append("fecha >= %s")
