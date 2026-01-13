@@ -12,6 +12,7 @@ import threading
 from datetime import datetime
 import time
 from desktop_app.services.export_service import ExportService
+from desktop_app.components.button_styles import cancel_button
 
 SortSpec = List[Tuple[str, str]]  # [(key, "asc"|"desc")] in order
 
@@ -608,13 +609,13 @@ class GenericTable:
             title=ft.Text("Exportar Datos"),
             content=ft.Column(dialog_controls, tight=True, spacing=20),
             actions=[
-                ft.TextButton("Cancelar", on_click=close_dlg),
+                cancel_button("Cancelar", on_click=close_dlg),
                 ft.ElevatedButton(
                     "Exportar", 
                     on_click=confirm_export, 
                     bgcolor="#4F46E5", 
                     color="white",
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12))
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -1640,7 +1641,7 @@ class GenericTable:
             f"¿Estás seguro que deseas eliminar {len(targets)} registro(s)? Esta acción no se puede deshacer."
         )
         self._confirm_dialog.actions = [
-            ft.TextButton("Cancelar", on_click=lambda e: self._close_dialog()),
+            cancel_button("Cancelar", on_click=lambda e: self._close_dialog()),
             ft.ElevatedButton("Eliminar", bgcolor="#DC2626", color="#FFFFFF", on_click=do_delete),
         ]
         self._open_dialog()
@@ -1878,7 +1879,7 @@ class GenericTable:
         ], tight=True, width=350)
         
         self._edit_dialog.actions = [
-            ft.TextButton("Cancelar", on_click=close),
+            cancel_button("Cancelar", on_click=close),
             ft.ElevatedButton("Guardar", on_click=save, bgcolor="#4F46E5", color="white", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
         ]
         
@@ -1889,4 +1890,3 @@ class GenericTable:
                 self.root.page.dialog = self._edit_dialog
                 self._edit_dialog.open = True
                 self.root.page.update()
-

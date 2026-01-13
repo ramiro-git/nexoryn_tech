@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 import flet as ft
 from desktop_app.database import Database
 from desktop_app.components.async_select import AsyncSelect
+from desktop_app.components.button_styles import cancel_button
 
 
 # Styling helpers
@@ -757,7 +758,7 @@ class MassUpdateView(ft.Container):
                 f"Esta acción no se puede deshacer."
             ),
             actions=[
-                ft.TextButton("Cancelar", on_click=close_dlg),
+                cancel_button("Cancelar", on_click=close_dlg),
                 ft.ElevatedButton("Confirmar y Aplicar", on_click=do_apply, bgcolor="#EF4444", color="white", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=4))),
             ],
             actions_alignment=ft.MainAxisAlignment.END,

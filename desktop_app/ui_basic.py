@@ -65,6 +65,7 @@ try:
     from desktop_app.components.mass_update_view import MassUpdateView
     from desktop_app.services.print_service import generate_pdf_and_open
     from desktop_app.components.async_select import AsyncSelect
+    from desktop_app.components.button_styles import cancel_button
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -81,6 +82,7 @@ except ImportError:
     )
     from components.mass_update_view import MassUpdateView # type: ignore
     from services.print_service import generate_pdf_and_open # type: ignore
+    from components.button_styles import cancel_button # type: ignore
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -89,6 +91,7 @@ except ImportError:
     from services.print_service import generate_pdf_and_open # type: ignore
     from components.backup_professional_view import BackupProfessionalView # type: ignore
     from components.dashboard_view import DashboardView # type: ignore
+    from components.button_styles import cancel_button # type: ignore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -354,29 +357,35 @@ def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, wid
 
 
 def _cancel_button(label: str, on_click: Optional[Callable], icon: Optional[Any] = ft.Icons.CLOSE_ROUNDED) -> ft.ElevatedButton:
-    style_kwargs = dict(
-        shape=ft.RoundedRectangleBorder(radius=8),
-        color=COLOR_TEXT,
+    return cancel_button(
+        label,
+        on_click,
+        icon=icon,
+        text_color=COLOR_TEXT,
         bgcolor="#F1F5F9",
+        radius=8,
     )
-    try:
-        style = ft.ButtonStyle(elevation=0, shadow_color="#00000000", **style_kwargs)
-    except TypeError:
-        try:
-            style = ft.ButtonStyle(elevation=0, **style_kwargs)
-        except TypeError:
-            style = ft.ButtonStyle(**style_kwargs)
-    btn = ft.ElevatedButton(label, icon=icon, on_click=on_click, style=style)
-    if hasattr(btn, "elevation"):
-        try:
-            btn.elevation = 0
-        except Exception:
-            pass
-    return btn
 
 
-def _date_field(page: ft.Page, label: str, width: int = 180) -> ft.TextField:
-    tf = ft.TextField(label=label, width=width)
+def _date_field(*args, **kwargs) -> ft.TextField:
+    page = kwargs.pop("page", None)
+    width = kwargs.pop("width", 180)
+    label = None
+    if args:
+        if isinstance(args[0], ft.Page):
+            page = args[0]
+            if len(args) > 1:
+                label = args[1]
+            if len(args) > 2:
+                width = args[2]
+        else:
+            label = args[0]
+            if len(args) > 1:
+                width = args[1]
+    if label is None:
+        label = kwargs.pop("label", "Fecha")
+
+    tf = ft.TextField(label=str(label), width=width)
     _style_input(tf)
     
     def on_date_change(e):
@@ -402,32 +411,39 @@ def _date_field(page: ft.Page, label: str, width: int = 180) -> ft.TextField:
     _maybe_set(dp, "first_date", safe_min)
     _maybe_set(dp, "last_date", safe_max)
     _maybe_set(dp, "current_date", datetime.now())
-    page.overlay.append(dp)
-    try:
-        page.update()  # Ensure DatePicker is registered with the page
-    except Exception:
-        pass
-    
-    def open_picker(_):
+
+    def open_picker(e):
+        target_page = page or e.control.page
+        if not target_page:
+            return
+
         try:
-            if hasattr(page, "open"):
-                page.open(dp)
+            if hasattr(target_page, "open"):
+                target_page.open(dp)
             else:
+                # Legacy Flet fallback
+                if dp not in target_page.overlay:
+                    target_page.overlay.append(dp)
+                    target_page.update()
                 dp.open = True
-                page.update()
+                target_page.update()
         except AssertionError:
-            # Fallback: re-add and try again
-            if dp not in page.overlay:
-                page.overlay.append(dp)
-                page.update()
-            dp.open = True
-            page.update()
+            pass
+        except Exception:
+            pass
 
     tf.suffix = ft.IconButton(
         icon=ft.Icons.CALENDAR_MONTH_ROUNDED,
         icon_size=18,
         on_click=open_picker,
     )
+
+    if page is not None and dp not in page.overlay:
+        try:
+            page.overlay.append(dp)
+            page.update()
+        except Exception:
+            pass
     return tf
 
 
@@ -792,6 +808,39 @@ def main(page: ft.Page) -> None:
                 options=options,
                 value=selected,
                 hint_text=empty_label,
+                width=width,
+                on_change=lambda e: setter(e.control.value),
+            )
+            _style_input(dd)
+            return dd
+
+        return build
+
+    def unidad_medida_editor(*, width: int = 140) -> Any:
+        def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
+            options: List[ft.dropdown.Option] = []
+            option_keys: set = set()
+            for u in unidades_values:
+                nombre = str(u.get("nombre") or "").strip()
+                abreviatura = str(u.get("abreviatura") or "").strip()
+                key = abreviatura or nombre
+                if not key:
+                    continue
+                label = f"{nombre} ({abreviatura})" if abreviatura else nombre
+                key_str = str(key)
+                options.append(ft.dropdown.Option(key_str, label))
+                option_keys.add(key_str)
+
+            selected = row.get("unidad_abreviatura") or row.get("unidad_medida") or value
+            selected_key = str(selected).strip() if selected is not None else ""
+            if selected_key and selected_key not in option_keys:
+                options.insert(0, ft.dropdown.Option(selected_key, selected_key))
+                option_keys.add(selected_key)
+
+            dd = ft.Dropdown(
+                options=options,
+                value=selected_key if selected_key in option_keys else None,
+                hint_text="(Sin unidad)",
                 width=width,
                 on_change=lambda e: setter(e.control.value),
             )
@@ -1243,8 +1292,8 @@ def main(page: ft.Page) -> None:
         value="",
         on_change=_ent_live
     )
-    entidades_advanced_desde = _date_field(page, "Alta desde", width=150)
-    entidades_advanced_hasta = _date_field(page, "Alta hasta", width=150)
+    entidades_advanced_desde = _date_field("Alta desde", width=150)
+    entidades_advanced_hasta = _date_field("Alta hasta", width=150)
     # Set on_submit for date fields to trigger refresh upon selection
     entidades_advanced_desde.on_submit = _ent_live
     entidades_advanced_hasta.on_submit = _ent_live
@@ -1551,6 +1600,93 @@ def main(page: ft.Page) -> None:
         total = db.count_articles(search=search, activo_only=activo, advanced=advanced)
         return rows, total
 
+    def _current_lista_precio_id() -> int:
+        raw = getattr(articulos_advanced_lista_precio, "value", None)
+        if raw in (None, "", 0, "0"):
+            return 1
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 1
+
+    def _update_articulo_precio_lista(article_id: int, value: Any) -> None:
+        if db is None:
+            raise provider_error()
+        if value is None or (isinstance(value, str) and not value.strip()):
+            precio_val = None
+        else:
+            precio_val = _parse_float(value, "Precio lista")
+            if precio_val < 0:
+                raise ValueError("El precio lista no puede ser negativo.")
+
+        lista_id = _current_lista_precio_id()
+        existing = db.fetch_article_prices(article_id)
+        existing_row = next(
+            (p for p in existing if int(p.get("id_lista_precio") or 0) == int(lista_id)),
+            None,
+        )
+        db.update_article_prices(
+            article_id,
+            [
+                {
+                    "id_lista_precio": lista_id,
+                    "precio": precio_val,
+                    "porcentaje": existing_row.get("porcentaje") if existing_row else None,
+                    "id_tipo_porcentaje": existing_row.get("id_tipo_porcentaje") if existing_row else None,
+                }
+            ],
+        )
+
+    def _ajustar_stock_desde_inventario(article_id: int, value: Any) -> None:
+        if db is None:
+            raise provider_error()
+        nuevo_stock = _parse_float(value, "Stock")
+        current_art_data = db.fetch_article_by_id(article_id)
+        current_stock = float(current_art_data.get("stock_actual", 0)) if current_art_data else 0.0
+        diff = nuevo_stock - current_stock
+        if abs(diff) <= 0.01:
+            return
+
+        mtypes = db.fetch_tipos_movimiento_articulo()
+        target_sign = 1 if diff > 0 else -1
+        adj_type_id = None
+        for mt in mtypes:
+            if "ajuste" in str(mt.get("nombre", "")).lower() and mt.get("signo_stock") == target_sign:
+                adj_type_id = mt.get("id")
+                break
+        if not adj_type_id:
+            for mt in mtypes:
+                if mt.get("signo_stock") == target_sign:
+                    adj_type_id = mt.get("id")
+                    break
+        if not adj_type_id:
+            raise ValueError("No se encontró un tipo de movimiento para ajustar stock.")
+
+        db.create_stock_movement(
+            id_articulo=article_id,
+            id_tipo_movimiento=adj_type_id,
+            cantidad=abs(diff),
+            id_deposito=1,
+            observacion=f"Ajuste manual desde inventario (Stock: {current_stock} -> {nuevo_stock})",
+        )
+
+    def _apply_articulo_inline_update(row_id: Any, changes: Dict[str, Any]) -> None:
+        if db is None:
+            raise provider_error()
+        pending = dict(changes or {})
+        if "precio_lista" in pending:
+            _update_articulo_precio_lista(int(row_id), pending.pop("precio_lista"))
+        if "stock_actual" in pending:
+            _ajustar_stock_desde_inventario(int(row_id), pending.pop("stock_actual"))
+        if "unidad_abreviatura" in pending:
+            pending["id_unidad_medida"] = pending.pop("unidad_abreviatura")
+        if pending:
+            db.update_article_fields(int(row_id), pending)
+
+    def _apply_articulo_mass_update(ids: List[Any], updates: Dict[str, Any]) -> None:
+        for rid in ids:
+            _apply_articulo_inline_update(rid, dict(updates))
+
     def deactivate_article(article_id: int) -> None:
         if db is None:
             raise provider_error()
@@ -1560,7 +1696,7 @@ def main(page: ft.Page) -> None:
 
     articulos_table = GenericTable(
         columns=[
-            ColumnConfig(key="nombre", label="Nombre", width=240),
+            ColumnConfig(key="nombre", label="Nombre", editable=True, width=240),
             ColumnConfig(
                 key="marca",
                 label="Marca",
@@ -1587,12 +1723,15 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="precio_lista",
                 label="Precio Lista",
+                editable=True,
                 formatter=lambda v, _: _format_money(v),
                 width=110,
             ),
             ColumnConfig(
                 key="unidad_abreviatura",
                 label="UM",
+                editable=True,
+                inline_editor=unidad_medida_editor(width=180),
                 width=60,
             ),
             ColumnConfig(
@@ -1605,6 +1744,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="stock_actual",
                 label="Stock",
+                editable=True,
                 formatter=lambda v, _: "—" if v is None else f"{float(v):.2f}",
                 width=90,
             ),
@@ -1711,8 +1851,8 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("id_unidad_medida", articulos_advanced_unidad),
             AdvancedFilterControl("redondeo", articulos_advanced_redondeo),
         ],
-        inline_edit_callback=lambda row_id, changes: db.update_article_fields(int(row_id), changes) if db else None,
-        mass_edit_callback=lambda ids, updates: db.bulk_update_articles([int(i) for i in ids], updates) if db else None,
+        inline_edit_callback=_apply_articulo_inline_update,
+        mass_edit_callback=_apply_articulo_mass_update,
         mass_activate_callback=lambda ids: db.bulk_update_articles([int(i) for i in ids], {"activo": True}) if db else None,
         mass_deactivate_callback=lambda ids: db.bulk_update_articles([int(i) for i in ids], {"activo": False}) if db else None,
         show_inline_controls=True,
@@ -2690,16 +2830,7 @@ def main(page: ft.Page) -> None:
                 content,
                 [
                     status_btn,
-                    ft.ElevatedButton(
-                        "Cerrar", 
-                        icon=ft.Icons.CLOSE_ROUNDED,
-                        on_click=close_form,
-                        style=ft.ButtonStyle(
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                            color=COLOR_TEXT,
-                            bgcolor="#F1F5F9"
-                        )
-                    )
+                    _cancel_button("Cerrar", on_click=close_form),
                 ]
             )
             
@@ -3928,11 +4059,215 @@ def main(page: ft.Page) -> None:
         estado = doc_row.get("estado", "BORRADOR")
         if db:
             db.log_activity("DOCUMENTO", "VIEW_DETAIL", id_entidad=doc_id)
+        # Adapter to match BackupView signature with ui_basic's global global vars approach is tricky.
+        # ui_basic uses a global status_badge. We can just update it here if we want, or pass a dummy.
+        # For now, let's just piggyback on existing UI update if possible, or ignore.
+        # Actually, let's reuse the logic that exists if we can, or just print log.
+        pass
+
+    backup_view_component = BackupProfessionalView(page, db, show_toast, ask_confirm)
+    
+    # Wrap in a container to match layout expectations
+    backups_view = ft.Container(
+        content=backup_view_component.build(),
+        padding=10
+    )
+
+    # Ensure initial load when starting or switching
+    backup_view_component.load_data()
+
+    # Documents View
+    def _can_authorize_afip(doc_row: Dict[str, Any]) -> bool:
+        estado = str(doc_row.get("estado") or "").upper()
+        return estado in ("CONFIRMADO", "PAGADO") and doc_row.get("codigo_afip") and not doc_row.get("cae")
+
+    def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+        if not _can_authorize_afip(doc_row):
+            show_toast("El comprobante no está listo para autorizar.", kind="error")
+            return
+        if not afip:
+            show_toast("Servicio AFIP no configurado. Verifique CUIT y certificados en .env", kind="error")
+            return
+        db_local = get_db_or_toast()
+        if not db_local:
+            return
+
+        try:
+            show_toast("Solicitando CAE...", kind="info")
+            doc_id = int(doc_row["id"])
+            codigo_afip = int(doc_row.get("codigo_afip"))
+            punto_venta = 1
+            last = afip.get_last_voucher_number(punto_venta, codigo_afip)
+            next_num = last + 1
+
+            entity = None
+            ent_id = doc_row.get("id_entidad")
+            if ent_id:
+                entity = db_local.fetch_entity_by_id(int(ent_id))
+
+            total = float(doc_row.get("total", 0) or 0)
+            neto = float(doc_row.get("neto", 0) or 0)
+            iva_total = float(doc_row.get("iva_total", 0) or 0)
+            if total and (neto <= 0 or iva_total < 0):
+                neto = total / 1.21
+                iva_total = total - neto
+
+            letra = str(doc_row.get("letra") or "").strip().upper()
+            es_letra_a = letra == "A" or codigo_afip in (1, 2, 3)
+            cuit_raw = (doc_row.get("cuit_receptor") or (entity or {}).get("cuit") or "").strip()
+            digits = "".join(ch for ch in cuit_raw if ch.isdigit())
+            doc_tipo = 99
+            doc_nro = 0
+            if digits:
+                if len(digits) == 11:
+                    doc_tipo = 80
+                    doc_nro = int(digits)
+                elif len(digits) <= 8:
+                    doc_tipo = 96
+                    doc_nro = int(digits)
+                else:
+                    show_toast("CUIT/DNI del receptor inválido.", kind="error")
+                    return
+
+            if es_letra_a and doc_tipo != 80:
+                show_toast("Para comprobantes letra A se requiere CUIT válido del receptor.", kind="error")
+                return
+
+            condicion_nombre = (entity or {}).get("condicion_iva")
+            condicion_id = afip.get_condicion_iva_receptor_id(condicion_nombre) if condicion_nombre else None
+            if es_letra_a and not condicion_id:
+                show_toast("Falta la condición IVA del receptor (requerida para letra A).", kind="error")
+                return
+
+            invoice_data = {
+                "CantReg": 1,
+                "PtoVta": punto_venta,
+                "CbteTipo": codigo_afip,
+                "Concepto": 1,
+                "DocTipo": doc_tipo,
+                "DocNro": doc_nro,
+                "CbteDesde": next_num,
+                "CbteHasta": next_num,
+                "CbteFch": datetime.now().strftime("%Y%m%d"),
+                "ImpTotal": total,
+                "ImpTotConc": 0,
+                "ImpNeto": neto,
+                "ImpOpEx": 0,
+                "ImpIVA": iva_total,
+                "ImpTrib": 0,
+                "MonId": "PES",
+                "MonCotiz": 1,
+                "Iva": [
+                    {
+                        "Id": 5,
+                        "BaseImp": neto,
+                        "Importe": iva_total,
+                    }
+                ],
+            }
+            if condicion_id is not None:
+                invoice_data["CondicionIVAReceptorId"] = condicion_id
+
+            res = afip.authorize_invoice(invoice_data)
+            if res.get("success"):
+                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "")).strip() if ch.isdigit())
+                qr_data = None
+                try:
+                    fecha_doc = str(doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
+                    qr_payload = {
+                        "ver": 1,
+                        "fecha": fecha_doc,
+                        "cuit": int(cuit_emisor) if cuit_emisor else 0,
+                        "ptoVta": int(punto_venta),
+                        "tipoCmp": int(codigo_afip),
+                        "nroCmp": int(next_num),
+                        "importe": round(total, 2),
+                        "moneda": "PES",
+                        "ctz": 1,
+                        "tipoDocRec": int(doc_tipo),
+                        "nroDocRec": int(doc_nro),
+                        "tipoCodAut": "E",
+                        "codAut": res.get("CAE"),
+                    }
+                    qr_json = json.dumps(qr_payload, separators=(",", ":"), ensure_ascii=False)
+                    qr_base64 = base64.b64encode(qr_json.encode("utf-8")).decode("ascii")
+                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_base64}"
+                except Exception:
+                    qr_data = None
+
+                db_local.update_document_afip_data(
+                    doc_id,
+                    res["CAE"],
+                    res["CAEFchVto"],
+                    punto_venta,
+                    codigo_afip,
+                    cuit_emisor=cuit_emisor or None,
+                    qr_data=qr_data,
+                )
+                show_toast(f"Autorizado! CAE: {res['CAE']}", kind="success")
+                if close_after:
+                    close_form()
+                if hasattr(documentos_summary_table, "refresh"):
+                    documentos_summary_table.refresh()
+                refresh_all_stats()
+            else:
+                show_toast(f"Error AFIP: {res.get('error')}", kind="error")
+        except Exception as e:
+            show_toast(f"Error: {e}", kind="error")
+
+    def _confirm_afip_authorization(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+        ask_confirm(
+            "Autorizar AFIP",
+            "Vas a facturar electrónicamente este comprobante en AFIP. Esta acción es irreversible y no se puede volver atrás. ¿Deseás continuar?",
+            "Autorizar AFIP",
+            lambda: _authorize_afip_doc(doc_row, close_after=close_after),
+            button_color=COLOR_WARNING,
+        )
+
+    def _confirm_document(doc_id: int, *, close_after: bool = False) -> None:
+        def on_confirm_real():
+            try:
+                if not db:
+                    return
+                db.confirm_document(doc_id)
+                if db:
+                    db.log_activity("DOCUMENTO", "CONFIRM", id_entidad=doc_id)
+                show_toast("Comprobante confirmado", kind="success")
+                if close_after:
+                    close_form()
+                if hasattr(documentos_summary_table, "refresh"):
+                    documentos_summary_table.refresh()
+                refresh_all_stats()
+            except Exception as exc:
+                show_toast(f"Error al confirmar: {exc}", kind="error")
+
+        ask_confirm(
+            "Confirmar Comprobante",
+            "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
+            "Confirmar",
+            on_confirm_real,
+            button_color=COLOR_SUCCESS,
+        )
+
+    def view_doc_detail(doc_row: Dict[str, Any]):
+        doc_id = int(doc_row["id"])
+        estado = doc_row.get("estado", "BORRADOR")
+        if db:
+            db.log_activity("DOCUMENTO", "VIEW_DETAIL", id_entidad=doc_id)
         try:
             details = db.fetch_documento_detalle(doc_id)
             # Improved content with more details
             total_doc = float(doc_row.get("total", 0))
             
+            col_widths = {
+                "articulo": 300,
+                "lista": 120,
+                "cant": 70,
+                "unitario": 120,
+                "total": 130,
+            }
+            table_min_width = sum(col_widths.values()) + 180
+
             body = ft.Column([
                     ft.Container(
                         content=ft.Row([
@@ -3957,7 +4292,7 @@ def main(page: ft.Page) -> None:
                     ),
                     ft.Container(height=10),
                     ft.Row([
-                        ft.Text("ÍTEMS DEL COMPROBANTE", size=11, weight=ft.FontWeight.BOLD, color=COLOR_ACCENT),
+                        ft.Text("ÍTEMS DEL COMPROBANTE *", size=11, weight=ft.FontWeight.BOLD, color=COLOR_ACCENT),
                         ft.Container(
                             content=ft.Text(
                                 doc_row.get("estado", ""), 
@@ -3971,30 +4306,64 @@ def main(page: ft.Page) -> None:
                         )
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Container(
-                        content=SafeDataTable(
-                            heading_row_color="#F8FAFC",
-                            heading_row_height=40,
-                            data_row_min_height=40,
-                            column_spacing=20,
-                            columns=[
-                                ft.DataColumn(ft.Text("Artículo", size=12, weight=ft.FontWeight.BOLD)),
-                                ft.DataColumn(ft.Text("Lista", size=12, weight=ft.FontWeight.BOLD)),
-                                ft.DataColumn(ft.Text("Cant.", size=12, weight=ft.FontWeight.BOLD), numeric=True),
-                                ft.DataColumn(ft.Text("Unitario", size=12, weight=ft.FontWeight.BOLD), numeric=True),
-                                ft.DataColumn(ft.Text("Total", size=12, weight=ft.FontWeight.BOLD), numeric=True),
-                            ],
-                            rows=[
-                                ft.DataRow(cells=[
-                                    ft.DataCell(ft.Text(f"{d['articulo']} ({d.get('codigo_art', d.get('id_articulo'))})", size=13)),
-                                    ft.DataCell(ft.Text(d.get("lista_nombre") or (doc_row.get("lista_precio") if doc_row.get("id_lista_precio") == d.get("id_lista_precio") else "---") , size=12, color=COLOR_TEXT_MUTED)),
-                                    ft.DataCell(ft.Text(str(d["cantidad"]), size=13)),
-                                    ft.DataCell(ft.Text(_format_money(d["precio_unitario"]), size=13)),
-                                    ft.DataCell(ft.Text(_format_money(d["total_linea"]), size=13, weight=ft.FontWeight.W_500)),
-                                ]) for d in details
-                            ],
-                        ),
                         border=ft.border.all(1, "#E2E8F0"),
                         border_radius=8,
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                        content=ft.Row(
+                            scroll=ft.ScrollMode.AUTO,
+                            expand=True,
+                            controls=[
+                                SafeDataTable(
+                                    width=table_min_width,
+                                    heading_row_color="#F8FAFC",
+                                    heading_row_height=40,
+                                    data_row_min_height=40,
+                                    column_spacing=12,
+                                    columns=[
+                                        ft.DataColumn(ft.Text("Artículo", size=12, weight=ft.FontWeight.BOLD)),
+                                        ft.DataColumn(ft.Text("Lista", size=12, weight=ft.FontWeight.BOLD)),
+                                        ft.DataColumn(ft.Text("Cant.", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                        ft.DataColumn(ft.Text("Unitario", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                        ft.DataColumn(ft.Text("Total", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                    ],
+                                    rows=[
+                                        ft.DataRow(cells=[
+                                            ft.DataCell(ft.Container(
+                                                width=col_widths["articulo"],
+                                                content=ft.Text(
+                                                    f"{d['articulo']} ({d.get('codigo_art', d.get('id_articulo'))})",
+                                                    size=13,
+                                                    max_lines=1,
+                                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                                ),
+                                            )),
+                                            ft.DataCell(ft.Container(
+                                                width=col_widths["lista"],
+                                                content=ft.Text(
+                                                    d.get("lista_nombre") or (doc_row.get("lista_precio") if doc_row.get("id_lista_precio") == d.get("id_lista_precio") else "---"),
+                                                    size=12,
+                                                    color=COLOR_TEXT_MUTED,
+                                                    max_lines=1,
+                                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                                ),
+                                            )),
+                                            ft.DataCell(ft.Container(
+                                                width=col_widths["cant"],
+                                                content=ft.Text(str(d["cantidad"]), size=13, text_align=ft.TextAlign.RIGHT),
+                                            )),
+                                            ft.DataCell(ft.Container(
+                                                width=col_widths["unitario"],
+                                                content=ft.Text(_format_money(d["precio_unitario"]), size=13, text_align=ft.TextAlign.RIGHT),
+                                            )),
+                                            ft.DataCell(ft.Container(
+                                                width=col_widths["total"],
+                                                content=ft.Text(_format_money(d["total_linea"]), size=13, weight=ft.FontWeight.W_500, text_align=ft.TextAlign.RIGHT),
+                                            )),
+                                        ]) for d in details
+                                    ],
+                                )
+                            ],
+                        ),
                     ),
                      ft.Container(height=10),
                      ft.Row([
@@ -4043,13 +4412,12 @@ def main(page: ft.Page) -> None:
                             border_radius=12,
                         )
                     ])
-                ], spacing=5, scroll=ft.ScrollMode.ADAPTIVE)
+                ], spacing=5)
 
             content = ft.Container(
                 content=body,
                 padding=10,
-                width=650,
-                height=550,
+                width=900,
             )
             
             actions = [_cancel_button("Cerrar", on_click=close_form)]
@@ -4218,8 +4586,8 @@ def main(page: ft.Page) -> None:
     mov_adv_tipo = ft.Dropdown(label="Tipo Mov.", width=180, on_change=_mov_live); _style_input(mov_adv_tipo)
     mov_adv_depo = ft.Dropdown(label="Depósito", width=180, on_change=_mov_live); _style_input(mov_adv_depo)
     mov_adv_user = ft.Dropdown(label="Usuario", width=180, on_change=_mov_live); _style_input(mov_adv_user)
-    mov_adv_desde = _date_field(page, "Desde", width=140); mov_adv_desde.on_submit = _mov_live
-    mov_adv_hasta = _date_field(page, "Hasta", width=140); mov_adv_hasta.on_submit = _mov_live
+    mov_adv_desde = _date_field("Desde", width=140); mov_adv_desde.on_submit = _mov_live
+    mov_adv_hasta = _date_field("Hasta", width=140); mov_adv_hasta.on_submit = _mov_live
 
     def refresh_documentos_catalogs():
         if not db: return
@@ -4343,8 +4711,18 @@ def main(page: ft.Page) -> None:
         value="Todos"
     ); _style_input(doc_adv_estado)
 
-    doc_adv_desde = _date_field(page, "Desde", width=130)
-    doc_adv_hasta = _date_field(page, "Hasta", width=130)
+    doc_adv_desde = _date_field("Desde", width=130)
+    doc_adv_hasta = _date_field("Hasta", width=130)
+    
+    documentos_summary_table: Optional[GenericTable] = None
+
+    def _doc_live(_=None):
+        if not documentos_summary_table:
+            return
+        try:
+            documentos_summary_table.trigger_refresh()
+        except Exception:
+            pass
     
     # Range slider for Total
     max_total = 1000000.0
@@ -4398,6 +4776,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="total", label="Total", width=120, formatter=_format_money),
             ColumnConfig(key="forma_pago", label="Forma de Pago", width=130),
             ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"))),
+            ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(
                 key="_confirm", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
@@ -4417,7 +4796,6 @@ def main(page: ft.Page) -> None:
                     on_click=lambda e: view_doc_detail(row)
                 )
             ),
-            ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(
                 key="_edit", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
@@ -4562,8 +4940,8 @@ def main(page: ft.Page) -> None:
     rem_adv_documento = ft.TextField(label="Documento / Nº", width=180); _style_input(rem_adv_documento)
     rem_adv_documento.on_change = lambda _: _rem_live(None)
     rem_adv_documento.on_submit = lambda _: _rem_live(None)
-    rem_adv_desde = _date_field(page, "Desde", width=140); rem_adv_desde.on_submit = _rem_live
-    rem_adv_hasta = _date_field(page, "Hasta", width=140); rem_adv_hasta.on_submit = _rem_live
+    rem_adv_desde = _date_field("Desde", width=140); rem_adv_desde.on_submit = _rem_live
+    rem_adv_hasta = _date_field("Hasta", width=140); rem_adv_hasta.on_submit = _rem_live
 
     remitos_table = GenericTable(
         columns=[
@@ -4714,8 +5092,8 @@ def main(page: ft.Page) -> None:
     # Payments View
     # Payments View
     pago_adv_ref = ft.TextField(label="Referencia", width=200, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_ref)
-    pago_adv_desde = _date_field(page, "Desde", width=140); pago_adv_desde.on_submit = lambda _: pagos_table.trigger_refresh()
-    pago_adv_hasta = _date_field(page, "Hasta", width=140); pago_adv_hasta.on_submit = lambda _: pagos_table.trigger_refresh()
+    pago_adv_desde = _date_field("Desde", width=140); pago_adv_desde.on_submit = lambda _: pagos_table.trigger_refresh()
+    pago_adv_hasta = _date_field("Hasta", width=140); pago_adv_hasta.on_submit = lambda _: pagos_table.trigger_refresh()
     pago_adv_entidad = AsyncSelect(label="Entidad", loader=entity_loader, width=280, on_change=lambda _: pagos_table.trigger_refresh())
     
     # Forma de pago filter
@@ -4852,7 +5230,7 @@ def main(page: ft.Page) -> None:
         _style_input(pago_forma)
         
         pago_monto = _number_field("Monto", width=200)
-        pago_fecha = _date_field(page, "Fecha", width=200)
+        pago_fecha = _date_field("Fecha", width=200)
         pago_ref = ft.TextField(label="Referencia", width=250); _style_input(pago_ref)
         pago_obs = ft.TextField(label="Observaciones", multiline=True, width=500); _style_input(pago_obs)
 
@@ -4875,9 +5253,7 @@ def main(page: ft.Page) -> None:
                 show_toast("Campos obligatorios faltantes", kind="warning"); return
             try:
                 # Convert fecha
-                f_str = pago_fecha.value_text.value if hasattr(pago_fecha, 'value_text') else None
-                # My _date_field implementation returns a Row or Container. 
-                # Need to retrieve value. logic is complex.
+                f_str = pago_fecha.value
                 # Let's assume passed validation.
                 
                 monto_val = pago_monto.value.replace(",", ".")
@@ -4911,12 +5287,7 @@ def main(page: ft.Page) -> None:
         )
 
         open_form("Nuevo Pago", content, [
-            ft.ElevatedButton(
-                "Cancelar", 
-                icon=ft.Icons.CLOSE_ROUNDED,
-                on_click=close_form,
-                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), color=COLOR_TEXT, bgcolor="#F1F5F9")
-            ),
+            _cancel_button("Cancelar", on_click=close_form),
             ft.ElevatedButton(
                 "Registrar Pago", 
                 bgcolor=COLOR_ACCENT, 
@@ -5318,8 +5689,8 @@ def main(page: ft.Page) -> None:
         value="Todas"
     ); _style_input(logs_adv_res)
     logs_adv_ide = ft.TextField(label="Id. Registro", width=110, keyboard_type=ft.KeyboardType.NUMBER); _style_input(logs_adv_ide)
-    logs_adv_desde = _date_field(page, "Desde", width=140)
-    logs_adv_hasta = _date_field(page, "Hasta", width=140)
+    logs_adv_desde = _date_field("Desde", width=140)
+    logs_adv_hasta = _date_field("Hasta", width=140)
 
     logs_table = GenericTable(
         columns=[
@@ -6524,7 +6895,7 @@ def main(page: ft.Page) -> None:
 
         
         # Form Fields
-        field_fecha = _date_field(page, "Fecha", width=160)
+        field_fecha = _date_field(page, "Fecha *", width=160)
         field_vto = _date_field(page, "Vencimiento", width=160)
         
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
@@ -6547,14 +6918,14 @@ def main(page: ft.Page) -> None:
         
         ent_initial_items = [{"value": e["id"], "label": f"{e['nombre_completo']} ({e['tipo']})"} for e in entidades]
         dropdown_entidad = AsyncSelect(
-            label="Entidad",
+            label="Entidad *",
             loader=entity_loader,
             width=300,
             on_change=lambda _: _update_entidad_info(None),
             initial_items=ent_initial_items
         )
 
-        dropdown_deposito = ft.Dropdown(label="Depósito", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito)
+        dropdown_deposito = ft.Dropdown(label="Depósito *", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito)
         
         # Lista de precios global (opcional, se aplica a todos los ítems)
         dropdown_lista_global = AsyncSelect(
@@ -6564,9 +6935,10 @@ def main(page: ft.Page) -> None:
             initial_items=lista_initial_items,
         )
         
-        field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, width=800, height=80); _style_input(field_obs)
+        field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs)
         field_direccion = ft.TextField(label="Dirección de Entrega", width=500); _style_input(field_direccion)
-        field_numero = ft.TextField(label="Número/Serie", width=200); _style_input(field_numero)
+        field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
+        _style_input(field_numero)
         field_descuento = ft.TextField(label="Desc. %", width=100, value="0"); _style_input(field_descuento)
         field_sena = ft.TextField(label="Seña $", width=120, value="0", on_change=lambda _: _recalc_total()); _style_input(field_sena)
         
@@ -6607,20 +6979,10 @@ def main(page: ft.Page) -> None:
             else:
                 allowed_tipos.append(t)
 
-        def _update_serial_number(e=None):
-            if not edit_doc_id and dropdown_tipo.value:
-                try:
-                    next_num = db.get_next_number(int(dropdown_tipo.value))
-                    field_numero.value = str(next_num)
-                    field_numero.update()
-                except:
-                    pass
-
         dropdown_tipo = ft.Dropdown(
-            label="Tipo", 
+            label="Tipo *", 
             options=[ft.dropdown.Option(str(t["id"]), t["nombre"]) for t in allowed_tipos], 
             width=200,
-            on_change=_update_serial_number
         ); _style_input(dropdown_tipo)
         
         if doc_data:
@@ -6630,16 +6992,15 @@ def main(page: ft.Page) -> None:
             field_obs.value = doc_data["observacion"]
             
             if edit_doc_id:
+                field_numero.read_only = False
+                field_numero.hint_text = ""
                 field_numero.value = doc_data["numero_serie"]
                 field_fecha.value = doc_data["fecha"][:10] if doc_data["fecha"] else None
             elif copy_doc_id:
                 field_obs.value = f"Copia de {doc_data.get('numero_serie','')}. " + (doc_data.get('observacion','') or "")
-                # Use helper for copied type
-                try:
-                    next_num = db.get_next_number(int(doc_data["id_tipo_documento"]))
-                    field_numero.value = str(next_num)
-                except:
-                    field_numero.value = ""
+                field_numero.read_only = True
+                field_numero.hint_text = "Automático"
+                field_numero.value = ""
                 field_fecha.value = datetime.now().strftime("%Y-%m-%d")
             
             field_descuento.value = str(doc_data["descuento_porcentaje"])
@@ -6654,10 +7015,8 @@ def main(page: ft.Page) -> None:
             
             _update_entidad_info(None)
         else:
-            # New document: select first type by default and trigger number load
             if not dropdown_tipo.value and allowed_tipos:
                 dropdown_tipo.value = str(allowed_tipos[0]["id"])
-                _update_serial_number()
 
         # Financial Summary
         manual_mode = ft.Switch(label="Manual", value=False)
@@ -6736,7 +7095,7 @@ def main(page: ft.Page) -> None:
         def _add_line(_=None, update_ui=True, initial_data=None):
             art_initial_items = [{"value": a["id"], "label": f"{a['nombre']} (Cod: {a['id']})"} for a in articulos]
             art_drop = AsyncSelect(
-                label="Artículo", 
+                label="Artículo *", 
                 loader=article_loader, 
                 expand=True,
                 initial_items=art_initial_items
@@ -6747,9 +7106,9 @@ def main(page: ft.Page) -> None:
                 width=140,
                 initial_items=lista_initial_items,
             )
-            cant_field = ft.TextField(label="Cant.", width=80, value="1"); _style_input(cant_field)
-            price_field = ft.TextField(label="Precio",width=90, value="0"); _style_input(price_field)
-            iva_field = ft.TextField(label="IVA %", width=60, value="21"); _style_input(iva_field)
+            cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field)
+            price_field = ft.TextField(label="Precio *",width=90, value="0"); _style_input(price_field)
+            iva_field = ft.TextField(label="IVA % *", width=60, value="21"); _style_input(iva_field)
             total_field = ft.TextField(label="Total", width=100, value="0.00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field)
             
             if initial_data:
@@ -6952,8 +7311,17 @@ def main(page: ft.Page) -> None:
             gl_val = dropdown_lista_global.value
             doc_lista_precio = int(gl_val) if gl_val and gl_val != "" and gl_val != "Automático" else None
 
+            numero_serie_value = None
+            if edit_doc_id:
+                numero_val = (field_numero.value or "").strip()
+                numero_serie_value = numero_val if numero_val else None
+            doc_id = None
+            action = "INSERT"
+            success_message = "Comprobante creado con éxito"
             try:
                 if edit_doc_id:
+                    action = "UPDATE"
+                    success_message = "Comprobante actualizado con éxito"
                     db.update_document(
                         doc_id=edit_doc_id,
                         id_tipo_documento=int(dropdown_tipo.value),
@@ -6961,7 +7329,7 @@ def main(page: ft.Page) -> None:
                         id_deposito=int(dropdown_deposito.value),
                         items=items,
                         observacion=field_obs.value,
-                        numero_serie=field_numero.value,
+                        numero_serie=numero_serie_value,
                         descuento_porcentaje=_parse_float(field_descuento.value, "Descuento (%)"),
                         descuento_importe=float(doc_data.get("descuento_importe", 0)) if doc_data else 0,
                         fecha=field_fecha.value, 
@@ -6975,6 +7343,7 @@ def main(page: ft.Page) -> None:
                             "total": _parse_float(sum_total.value, "Total Manual"),
                         } if manual_mode.value else None
                     )
+                    doc_id = edit_doc_id
                 else:
                     doc_id = db.create_document(
                         id_tipo_documento=int(dropdown_tipo.value),
@@ -6982,7 +7351,7 @@ def main(page: ft.Page) -> None:
                         id_deposito=int(dropdown_deposito.value),
                         items=items,
                         observacion=field_obs.value,
-                        numero_serie=field_numero.value,
+                        numero_serie=numero_serie_value,
                         descuento_porcentaje=_parse_float(field_descuento.value, "Descuento (%)"),
                         descuento_importe=0,
                         fecha=field_fecha.value, 
@@ -6996,15 +7365,15 @@ def main(page: ft.Page) -> None:
                             "total": _parse_float(sum_total.value, "Total Manual"),
                         } if manual_mode.value else None
                     )
-                if db:
-                    db.log_activity("DOCUMENTO", "INSERT", id_entidad=doc_id, detalle={"tipo": dropdown_tipo.value, "items": len(items)})
-                show_toast("Comprobante creado con éxito", kind="success")
+                if db and doc_id:
+                    db.log_activity("DOCUMENTO", action, id_entidad=doc_id, detalle={"tipo": dropdown_tipo.value, "items": len(items)})
+                show_toast(success_message, kind="success")
                 close_form()
                 # Refresh tables if they are visible
                 documentos_summary_table.refresh()
                 refresh_all_stats()
             except Exception as ex:
-                show_toast(f"Error al guardar: {ex}", kind="error") 
+                show_toast(f"Error al guardar: {ex}", kind="error")
         if doc_data:
             # Add existing items
             for item in doc_data["items"]:
@@ -7046,7 +7415,7 @@ def main(page: ft.Page) -> None:
                     ft.Row([ft.Column([dropdown_entidad, field_saldo], spacing=2)], alignment=ft.MainAxisAlignment.START),
                     ft.Row([dropdown_lista_global], spacing=10),
                     ft.Row([dropdown_deposito, field_numero, field_descuento, field_sena], spacing=10),
-                    ft.Row([field_obs], spacing=10),
+                    ft.Row([ft.Container(expand=True, content=field_obs)], spacing=10),
                     ft.Row([field_direccion], spacing=10),
                     ft.Divider(),
                     ft.Text("Ítems", weight=ft.FontWeight.BOLD),
@@ -7083,13 +7452,7 @@ def main(page: ft.Page) -> None:
                     ft.Container(height=10),
                     ft.Row(
                         [
-                            ft.OutlinedButton(
-                                "Cancelar", 
-                                on_click=close_form, 
-                                style=ft.ButtonStyle(
-                                    shape=ft.RoundedRectangleBorder(radius=8),
-                                )
-                            ),
+                            _cancel_button("Cancelar", on_click=close_form),
                             ft.ElevatedButton(
                                 "Guardar" if edit_doc_id else "Crear Comprobante", 
                                 icon=ft.Icons.CHECK,
@@ -7134,8 +7497,12 @@ def main(page: ft.Page) -> None:
 
     def wire_live_search(table: GenericTable):
         for flt in table.advanced_filters:
-            if hasattr(flt.control, "on_change"):
-                flt.control.on_change = lambda _: table.refresh()
+            ctrl = getattr(flt, "control", None)
+            if not ctrl or not hasattr(ctrl, "on_change"):
+                continue
+            if ctrl.on_change:
+                continue
+            ctrl.on_change = lambda _, t=table: t.refresh()
 
     for t in [entidades_table, articulos_table, documentos_summary_table, movimientos_table, pagos_table, remitos_table]:
         wire_live_search(t)

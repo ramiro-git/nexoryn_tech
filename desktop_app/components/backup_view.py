@@ -16,6 +16,11 @@ except ImportError:
     # Adjust import based on environment
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
 
+try:
+    from desktop_app.components.button_styles import cancel_button
+except ImportError:
+    from components.button_styles import cancel_button
+
 class BackupView:
     def __init__(self, page: ft.Page, backup_service, show_message_callback: Callable, set_connection_callback: Callable):
         self.page = page
@@ -583,7 +588,7 @@ class BackupView:
             title=ft.Text("Confirmar Restauración"),
             content=content,
             actions=[
-                ft.TextButton("Cancelar", on_click=on_cancel),
+                cancel_button("Cancelar", on_click=on_cancel),
                 ft.ElevatedButton("Restaurar", on_click=on_confirm, bgcolor=self.COLOR_WARNING, color=ft.Colors.WHITE),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -621,7 +626,7 @@ class BackupView:
             title=ft.Text("Eliminar backup"),
             content=ft.Text("¿Estás seguro que deseas eliminar este backup? Esta acción no se puede deshacer."),
             actions=[
-                ft.TextButton("Cancelar", on_click=on_cancel),
+                cancel_button("Cancelar", on_click=on_cancel),
                 ft.ElevatedButton("Eliminar", on_click=on_confirm, bgcolor=self.COLOR_ERROR, color=ft.Colors.WHITE),
             ],
             actions_alignment=ft.MainAxisAlignment.END,

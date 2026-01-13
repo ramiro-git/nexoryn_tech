@@ -6,6 +6,10 @@ try:
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
 except ImportError:
     from components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
+try:
+    from desktop_app.components.button_styles import cancel_button
+except ImportError:
+    from components.button_styles import cancel_button
 
 
 class BackupProfessionalView:
@@ -771,7 +775,7 @@ class BackupProfessionalView:
             title=ft.Text(title, weight=ft.FontWeight.BOLD),
             content=ft.Text(message, size=14),
             actions=[
-                ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dlg)),
+                cancel_button("Cancelar", on_click=lambda e: self.page.close(dlg)),
                 ft.ElevatedButton(
                     "Confirmar",
                     on_click=lambda e: (self.page.close(dlg), on_confirm()),
@@ -842,7 +846,7 @@ class BackupProfessionalView:
             title=ft.Icon(ft.Icons.RESTORE_ROUNDED, size=32, color=self.COLOR_WARNING),
             content=content,
             actions=[
-                ft.TextButton("Cancelar", on_click=on_cancel),
+                cancel_button("Cancelar", on_click=on_cancel),
                 ft.ElevatedButton(
                     "Restaurar Ahora",
                     on_click=on_confirm_restore,

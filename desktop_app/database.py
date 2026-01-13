@@ -1376,8 +1376,16 @@ class Database:
             "marca": "marca",
             "rubro": "rubro",
             "costo": "costo",
+            "precio_lista": "precio_lista",
+            "unidad_abreviatura": "unidad_abreviatura",
+            "unidad_medida": "unidad_medida",
+            "id_unidad_medida": "unidad_abreviatura",
+            "id_tipo_iva": "porcentaje_iva",
             "porcentaje_iva": "porcentaje_iva",
             "proveedor": "proveedor",
+            "id_proveedor": "proveedor",
+            "id_marca": "marca",
+            "id_rubro": "rubro",
             "stock_minimo": "stock_minimo",
             "stock_actual": "stock_actual",
             "ubicacion": "ubicacion",
@@ -4402,9 +4410,16 @@ class Database:
 
         with self._transaction() as cur:
             # Header
+            numero_para_insertar = None
+            if numero_serie:
+                numero_para_insertar = str(numero_serie)
+                self._ensure_unique_document_number(cur, id_tipo_documento, numero_para_insertar)
+            else:
+                self._lock_document_number(cur, id_tipo_documento)
+                numero_para_insertar = str(self._next_document_number(cur, id_tipo_documento))
             cur.execute(header_query, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
-                observacion, numero_serie, descuento_porcentaje, descuento_importe, self.current_user_id,
+                observacion, numero_para_insertar, descuento_porcentaje, descuento_importe, self.current_user_id,
                 neto_total, subtotal, iva_total, total, sena,
                 final_fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
             ))
@@ -4851,6 +4866,24 @@ class Database:
                 res = cur.fetchone()
                 current_max = res[0] if res and res[0] is not None else 0
                 return current_max + 1
+
+    def _lock_document_number(self, cur, id_tipo_documento: int) -> None:
+        """Acquire an advisory lock for a document type to serialize numbering."""
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (id_tipo_documento,))
+
+    def _next_document_number(self, cur, id_tipo_documento: int) -> int:
+        cur.execute("SELECT MAX(numero_serie::bigint) FROM app.documento WHERE id_tipo_documento = %s AND numero_serie ~ '^[0-9]+$'", (id_tipo_documento,))
+        res = cur.fetchone()
+        last = res[0] if res and res[0] is not None else 0
+        return int(last) + 1
+
+    def _ensure_unique_document_number(self, cur, id_tipo_documento: int, numero_serie: str) -> None:
+        cur.execute(
+            "SELECT 1 FROM app.documento WHERE id_tipo_documento = %s AND numero_serie = %s LIMIT 1",
+            (id_tipo_documento, numero_serie),
+        )
+        if cur.fetchone():
+            raise ValueError("El número de serie ya existe.")
 
     def get_document_full(self, doc_id: int) -> Optional[Dict[str, Any]]:
         with self.pool.connection() as conn:

@@ -17,11 +17,13 @@ try:
     from desktop_app.database import Database
     from desktop_app.components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig
     from desktop_app.components.async_select import AsyncSelect
+    from desktop_app.components.button_styles import cancel_button
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
     from components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig  # type: ignore
     from components.async_select import AsyncSelect  # type: ignore
+    from components.button_styles import cancel_button  # type: ignore
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -724,7 +726,7 @@ def main(page: ft.Page) -> None:
                 "Nueva entidad",
                 content,
                 [
-                    ft.TextButton("Cancelar", on_click=close_form),
+                    cancel_button("Cancelar", on_click=close_form),
                     ft.ElevatedButton(
                         "Crear",
                         icon=ft.Icons.ADD,
@@ -830,7 +832,7 @@ def main(page: ft.Page) -> None:
                 "Nuevo artículo",
                 content,
                 [
-                    ft.TextButton("Cancelar", on_click=close_form),
+                    cancel_button("Cancelar", on_click=close_form),
                     ft.ElevatedButton(
                         "Crear",
                         icon=ft.Icons.ADD,

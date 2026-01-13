@@ -4,7 +4,7 @@ import platform
 import subprocess
 import tempfile
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fpdf import FPDF
 
@@ -71,6 +71,30 @@ def _wrap_text_to_width(pdf: FPDF, text: str, max_width: float) -> str:
     return "\n".join(lines)
 
 
+def _truncate_text_to_width(pdf: FPDF, text: str, max_width: float, suffix: str = "...") -> str:
+    if not text:
+        return ""
+    if max_width <= 0:
+        return str(text)
+    text = str(text)
+    if pdf.get_string_width(text) <= max_width:
+        return text
+    ellipsis_width = pdf.get_string_width(suffix)
+    if ellipsis_width >= max_width:
+        return ""
+    low = 0
+    high = len(text)
+    while low < high:
+        mid = (low + high) // 2
+        candidate = text[:mid]
+        if pdf.get_string_width(candidate) + ellipsis_width <= max_width:
+            low = mid + 1
+        else:
+            high = mid
+    cut = max(low - 1, 0)
+    return text[:cut].rstrip() + suffix
+
+
 def _safe_multicell(pdf: FPDF, width: float, height: float, text: str, **kwargs: Any) -> None:
     c_margin = getattr(pdf, "c_margin", 0.5)
     min_char_width = max(pdf.get_string_width("W"), pdf.get_string_width("M"), pdf.get_string_width("0"), 1.0)
@@ -133,6 +157,9 @@ class BaseDocumentPDF(FPDF):
         self.set_auto_page_break(True, margin=25)
         self.set_margins(10, 35, 10)
         self._temp_images: List[str] = []
+        self._table_header_active: bool = False
+        self._table_header_drawer: Optional[Callable[[], None]] = None
+        self._table_header_last_page: int = 0
 
     def header(self) -> None:  # pragma: no cover - visual
         self.set_fill_color(15, 23, 42)
@@ -146,6 +173,15 @@ class BaseDocumentPDF(FPDF):
         self.cell(0, 5, "Soluciones tecnológicas y logísticas", border=0, ln=1)
         self.set_text_color(0, 0, 0)
         self.ln(4)
+        try:
+            self.set_y(self.t_margin + 4)
+        except Exception:
+            pass
+        if self._table_header_active and self._table_header_drawer:
+            current_page = self.page_no()
+            if current_page > self._table_header_last_page:
+                self._table_header_drawer()
+                self._table_header_last_page = current_page
 
     def footer(self) -> None:  # pragma: no cover - visual
         self.set_y(-18)
@@ -181,6 +217,7 @@ class BaseDocumentPDF(FPDF):
 class InvoicePDF(BaseDocumentPDF):
     def __init__(self, doc_data: Dict[str, Any], entity_data: Dict[str, Any], items_data: List[Dict[str, Any]]):
         super().__init__(doc_data, entity_data, items_data)
+        self.is_invoice = self._is_invoice_document()
         self.tax_summary = self._build_tax_summary()
         self.neto = self._resolve_neto()
         self.iva_total = self._resolve_iva_total()
@@ -218,7 +255,9 @@ class InvoicePDF(BaseDocumentPDF):
     def _should_discriminate_iva(self) -> bool:
         letter = str(self.doc.get("letra") or "").strip().upper()
         doc_type = str(self.doc.get("tipo_documento") or "").upper()
-        return letter == "A" or "FACTURA A" in doc_type
+        if not letter and "FACTURA A" in doc_type:
+            letter = "A"
+        return self.is_invoice and letter == "A"
 
     def _build_tax_summary(self) -> Dict[float, Dict[str, float]]:
         buckets: Dict[float, Dict[str, float]] = {}
@@ -257,23 +296,26 @@ class InvoicePDF(BaseDocumentPDF):
         self.cell(0, 5, f"Fecha emisión: {date}", ln=1)
         self.cell(0, 5, f"Estado: {state or '-'}", ln=1)
         self.ln(2)
-        self._draw_afip_block()
+        if self.is_invoice:
+            self._draw_afip_block()
+
+    def _is_invoice_document(self) -> bool:
+        doc_type = str(self.doc.get("tipo_documento") or "").upper()
+        return "FACTURA" in doc_type
 
     def _draw_afip_block(self) -> None:
         cae = self.doc.get("cae") or "Pendiente"
         cae_vto = self.doc.get("cae_vencimiento")
         cuit_emisor = self.doc.get("cuit_emisor") or self.entity.get("cuit") or "-"
         qr_data = self.doc.get("qr_data")
-        block_width = max(self.w - self.l_margin - self.r_margin, 0)
-        block_height = 40
+        has_qr = bool(qr_data)
+        block_height = 90 if has_qr else 72
         x = self.l_margin
+        block_width = max(self.w - self.l_margin - self.r_margin, 0)
         y = self.get_y()
-        self.set_fill_color(247, 250, 255)
-        self.set_draw_color(215)
-        self.rect(x, y, block_width, block_height, "FD")
-        text_margin = 4
+        text_margin = 6
         min_text_width = (getattr(self, "c_margin", 0.5) * 2) + 0.1
-        desired_qr_width = min(58, max(28, block_width * 0.35))
+        desired_qr_width = min(130, max(90, block_width * (0.55 if has_qr else 0.38)))
         available_for_qr = max(0.0, block_width - min_text_width - text_margin)
         qr_section_width = min(desired_qr_width, available_for_qr)
         text_width = block_width - qr_section_width - text_margin
@@ -335,15 +377,32 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _draw_items_table(self) -> None:
         headers = ["Descripción", "Cant.", "Precio", "IVA %", "Total"]
-        table_width = max(self.w - self.l_margin - self.r_margin - 1, 20)
-        col_ratios = [0.42, 0.1, 0.18, 0.12, 0.18]
+        start_x = self.l_margin
+        table_width = max(self.w - self.l_margin - self.r_margin, 20)
+        col_ratios = [0.5, 0.1, 0.16, 0.1, 0.14]
         col_widths = _distribute_width(table_width, col_ratios)
-        self.set_font("helvetica", "B", 10)
-        self.set_fill_color(15, 23, 42)
-        self.set_text_color(255, 255, 255)
-        for width, title in zip(col_widths, headers):
-            self.cell(width, 10, title, border=0, align="C", fill=True)
-        self.ln()
+        total_width = sum(col_widths)
+        if abs(total_width - table_width) > 0.01:
+            col_widths[-1] = max(10.0, col_widths[-1] + (table_width - total_width))
+        total_width = sum(col_widths)
+        if total_width > table_width + 0.01:
+            col_widths[-1] = max(10.0, col_widths[-1] - (total_width - table_width))
+        def _draw_table_header() -> None:
+            self.set_font("helvetica", "B", 10)
+            self.set_fill_color(15, 23, 42)
+            self.set_text_color(255, 255, 255)
+            self.set_x(start_x)
+            for width, title in zip(col_widths, headers):
+                self.cell(width, 10, title, border=0, align="C", fill=True)
+            self.ln()
+            self.set_text_color(15, 23, 42)
+            self.set_font("helvetica", "", 9)
+
+        self._table_header_drawer = _draw_table_header
+        self._table_header_last_page = 0
+        self._table_header_active = True
+        _draw_table_header()
+        self._table_header_last_page = self.page_no()
 
         if not self.items:
             self.set_font("helvetica", "", 9)
@@ -351,8 +410,6 @@ class InvoicePDF(BaseDocumentPDF):
             self.cell(table_width, 8, "No hay ítems para este comprobante.", border=1, align="C")
             return
 
-        self.set_font("helvetica", "", 9)
-        self.set_text_color(15, 23, 42)
         for idx, item in enumerate(self.items):
             qty = _safe_float(item.get("cantidad"), 0.0)
             unit = _safe_float(item.get("precio_unitario"), 0.0)
@@ -362,28 +419,38 @@ class InvoicePDF(BaseDocumentPDF):
             shade = 245 if idx % 2 == 0 else 255
             self.set_fill_color(shade, shade, 255)
             self.set_draw_color(226, 232, 240)
-            self.cell(col_widths[0], 8, str(desc)[:45], border="LR", fill=True)
-            self.cell(col_widths[1], 8, f"{qty:.2f}", border="LR", align="R", fill=True)
-            self.cell(col_widths[2], 8, _format_money(unit), border="LR", align="R", fill=True)
-            self.cell(col_widths[3], 8, f"{iva_pct:.2f}%", border="LR", align="R", fill=True)
-            self.cell(col_widths[4], 8, _format_money(total), border="LR", align="R", fill=True)
+            row_height = 8
+            page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
+            if self.get_y() + row_height > page_break_at:
+                self.add_page()
+            desc_width = col_widths[0]
+            content_width = desc_width - (getattr(self, "c_margin", 0.5) * 2)
+            desc_text = _truncate_text_to_width(self, desc, max(content_width, 0))
+            self.cell(desc_width, row_height, desc_text, border="LR", fill=True)
+            self.cell(col_widths[1], row_height, f"{qty:.2f}", border="LR", align="R", fill=True)
+            self.cell(col_widths[2], row_height, _format_money(unit), border="LR", align="R", fill=True)
+            self.cell(col_widths[3], row_height, f"{iva_pct:.2f}%", border="LR", align="R", fill=True)
+            self.cell(col_widths[4], row_height, _format_money(total), border="LR", align="R", fill=True)
             self.ln()
 
+        self._table_header_active = False
+        self._table_header_drawer = None
         self.set_draw_color(15, 23, 42)
         self.set_line_width(0.5)
-        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.line(start_x, self.get_y(), start_x + sum(col_widths), self.get_y())
         self.ln(1)
 
     def _draw_totals_block(self) -> None:
         self.set_font("helvetica", "", 10)
         self.cell(0, 6, f"Subtotal: {_format_money(self.neto)}", ln=1)
-        self.cell(0, 6, f"IVA total: {_format_money(self.iva_total)}", ln=1)
-        if self._should_discriminate_iva() and self.tax_summary:
-            self.set_font("helvetica", "B", 10)
-            self.cell(0, 6, "Detalle de IVA", ln=1)
-            self.set_font("helvetica", "", 9)
-            for pct, values in sorted(self.tax_summary.items(), key=lambda x: x[0]):
-                self.cell(0, 5, f"Base {pct:.2f}%: {_format_money(values['base'])}  |  IVA {_format_money(values['iva'])}", ln=1)
+        if self._should_discriminate_iva():
+            self.cell(0, 6, f"IVA total: {_format_money(self.iva_total)}", ln=1)
+            if self.tax_summary:
+                self.set_font("helvetica", "B", 10)
+                self.cell(0, 6, "Detalle de IVA", ln=1)
+                self.set_font("helvetica", "", 9)
+                for pct, values in sorted(self.tax_summary.items(), key=lambda x: x[0]):
+                    self.cell(0, 5, f"Base {pct:.2f}%: {_format_money(values['base'])}  |  IVA {_format_money(values['iva'])}", ln=1)
         self.set_font("helvetica", "B", 12)
         self.cell(0, 8, f"TOTAL: {_format_money(self.total)}", ln=1)
 
@@ -440,15 +507,28 @@ class RemitoPDF(BaseDocumentPDF):
 
     def _draw_items_table(self) -> None:
         headers = ["Artículo", "Cantidad", "Observación"]
-        content_width = max(self.w - self.l_margin - self.r_margin - 1, 20)
+        start_x = self.l_margin
+        content_width = max(self.w - self.l_margin - self.r_margin, 20)
         col_ratios = [0.55, 0.2, 0.25]
         widths = _distribute_width(content_width, col_ratios)
-        self.set_font("helvetica", "B", 10)
-        self.set_fill_color(15, 23, 42)
-        self.set_text_color(255, 255, 255)
-        for w, title in zip(widths, headers):
-            self.cell(w, 10, title, border=0, align="C", fill=True)
-        self.ln()
+        total_width = sum(widths)
+        if abs(total_width - content_width) > 0.01:
+            widths[-1] = max(10.0, widths[-1] + (content_width - total_width))
+        total_width = sum(widths)
+        if total_width > content_width + 0.01:
+            widths[-1] = max(10.0, widths[-1] - (total_width - content_width))
+        def _draw_table_header() -> None:
+            self.set_font("helvetica", "B", 10)
+            self.set_fill_color(15, 23, 42)
+            self.set_text_color(255, 255, 255)
+            self.set_x(start_x)
+            for w, title in zip(widths, headers):
+                self.cell(w, 10, title, border=0, align="C", fill=True)
+            self.ln()
+            self.set_text_color(15, 23, 42)
+            self.set_font("helvetica", "", 9)
+
+        _draw_table_header()
 
         if not self.items:
             self.set_font("helvetica", "", 9)
@@ -456,22 +536,28 @@ class RemitoPDF(BaseDocumentPDF):
             self.cell(sum(widths), 8, "No hay líneas disponibles para este remito.", border=1, align="C")
             return
 
-        self.set_font("helvetica", "", 9)
-        self.set_text_color(15, 23, 42)
         for idx, line in enumerate(self.items):
             shade = 245 if idx % 2 == 0 else 255
             self.set_fill_color(shade, shade, 255)
             desc = str(line.get("articulo") or line.get("observacion") or "-")
             cantidad = _safe_float(line.get("cantidad"), 0.0)
             observacion = line.get("observacion") or "-"
-            self.cell(widths[0], 8, desc[:45], border="LR", fill=True)
+            row_height = 8
+            page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
+            if self.get_y() + row_height > page_break_at:
+                self.add_page()
+                self.ln(2)
+                _draw_table_header()
+            desc_text = _truncate_text_to_width(self, desc, widths[0] - (getattr(self, "c_margin", 0.5) * 2))
+            obs_text = _truncate_text_to_width(self, observacion, widths[2] - (getattr(self, "c_margin", 0.5) * 2))
+            self.cell(widths[0], row_height, desc_text, border="LR", fill=True)
             self.cell(widths[1], 8, f"{cantidad:.2f}", border="LR", align="R", fill=True)
-            self.cell(widths[2], 8, observacion[:40], border="LR", fill=True)
+            self.cell(widths[2], row_height, obs_text, border="LR", fill=True)
             self.ln()
 
         self.set_draw_color(15, 23, 42)
         self.set_line_width(0.4)
-        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.line(start_x, self.get_y(), start_x + sum(widths), self.get_y())
 
     def _draw_remito_footer(self) -> None:
         direccion = self.remito.get("direccion_entrega") or "-"
