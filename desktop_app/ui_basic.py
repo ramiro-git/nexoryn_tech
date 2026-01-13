@@ -115,6 +115,13 @@ COLOR_ERROR = "#EF4444"
 COLOR_WARNING = "#EA580C"  # Deep Orange 600 (definitely not yellow)
 COLOR_INFO = "#3B82F6"     # Blue 500
 
+REMITO_ESTADOS = [
+    ("PENDIENTE", "Pendiente"),
+    ("DESPACHADO", "Despachado"),
+    ("ENTREGADO", "Entregado"),
+    ("ANULADO", "Anulado"),
+]
+
 class SafeDataTable(ft.DataTable):
     """Subclass of DataTable to fix TypeErrors and AssertionErrors in Flet updates"""
     def before_update(self):
@@ -4508,13 +4515,11 @@ def main(page: ft.Page) -> None:
                     columns=[
                         ft.DataColumn(ft.Text("Artículo", size=12, weight=ft.FontWeight.BOLD)),
                         ft.DataColumn(ft.Text("Cantidad", size=12, weight=ft.FontWeight.BOLD), numeric=True),
-                        ft.DataColumn(ft.Text("Observación", size=12, weight=ft.FontWeight.BOLD)),
                     ],
                     rows=[
                         ft.DataRow(cells=[
                             ft.DataCell(ft.Text(d.get("articulo") or "—", size=13)),
                             ft.DataCell(ft.Text(str(d.get("cantidad") or 0), size=13)),
-                            ft.DataCell(ft.Text(d.get("observacion") or "—", size=12, color=COLOR_TEXT_MUTED)),
                         ]) for d in details
                     ],
                 )
@@ -4558,12 +4563,7 @@ def main(page: ft.Page) -> None:
                     show_toast(f"Error al imprimir remito: {exc}", kind="error")
 
             actions = [
-                ft.ElevatedButton(
-                    "Cerrar",
-                    bgcolor=COLOR_ACCENT,
-                    color="#FFFFFF",
-                    on_click=lambda _: close_form()
-                )
+                _cancel_button("Cerrar", on_click=lambda _: close_form())
             ]
             if db:
                 actions.insert(0, ft.ElevatedButton(
@@ -4571,6 +4571,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.Icons.PRINT_ROUNDED,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                     on_click=_print_remito
                 ))
             open_form(f"Remito {rem_row.get('numero', '')}", content, actions)
@@ -4581,6 +4582,23 @@ def main(page: ft.Page) -> None:
     def _mov_live(_=None):
         try: movimientos_table.trigger_refresh()
         except: pass
+
+    def movimientos_data_provider(offset, limit, search, simple, advanced, sorts):
+        if not db:
+            return [], 0
+        try:
+            rows = db.fetch_movimientos_stock(
+                search=search,
+                simple=simple,
+                advanced=advanced,
+                sorts=sorts,
+                limit=limit,
+                offset=offset,
+            )
+            total = db.count_movimientos_stock(search=search, simple=simple, advanced=advanced)
+            return rows, total
+        except Exception:
+            return [], 0
 
     mov_adv_art = AsyncSelect(label="Artículo", loader=article_loader, width=220, on_change=lambda _: _mov_live(None))
     mov_adv_tipo = ft.Dropdown(label="Tipo Mov.", width=180, on_change=_mov_live); _style_input(mov_adv_tipo)
@@ -4877,6 +4895,7 @@ def main(page: ft.Page) -> None:
         ],
         show_inline_controls=False, show_mass_actions=False, auto_load=True, page_size=50, show_export_button=True, show_export_scope=True,
     )
+    documentos_summary_table.search_field.hint_text = "Buscar comprobantes (entidad, tipo, número, usuario)"
     # Manual wire for RangeSlider since it's inside a container in AdvancedFilterControl
     # Reset on_change to standard refreshing
     documentos_view = ft.Column([
@@ -4909,6 +4928,89 @@ def main(page: ft.Page) -> None:
             remitos_table.trigger_refresh()
         except Exception:
             pass
+
+    def _open_remito_estado_dialog(rem_row: Dict[str, Any]):
+        if not rem_row:
+            return
+
+        current_state = rem_row.get("estado") or "PENDIENTE"
+        dropdown = ft.Dropdown(
+            label="Estado",
+            value=current_state,
+            width=240,
+            options=[ft.dropdown.Option(code, label) for code, label in REMITO_ESTADOS],
+        )
+        _style_input(dropdown)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Cambiar estado del remito"),
+            content=ft.Column(
+                [
+                    ft.Text(f"Estado actual: {current_state}", size=12, color=COLOR_TEXT_MUTED),
+                    dropdown,
+                ],
+                spacing=10,
+            ),
+            actions=[]
+        )
+
+        def _close_dialog(_=None):
+            try:
+                page.close(dialog)
+            except Exception:
+                pass
+
+        def _save_state(_=None):
+            selected_state = dropdown.value
+            if not selected_state or selected_state == current_state:
+                _close_dialog()
+                return
+            if not db:
+                show_toast("Base de datos no disponible", kind="error")
+                return
+            try:
+                db.update_remito_estado(int(rem_row["id"]), selected_state)
+                show_toast("Estado actualizado", kind="success")
+                remitos_table.refresh()
+                _close_dialog()
+            except Exception as exc:
+                show_toast(f"Error actualizando estado: {exc}", kind="error")
+
+        dialog.actions = [
+            _cancel_button("Cancelar", on_click=_close_dialog),
+            ft.ElevatedButton(
+                "Guardar",
+                icon=ft.Icons.CHECK,
+                bgcolor=COLOR_ACCENT,
+                color="#FFFFFF",
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                on_click=_save_state,
+            ),
+        ]
+        page.open(dialog)
+
+    def _movimiento_observacion_dialog(observacion: Optional[str]):
+        if not observacion:
+            return
+        dlg = ft.AlertDialog(
+            title=ft.Text("Observación del movimiento"),
+            content=ft.Text(observacion),
+        )
+        dlg.actions = [
+            _cancel_button("Cerrar", on_click=lambda e, dialog=dlg: page.close(dialog)),
+        ]
+        page.open(dlg)
+
+    def _movimiento_observacion_icon(row: Dict[str, Any]) -> ft.Control:
+        texto = row.get("observacion") or ""
+        return ft.IconButton(
+            icon=ft.Icons.INFO_OUTLINE,
+            tooltip=texto or "Sin observaciones",
+            icon_color=COLOR_ACCENT if texto else COLOR_TEXT_MUTED,
+            icon_size=18,
+            disabled=not bool(texto.strip()),
+            on_click=lambda e, value=texto: _movimiento_observacion_dialog(value),
+        )
 
     rem_adv_entidad = AsyncSelect(
         label="Entidad",
@@ -4964,10 +5066,21 @@ def main(page: ft.Page) -> None:
                     on_click=lambda e, r=row: view_remito_detail(r),
                 )
             ),
+            ColumnConfig(
+                key="_estado",
+                label="",
+                sortable=False,
+                width=60,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.Icons.SWAP_HORIZ_ROUNDED,
+                    tooltip="Cambiar estado",
+                    icon_color=COLOR_ACCENT,
+                    on_click=lambda e, r=row: _open_remito_estado_dialog(r),
+                )
+            ),
             ColumnConfig(key="fecha_despacho", label="Despacho", width=120),
             ColumnConfig(key="fecha_entrega", label="Entrega", width=120),
             ColumnConfig(key="direccion_entrega", label="Dirección", width=220),
-            ColumnConfig(key="observacion", label="Observación", width=220),
         ],
         data_provider=create_catalog_provider(db.fetch_remitos, db.count_remitos),
         advanced_filters=[
@@ -5017,16 +5130,6 @@ def main(page: ft.Page) -> None:
             "Remitos",
             "Seguimiento de entregas y despachos generados automáticamente.",
             remitos_table.build(),
-            actions=[
-                ft.ElevatedButton(
-                    "Actualizar tabla",
-                    icon=ft.Icons.REFRESH,
-                    bgcolor=COLOR_ACCENT,
-                    color="#FFFFFF",
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-                    on_click=lambda _: remitos_table.refresh(),
-                )
-            ]
         )
     ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
 
@@ -5052,9 +5155,15 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="entidad", label="Entidad", width=180),
             ColumnConfig(key="deposito", label="Depósito", width=120),
             ColumnConfig(key="usuario", label="Usuario", width=120),
-            ColumnConfig(key="observacion", label="Obs.", width=200),
+            ColumnConfig(
+                key="observacion",
+                label="",
+                sortable=False,
+                width=48,
+                renderer=_movimiento_observacion_icon,
+            ),
         ],
-        data_provider=create_catalog_provider(db.fetch_movimientos_stock, db.count_movimientos_stock),
+        data_provider=movimientos_data_provider,
         advanced_filters=[
             AdvancedFilterControl("articulo", mov_adv_art),
             AdvancedFilterControl("tipo_movimiento", mov_adv_tipo),
@@ -5069,6 +5178,7 @@ def main(page: ft.Page) -> None:
         page_size=50,
         page_size_options=(20, 50, 100),
     )
+    movimientos_table.search_field.hint_text = "Buscar movimientos (artículo, tipo, entidad)"
     movimientos_view = ft.Column([
         ft.Row([
             make_stat_card("Ingresos Hoy", "0", "NORTH_EAST_ROUNDED", COLOR_SUCCESS, key="movs_ingresos"),
@@ -5094,7 +5204,7 @@ def main(page: ft.Page) -> None:
     pago_adv_ref = ft.TextField(label="Referencia", width=200, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_ref)
     pago_adv_desde = _date_field("Desde", width=140); pago_adv_desde.on_submit = lambda _: pagos_table.trigger_refresh()
     pago_adv_hasta = _date_field("Hasta", width=140); pago_adv_hasta.on_submit = lambda _: pagos_table.trigger_refresh()
-    pago_adv_entidad = AsyncSelect(label="Entidad", loader=entity_loader, width=280, on_change=lambda _: pagos_table.trigger_refresh())
+    pago_adv_entidad = AsyncSelect(label="Entidad *", loader=entity_loader, width=280, on_change=lambda _: pagos_table.trigger_refresh())
     
     # Forma de pago filter
     try:
@@ -5161,7 +5271,13 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="documento", label="Comprobante", width=120),
             ColumnConfig(key="entidad", label="Entidad", width=200),
             ColumnConfig(key="referencia", label="Referencia", width=150, renderer=lambda row: ft.Text(row.get("referencia") or "---", tooltip="Dato adicional del pago (ej. nro cheque, banco, etc.)")),
-            ColumnConfig(key="observacion", label="Info", width=60, renderer=lambda row: ft.IconButton(ft.Icons.INFO_OUTLINE, tooltip="Ver observaciones", icon_color=COLOR_ACCENT if row.get("observacion") else "grey", on_click=lambda _: show_payment_info(row.get("observacion")))),
+            ColumnConfig(
+                key="observacion",
+                label="Info",
+                width=60,
+                sortable=False,
+                renderer=lambda row: ft.IconButton(ft.Icons.INFO_OUTLINE, tooltip="Ver observaciones", icon_color=COLOR_ACCENT if row.get("observacion") else "grey", on_click=lambda _: show_payment_info(row.get("observacion"))),
+            ),
         ],
         data_provider=create_catalog_provider(db.fetch_pagos, db.count_pagos),
         advanced_filters=[
@@ -5178,6 +5294,7 @@ def main(page: ft.Page) -> None:
         auto_load=True, 
         page_size=20,
     )
+    pagos_table.search_field.hint_text = "Buscar pagos (referencia, forma, documento, entidad)"
 
     def open_nuevo_pago(_=None):
         if not db: return
@@ -5196,7 +5313,7 @@ def main(page: ft.Page) -> None:
             show_toast(f"Error cargando datos: {e}", kind="error"); return
 
         pago_entidad = AsyncSelect(
-            label="Entidad", 
+            label="Entidad *", 
             loader=entity_loader, 
             width=400,
             initial_items=[{"value": e["id"], "label": e["nombre_completo"]} for e in entidades]
@@ -5224,13 +5341,13 @@ def main(page: ft.Page) -> None:
             except Exception:
                 return [], False
 
-        pago_documento = AsyncSelect(label="Comprobante Pendiente", loader=pending_doc_loader, width=400, disabled=True)
+        pago_documento = AsyncSelect(label="Comprobante Pendiente *", loader=pending_doc_loader, width=400, disabled=True)
         
-        pago_forma = ft.Dropdown(label="Forma de Pago", options=[ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas], width=250)
+        pago_forma = ft.Dropdown(label="Forma de Pago *", options=[ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas], width=250)
         _style_input(pago_forma)
         
-        pago_monto = _number_field("Monto", width=200)
-        pago_fecha = _date_field("Fecha", width=200)
+        pago_monto = _number_field("Monto *", width=200)
+        pago_fecha = _date_field("Fecha *", width=200)
         pago_ref = ft.TextField(label="Referencia", width=250); _style_input(pago_ref)
         pago_obs = ft.TextField(label="Observaciones", multiline=True, width=500); _style_input(pago_obs)
 
@@ -5249,7 +5366,7 @@ def main(page: ft.Page) -> None:
         pago_entidad.on_change = on_entidad_change
         
         def _save_pago(_):
-            if not pago_documento.value or not pago_forma.value or not pago_monto.value:
+            if not pago_documento.value or not pago_forma.value or not pago_monto.value or not (pago_fecha.value and str(pago_fecha.value).strip()):
                 show_toast("Campos obligatorios faltantes", kind="warning"); return
             try:
                 # Convert fecha
@@ -5282,7 +5399,8 @@ def main(page: ft.Page) -> None:
                 pago_entidad, pago_documento,
                 ft.Row([pago_forma, pago_monto], spacing=10),
                 ft.Row([pago_fecha, pago_ref], spacing=10),
-                pago_obs
+                pago_obs,
+                ft.Text("El pago no puede deshacerse. Revisá bien antes de confirmar.", size=12, color=COLOR_WARNING),
             ], spacing=15, scroll=ft.ScrollMode.ADAPTIVE)
         )
 
@@ -6896,7 +7014,7 @@ def main(page: ft.Page) -> None:
         
         # Form Fields
         field_fecha = _date_field(page, "Fecha *", width=160)
-        field_vto = _date_field(page, "Vencimiento", width=160)
+        field_vto = _date_field(page, "Vencimiento *", width=160)
         
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
         lista_initial_items = [{"value": l["id"], "label": l["nombre"]} for l in listas]
@@ -6936,7 +7054,7 @@ def main(page: ft.Page) -> None:
         )
         
         field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs)
-        field_direccion = ft.TextField(label="Dirección de Entrega", width=500); _style_input(field_direccion)
+        field_direccion = ft.TextField(label="Dirección de Entrega *", width=500); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
         _style_input(field_numero)
         field_descuento = ft.TextField(label="Desc. %", width=100, value="0"); _style_input(field_descuento)
@@ -7278,6 +7396,12 @@ def main(page: ft.Page) -> None:
         def _save(_=None):
             if not dropdown_tipo.value or not dropdown_entidad.value or not dropdown_deposito.value:
                 show_toast("Faltan campos obligatorios", kind="warning")
+                return
+            if not (field_vto.value and str(field_vto.value).strip()):
+                show_toast("La fecha de vencimiento es obligatoria", kind="warning")
+                return
+            if not (field_direccion.value and str(field_direccion.value).strip()):
+                show_toast("La dirección de entrega es obligatoria", kind="warning")
                 return
             
             items = []

@@ -3989,12 +3989,15 @@ class Database:
 
         where_clause = " AND ".join(filters)
         sort_columns = {
-            "id": "id", 
-            "fecha": "fecha", 
-            "articulo": "articulo", 
-            "cantidad": "cantidad", 
+            "id": "id",
+            "fecha": "fecha",
+            "articulo": "articulo",
+            "tipo_movimiento": "tipo_movimiento",
+            "cantidad": "cantidad",
+            "entidad": "entidad",
             "deposito": "deposito",
-            "comprobante": "CASE WHEN nro_comprobante ~ '^[0-9]+$' THEN LPAD(nro_comprobante, 20, '0') ELSE nro_comprobante END"
+            "usuario": "usuario",
+            "comprobante": "CASE WHEN nro_comprobante ~ '^[0-9]+$' THEN LPAD(nro_comprobante, 20, '0') ELSE nro_comprobante END",
         }
         order_by = self._build_order_by(sorts, sort_columns, default="fecha DESC")
         base_query = self._movimientos_base_query()
@@ -4125,8 +4128,8 @@ class Database:
             "id": "p.id", 
             "fecha": "p.fecha", 
             "monto": "p.monto", 
-            "forma": "fp.descripcion",
-            "entidad": "ec.apellido",
+            "forma": "forma",
+            "entidad": "entidad",
             "documento": "CASE WHEN d.numero_serie ~ '^[0-9]+$' THEN LPAD(d.numero_serie, 20, '0') ELSE d.numero_serie END"
         }
         order_by = self._build_order_by(sorts, sort_columns, default="p.fecha DESC")
@@ -5389,9 +5392,11 @@ class Database:
                 filters.append("entidad ILIKE %s")
                 params.append(f"%{entidad.strip()}%")
 
-        if advanced.get("estado"):
+        estado_raw = advanced.get("estado")
+        estado_value = str(estado_raw).strip() if estado_raw is not None else ""
+        if estado_value and estado_value.upper() not in ("TODOS", "TODAS", "---", "0"):
             filters.append("estado = %s")
-            params.append(advanced["estado"])
+            params.append(estado_value)
 
         if advanced.get("deposito"):
              if str(advanced["deposito"]).isdigit():
@@ -5420,6 +5425,7 @@ class Database:
             "entidad": "entidad",
             "deposito": "deposito",
             "documento_numero": "documento_numero",
+            "total_unidades": "total_unidades",
             "fecha_despacho": "fecha_despacho",
             "fecha_entrega": "fecha_entrega"
         }
@@ -5462,9 +5468,11 @@ class Database:
                 filters.append("entidad ILIKE %s")
                 params.append(f"%{entidad.strip()}%")
 
-        if advanced.get("estado"):
+        estado_raw = advanced.get("estado")
+        estado_value = str(estado_raw).strip() if estado_raw is not None else ""
+        if estado_value and estado_value.upper() not in ("TODOS", "TODAS", "---", "0"):
             filters.append("estado = %s")
-            params.append(advanced["estado"])
+            params.append(estado_value)
 
         if advanced.get("deposito"):
              if str(advanced["deposito"]).isdigit():
@@ -5492,6 +5500,43 @@ class Database:
                 cur.execute(query, params)
                 res = cur.fetchone()
                 return res[0] if res else 0
+
+    def update_remito_estado(self, remito_id: int, nuevo_estado: str) -> None:
+        """Actualiza el estado del remito y registra las marcas de despacho/entrega."""
+        estado_value = (nuevo_estado or "").strip().upper()
+        valid_states = ("PENDIENTE", "DESPACHADO", "ENTREGADO", "ANULADO")
+        if estado_value not in valid_states:
+            raise ValueError(f"Estado inválido para remito: {nuevo_estado}")
+
+        set_clauses: List[str] = ["estado = %s"]
+        params: List[Any] = [estado_value]
+        now = datetime.now()
+
+        if estado_value == "DESPACHADO":
+            set_clauses.append("fecha_despacho = COALESCE(fecha_despacho, %s)")
+            params.append(now)
+            set_clauses.append("fecha_entrega = NULL")
+        elif estado_value == "ENTREGADO":
+            set_clauses.append("fecha_entrega = %s")
+            params.append(now)
+            set_clauses.append("fecha_despacho = COALESCE(fecha_despacho, %s)")
+            params.append(now)
+        elif estado_value == "PENDIENTE":
+            set_clauses.append("fecha_despacho = NULL")
+            set_clauses.append("fecha_entrega = NULL")
+        elif estado_value == "ANULADO":
+            set_clauses.append("fecha_entrega = NULL")
+
+        set_clauses.append("id_usuario = %s")
+        params.append(self.current_user_id)
+        params.append(remito_id)
+
+        query = f"UPDATE app.remito SET {', '.join(set_clauses)} WHERE id = %s"
+        with self._transaction() as cur:
+            cur.execute(query, tuple(params))
+            if cur.rowcount == 0:
+                raise ValueError("Remito no encontrado")
+        self.log_activity("app.remito", "UPDATE_ESTADO", id_entidad=remito_id, detalle={"estado": estado_value})
 
     def fetch_remito_detalle(self, remito_id: int) -> List[Dict[str, Any]]:
         """Obtiene el detalle de items de un remito."""
