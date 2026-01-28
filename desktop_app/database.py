@@ -320,15 +320,15 @@ class Database:
                 if role == "ADMIN":
                     stats["sistema"] = self._get_stats_sistema_extended(cur, role)
 
-                # 9. Extended Chart Data (Accessible to ADMIN/GERENTE)
-                if role in ("ADMIN", "GERENTE"):
-                    stats["charts"] = {
-                        "ventas_mensuales": self.get_reporte_ventas(limit=6),
-                        "top_articulos": self.get_top_articulos(limit=5),
-                        "bottom_articulos": self.get_bottom_articulos(limit=5),
-                        "alertas_stock": self.get_alertas_stock(limit=5)
-                    }
-
+                # 9. Extended Chart Data
+                stats["charts"] = {
+                    "ventas_mensuales": self.get_reporte_ventas(limit=6) if role in ("ADMIN", "GERENTE") else [],
+                    "top_articulos": self.get_top_articulos(limit=5) if role in ("ADMIN", "GERENTE") else [],
+                    "bottom_articulos": self.get_bottom_articulos(limit=5) if role in ("ADMIN", "GERENTE") else [],
+                    "alertas_stock": self.get_alertas_stock(limit=5),
+                    "stock_por_rubro": self.get_stock_by_rubro(limit=8),
+                    "entidades_por_tipo": self.get_entidades_by_tipo()
+                }
         return stats
 
     def _get_stats_ventas_extended(self, cur, role) -> Dict[str, Any]:
@@ -337,26 +337,39 @@ class Database:
         show_money = role in ("ADMIN", "GERENTE")
         
         cur.execute("""
-            WITH daily_ventas AS (
-                SELECT total FROM app.v_documento_resumen 
-                WHERE clase = 'VENTA' AND fecha >= current_date AND estado != 'ANULADO'
-            ),
-            monthly_ventas AS (
-                SELECT total FROM app.v_documento_resumen 
-                WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now()) AND estado != 'ANULADO'
+            WITH base_ventas AS (
+                SELECT 
+                    total, fecha, estado,
+                    CASE WHEN fecha >= current_date THEN 1 ELSE 0 END as es_hoy,
+                    CASE WHEN fecha >= date_trunc('week', now()) THEN 1 ELSE 0 END as es_semana,
+                    CASE WHEN fecha >= date_trunc('month', now()) THEN 1 ELSE 0 END as es_mes,
+                    CASE WHEN fecha >= date_trunc('year', now()) THEN 1 ELSE 0 END as es_anio,
+                    CASE WHEN fecha >= date_trunc('month', now() - interval '1 month') 
+                          AND fecha < date_trunc('month', now()) THEN 1 ELSE 0 END as es_mes_ant
+                FROM app.v_documento_resumen 
+                WHERE clase = 'VENTA'
             )
             SELECT 
-                (SELECT SUM(total) FROM daily_ventas) as hoy_total,
-                (SELECT COUNT(*) FROM daily_ventas) as hoy_cant,
-                (SELECT AVG(total) FROM daily_ventas) as hoy_ticket_prom,
-                (SELECT SUM(total) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('week', now()) AND estado != 'ANULADO') as semana_total,
-                (SELECT SUM(total) FROM monthly_ventas) as mes_total,
-                (SELECT SUM(total) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('year', now()) AND estado != 'ANULADO') as anio_total,
-                (SELECT COUNT(*) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND estado = 'CONFIRMADO') as docs_pendientes,
-                (SELECT COUNT(*) FROM app.v_documento_resumen WHERE estado = 'ANULADO' AND fecha >= date_trunc('month', now())) as anulados_mes
+                SUM(total) FILTER (WHERE es_hoy = 1 AND estado != 'ANULADO') as hoy_total,
+                COUNT(*) FILTER (WHERE es_hoy = 1 AND estado != 'ANULADO') as hoy_cant,
+                AVG(total) FILTER (WHERE es_hoy = 1 AND estado != 'ANULADO') as hoy_ticket_prom,
+                SUM(total) FILTER (WHERE es_semana = 1 AND estado != 'ANULADO') as semana_total,
+                SUM(total) FILTER (WHERE es_mes = 1 AND estado != 'ANULADO') as mes_total,
+                SUM(total) FILTER (WHERE es_anio = 1 AND estado != 'ANULADO') as anio_total,
+                COUNT(*) FILTER (WHERE estado = 'CONFIRMADO') as docs_pendientes,
+                COUNT(*) FILTER (WHERE estado = 'ANULADO' AND es_mes = 1) as anulados_mes,
+                SUM(total) FILTER (WHERE es_mes_ant = 1 AND estado != 'ANULADO') as mes_ant_total
+            FROM base_ventas
         """)
+
         row = cur.fetchone()
         
+        val_mes = float(row[4] or 0)
+        val_mes_ant = float(row[8] or 0)
+        tendencia = 0.0
+        if val_mes_ant > 1:
+            tendencia = ((val_mes - val_mes_ant) / val_mes_ant) * 100
+
         res = {
             "hoy_total": float(row[0] or 0) if show_money else "—",
             "hoy_cant": row[1] or 0,
@@ -366,8 +379,10 @@ class Database:
             "anio_total": float(row[5] or 0) if role == "ADMIN" else "—",
             "docs_pendientes": row[6] or 0,
             "presupuestos_pend": row[6] or 0, # compatibility
-            "anulados_mes": row[7] or 0
+            "anulados_mes": row[7] or 0,
+            "tendencia_mes_pct": round(tendencia, 1) if show_money else 0.0
         }
+
         
         # Add more granular sales stats if Gerente/Admin
         if role in ("ADMIN", "GERENTE"):
@@ -514,24 +529,21 @@ class Database:
     def _get_stats_sistema_extended(self, cur, role) -> Dict[str, Any]:
         """Technical system stats (10 metrics) - ADMIN only"""
         cur.execute("""
+            WITH last_active AS (
+                SELECT DISTINCT ON (id_usuario) id_usuario, accion
+                FROM seguridad.log_actividad
+                WHERE id_usuario IS NOT NULL
+                  AND accion IN ('LOGIN_OK', 'LOGOUT')
+                  AND fecha_hora > NOW() - INTERVAL '24 hours'
+                ORDER BY id_usuario, fecha_hora DESC
+            )
             SELECT 
-                (
-                    WITH last_states AS (
-                        SELECT 
-                            id_usuario,
-                            accion,
-                            ROW_NUMBER() OVER (PARTITION BY id_usuario ORDER BY fecha_hora DESC) as rn
-                        FROM seguridad.log_actividad
-                        WHERE id_usuario IS NOT NULL
-                          AND accion IN ('LOGIN_OK', 'LOGOUT')
-                          AND fecha_hora > NOW() - INTERVAL '24 hours'
-                    )
-                    SELECT COUNT(*) FROM last_states WHERE rn = 1 AND accion = 'LOGIN_OK'
-                ) as sess_activas,
+                (SELECT COUNT(*) FROM last_active WHERE accion = 'LOGIN_OK') as sess_activas,
                 (SELECT COUNT(*) FROM seguridad.log_actividad WHERE id_tipo_evento_log = (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR') AND fecha_hora >= date_trunc('month', now())) as errores_mes,
                 (SELECT COUNT(*) FROM seguridad.log_actividad WHERE accion = 'BACKUP' AND resultado = 'OK' AND fecha_hora >= date_trunc('month', now())) as backups_exitosos_mes,
                 (SELECT MAX(ultimo_login) FROM seguridad.usuario) as ultimo_login
         """)
+
         row = cur.fetchone()
         
         return {
@@ -781,6 +793,34 @@ class Database:
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
+
+    def get_stock_by_rubro(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Returns stock count grouped by rubro."""
+        query = """
+            SELECT r.nombre, COUNT(a.id) as cantidad
+            FROM app.articulo a
+            JOIN ref.rubro r ON a.id_rubro = r.id
+            WHERE a.activo = true
+            GROUP BY r.nombre
+            ORDER BY cantidad DESC
+            LIMIT %s
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
+
+    def get_entidades_by_tipo(self) -> List[Dict[str, Any]]:
+        """Returns entity count grouped by type."""
+        query = """
+            SELECT tipo as nombre, COUNT(*) as cantidad
+            FROM app.entidad_comercial
+            GROUP BY tipo
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
                 return _rows_to_dicts(cur)
 
     def get_deudores(self, limit: int = 50) -> List[Dict[str, Any]]:

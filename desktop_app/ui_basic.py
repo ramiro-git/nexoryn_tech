@@ -1478,6 +1478,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar entidad completa",
                     icon_color=COLOR_ACCENT,
+                    visible=(CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     on_click=lambda e, rid=row.get("id"): open_editar_entidad(int(rid)),
                 ),
                 width=40,
@@ -1555,7 +1556,7 @@ def main(page: ft.Page) -> None:
             "Gestión integral de clientes y proveedores.", 
             entidades_table.build(),
             actions=[
-                ft.ElevatedButton(
+                btn_nueva_entidad := ft.ElevatedButton(
                     "Nueva Entidad", 
                     icon=ft.icons.ADD_ROUNDED, 
                     bgcolor=COLOR_ACCENT, 
@@ -1809,6 +1810,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar artículo completo",
                     icon_color=COLOR_ACCENT,
+                    visible=(CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     on_click=lambda e, rid=row.get("id"): open_editar_articulo(int(rid)),
                 ),
                 width=40,
@@ -1821,6 +1823,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.icons.DO_NOT_DISTURB_ON_ROUNDED,
                     tooltip="Activar artículo" if not row.get("activo") else "Desactivar artículo",
                     icon_color=COLOR_SUCCESS if not row.get("activo") else COLOR_WARNING,
+                    visible=(CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     on_click=lambda e, rid=row.get("id"), is_act=row.get("activo"): (
                         ask_confirm(
                             "Activar artículo" if not is_act else "Desactivar artículo",
@@ -1885,7 +1888,7 @@ def main(page: ft.Page) -> None:
             "Stock, costos y listas de precios.", 
             articulos_table.build(),
             actions=[
-                ft.ElevatedButton(
+                btn_nuevo_articulo := ft.ElevatedButton(
                     "Nuevo Artículo", 
                     icon=ft.icons.ADD_ROUNDED, 
                     bgcolor=COLOR_ACCENT, 
@@ -1903,7 +1906,7 @@ def main(page: ft.Page) -> None:
         expand=True
     )
 
-    admin_export_tables = [entidades_table, articulos_table]
+
 
     # ---- Crear entidad / artículo ----
     # (Using the unified form_dialog defined above at the start of main)
@@ -4798,7 +4801,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_confirm", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    row.get("estado") == "BORRADOR",
+                    row.get("estado") == "BORRADOR" and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     icon=ft.icons.CHECK_CIRCLE,
                     tooltip="Confirmar comprobante",
                     icon_color=COLOR_SUCCESS,
@@ -4817,7 +4820,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_edit", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    row.get("estado") == "BORRADOR" and not row.get("cae"),
+                    row.get("estado") == "BORRADOR" and not row.get("cae") and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar borrador",
                     icon_color=COLOR_ACCENT,
@@ -4847,7 +4850,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_afip", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    _can_authorize_afip(row),
+                    _can_authorize_afip(row) and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     icon=ft.icons.SECURITY,
                     tooltip="Autorizar AFIP",
                     icon_color=COLOR_ACCENT,
@@ -4858,7 +4861,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_annul", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    row.get("estado") != "ANULADO" and not row.get("cae"),
+                    row.get("estado") != "ANULADO" and not row.get("cae") and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     icon=ft.icons.BLOCK_ROUNDED,
                     tooltip="Anular comprobante",
                     icon_color=COLOR_ERROR,
@@ -4866,7 +4869,7 @@ def main(page: ft.Page) -> None:
                         "Anular Comprobante",
                         f"¿Estás seguro que deseas anular el comprobante {row['numero_serie']}? Esta acción revertirá el stock.",
                         "Anular",
-                        lambda: (db.anular_documento(row["id"]), show_toast("Comprobante anulado", kind="success"), documentos_summary_table.refresh())
+                        lambda: (db.anular_documento(row["id"]), show_toast("Comprobante anulado", kind="success"), documentos_summary_table.refresh()) if db else None
                     ),
                 )
             ),
@@ -4910,7 +4913,7 @@ def main(page: ft.Page) -> None:
             "Consulta de facturas, presupuestos y compras.", 
             documentos_summary_table.build(),
             actions=[
-                ft.ElevatedButton("Nuevo Comprobante", icon=ft.icons.ADD_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
+                btn_nuevo_comprobante := ft.ElevatedButton("Nuevo Comprobante", icon=ft.icons.ADD_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
                                    on_click=lambda e: open_nuevo_comprobante(),
                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
             ]
@@ -5075,6 +5078,7 @@ def main(page: ft.Page) -> None:
                     icon=ft.icons.SWAP_HORIZ_ROUNDED,
                     tooltip="Cambiar estado",
                     icon_color=COLOR_ACCENT,
+                    visible=(CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     on_click=lambda e, r=row: _open_remito_estado_dialog(r),
                 )
             ),
@@ -5427,7 +5431,7 @@ def main(page: ft.Page) -> None:
             "Registro de ingresos y egresos de caja.", 
             pagos_table.build(),
             actions=[
-                 ft.ElevatedButton(
+                 btn_nuevo_pago := ft.ElevatedButton(
                      "Nuevo Pago", 
                      icon=ft.icons.ADD_ROUNDED, 
                      bgcolor=COLOR_ACCENT, 
@@ -5765,7 +5769,7 @@ def main(page: ft.Page) -> None:
             "Gestión de saldos de clientes y proveedores.",
             cuentas_table.build(),
             actions=[
-                ft.ElevatedButton(
+                btn_registrar_pago_cc := ft.ElevatedButton(
                     "Registrar Pago",
                     icon=ft.icons.ATTACH_MONEY_ROUNDED,
                     bgcolor=COLOR_SUCCESS,
@@ -5773,7 +5777,7 @@ def main(page: ft.Page) -> None:
                     on_click=open_pago_cc,
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
                 ),
-                ft.ElevatedButton(
+                btn_ajuste_saldo_cc := ft.ElevatedButton(
                     "Ajuste de Saldo",
                     icon=ft.icons.TUNE_ROUNDED,
                     bgcolor=COLOR_WARNING,
@@ -6183,12 +6187,74 @@ def main(page: ft.Page) -> None:
     # =========================================================================
     CURRENT_USER_ROLE = "EMPLEADO"  # Default, will be set on login
     monitor_started = False
+    admin_export_tables = [
+        entidades_table, 
+        articulos_table, 
+        documentos_summary_table, 
+        remitos_table, 
+        movimientos_table, 
+        pagos_table, 
+        cuentas_table, 
+        logs_table
+    ]
 
     def apply_role_permissions() -> None:
-        is_admin = CURRENT_USER_ROLE == "ADMIN"
+        """Centralizes UI permission enforcement based on CURRENT_USER_ROLE."""
+        is_admin = (CURRENT_USER_ROLE == "ADMIN")
+        is_manager = (CURRENT_USER_ROLE == "GERENTE")
+        is_privileged = is_admin or is_manager
+
+        # 1. Export Buttons Visibility
         for table in admin_export_tables:
-            if hasattr(table.export_button, "visible"):
-                table.export_button.visible = is_admin
+            if table is None:
+                continue
+            # If the table has an export button component, control its visibility
+            if hasattr(table, "export_button") and table.export_button:
+                table.export_button.visible = is_privileged 
+                if table == logs_table:
+                    table.export_button.visible = is_admin
+                else:
+                    table.export_button.visible = is_privileged
+            
+            # Also update flags for future rebuilds/refreshes
+            table.show_export_button = is_privileged
+            if table == logs_table:
+                table.show_export_button = is_admin
+            
+            table.show_export_scope = is_privileged
+
+            # 1.1 Enforcement of Interactive Controls for non-admins
+            # (EMPLEADO should only see data, not edit/delete mass)
+            if hasattr(table, "show_inline_controls"):
+                table.show_inline_controls = is_privileged
+            if hasattr(table, "show_mass_actions"):
+                table.show_mass_actions = is_privileged
+
+        # 2. Side Bar specialized items (already handled in update_nav, but good to ensure)
+        update_nav()
+
+        # 3. Action Buttons Visibility
+        critical_action_btns = [
+            btn_nueva_entidad, 
+            btn_nuevo_articulo, 
+            btn_nuevo_comprobante, 
+            btn_nuevo_pago,
+            btn_registrar_pago_cc,
+            btn_ajuste_saldo_cc
+        ]
+        for btn in critical_action_btns:
+            if btn:
+                btn.visible = is_privileged
+
+        # 4. Specific view elements
+        # For example, sensitive stats or actions
+        if "usuarios_activos" in card_registry:
+            card_registry["usuarios_activos"].visible = is_admin
+        
+        # 4. Table Action Column Visibility (Renderer level)
+        # This is harder without re-creating columns, but some renderers already check CURRENT_USER_ROLE.
+        # We can trigger a refresh if needed when role changes.
+        pass
     
     login_email = ft.TextField(
         label="Email o Usuario",
