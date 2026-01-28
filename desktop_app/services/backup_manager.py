@@ -354,6 +354,44 @@ class BackupManager:
                     'invalidos': invalidos,
                     'validaciones': validaciones
                 }
+
+    def purge_invalid_backups(self) -> int:
+        """
+        Check all COMPLETED backups in the database.
+        If the physical file does not exist, remove the record from the database.
+        Returns the number of deleted records.
+        """
+        query = "SELECT id, archivo_ruta FROM seguridad.backup_manifest WHERE estado = 'COMPLETADO'"
+        deleted_count = 0
+        
+        with self.db.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                rows = cur.fetchall()
+                
+                ids_to_delete = []
+                for row in rows:
+                    backup_id = row[0]
+                    ruta = row[1]
+                    
+                    if not ruta:
+                        ids_to_delete.append(backup_id)
+                        continue
+                        
+                    p = Path(ruta)
+                    if not p.exists():
+                        ids_to_delete.append(backup_id)
+                
+                if ids_to_delete:
+                    # Delete in batch
+                    placeholders = ",".join(["%s"] * len(ids_to_delete))
+                    del_query = f"DELETE FROM seguridad.backup_manifest WHERE id IN ({placeholders})"
+                    cur.execute(del_query, tuple(ids_to_delete))
+                    conn.commit()
+                    deleted_count = len(ids_to_delete)
+                    self.logger.debug(f"Purged {deleted_count} ghost backups from database.")
+                    
+        return deleted_count
     
     def get_space_usage(self) -> Dict:
         query = """

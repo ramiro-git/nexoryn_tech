@@ -8,7 +8,7 @@ import flet as ft
 def cancel_button(
     label: str,
     on_click: Optional[Callable],
-    icon: Optional[Any] = ft.Icons.CLOSE_ROUNDED,
+    icon: Optional[Any] = ft.icons.CLOSE_ROUNDED,
     *,
     text_color: str = "#1E293B",
     bgcolor: str = "#F1F5F9",

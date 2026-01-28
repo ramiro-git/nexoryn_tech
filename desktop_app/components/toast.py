@@ -22,10 +22,10 @@ class ToastNotification(ft.Container):
         
         # Style configuration based on kind
         self.colors = {
-            "info": {"bg": ft.Colors.BLUE_50, "border": ft.Colors.BLUE_200, "icon": ft.Colors.BLUE_500, "text": ft.Colors.BLUE_900, "icon_name": ft.Icons.INFO_OUTLINE},
-            "success": {"bg": ft.Colors.GREEN_50, "border": ft.Colors.GREEN_200, "icon": ft.Colors.GREEN_500, "text": ft.Colors.GREEN_900, "icon_name": ft.Icons.CHECK_CIRCLE_OUTLINE},
-            "warning": {"bg": ft.Colors.AMBER_50, "border": ft.Colors.AMBER_200, "icon": ft.Colors.AMBER_500, "text": ft.Colors.AMBER_900, "icon_name": ft.Icons.WARNING_AMBER_ROUNDED},
-            "error": {"bg": ft.Colors.RED_50, "border": ft.Colors.RED_200, "icon": ft.Colors.RED_500, "text": ft.Colors.RED_900, "icon_name": ft.Icons.ERROR_OUTLINE},
+            "info": {"bg": ft.Colors.BLUE_50, "border": ft.Colors.BLUE_200, "icon": ft.Colors.BLUE_500, "text": ft.Colors.BLUE_900, "icon_name": ft.icons.INFO_OUTLINE},
+            "success": {"bg": ft.Colors.GREEN_50, "border": ft.Colors.GREEN_200, "icon": ft.Colors.GREEN_500, "text": ft.Colors.GREEN_900, "icon_name": ft.icons.CHECK_CIRCLE_OUTLINE},
+            "warning": {"bg": ft.Colors.AMBER_50, "border": ft.Colors.AMBER_200, "icon": ft.Colors.AMBER_500, "text": ft.Colors.AMBER_900, "icon_name": ft.icons.WARNING_AMBER_ROUNDED},
+            "error": {"bg": ft.Colors.RED_50, "border": ft.Colors.RED_200, "icon": ft.Colors.RED_500, "text": ft.Colors.RED_900, "icon_name": ft.icons.ERROR_OUTLINE},
         }
         
         style = self.colors.get(kind, self.colors["info"])
@@ -35,7 +35,7 @@ class ToastNotification(ft.Container):
                 ft.Icon(name=style["icon_name"], color=style["icon"], size=24),
                 ft.Text(message, color=style["text"], size=14, weight=ft.FontWeight.W_500, expand=True),
                 ft.IconButton(
-                    icon=ft.Icons.CLOSE,
+                    icon=ft.icons.CLOSE,
                     icon_size=18,
                     icon_color=style["text"],
                     tooltip="Cerrar",

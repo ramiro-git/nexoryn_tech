@@ -36,9 +36,9 @@ if not getattr(CoreDataTable.before_update, "_nexoryn_patched_v2", False):
                 # Silenciar este error específico
                 return
             raise
-        except Exception:
-            # Silenciar otros errores durante before_update
-            pass
+        except Exception as e:
+            # Do NOT silence other errors
+            raise e
     
     _patched_before_update_core._nexoryn_patched_v2 = True
     CoreDataTable.before_update = _patched_before_update_core
@@ -96,7 +96,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 
-ICONS = ft.Icons
+ICONS = ft.icons
 
 
 # Modern Design System
@@ -358,12 +358,12 @@ def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, wid
     )
     if on_change is not None:
         _maybe_set(dd, "on_change", on_change)
-    _maybe_set(dd, "enable_search", True)
+    # _maybe_set(dd, "enable_search", True)
     _style_input(dd)
     return dd
 
 
-def _cancel_button(label: str, on_click: Optional[Callable], icon: Optional[Any] = ft.Icons.CLOSE_ROUNDED) -> ft.ElevatedButton:
+def _cancel_button(label: str, on_click: Optional[Callable], icon: Optional[Any] = ft.icons.CLOSE_ROUNDED) -> ft.ElevatedButton:
     return cancel_button(
         label,
         on_click,
@@ -440,7 +440,7 @@ def _date_field(*args, **kwargs) -> ft.TextField:
             pass
 
     tf.suffix = ft.IconButton(
-        icon=ft.Icons.CALENDAR_MONTH_ROUNDED,
+        icon=ft.icons.CALENDAR_MONTH_ROUNDED,
         icon_size=18,
         on_click=open_picker,
     )
@@ -497,7 +497,7 @@ def main(page: ft.Page) -> None:
     _form_title = ft.Text(size=18, weight=ft.FontWeight.BOLD)
     _form_content_area = ft.Container()
     _form_actions_area = ft.Row(alignment=ft.MainAxisAlignment.END, spacing=10)
-    _form_header = ft.Row([_form_title, ft.IconButton(ft.Icons.CLOSE_ROUNDED, icon_size=20, on_click=lambda _: close_form())], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+    _form_header = ft.Row([_form_title, ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=20, on_click=lambda _: close_form())], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
     
     # This replaces the native AlertDialog to allow multiple layers of modals
     form_dialog = ft.Container(
@@ -926,7 +926,7 @@ def main(page: ft.Page) -> None:
         slice_rows = rows[offset:offset + limit]
         items = [{"value": r["id"], "label": r["nombre"]} for r in slice_rows]
         return items, offset + limit < len(rows)
-    status_icon_value = ft.Icons.CHECK_CIRCLE_ROUNDED if db and not db_error else ft.Icons.ERROR_OUTLINE_ROUNDED
+    status_icon_value = ft.icons.CHECK_CIRCLE_ROUNDED if db and not db_error else ft.icons.ERROR_OUTLINE_ROUNDED
     status_color = "#166534" if db and not db_error else "#991B1B"
     status_badge.content.controls.extend(
         [
@@ -938,7 +938,7 @@ def main(page: ft.Page) -> None:
     card_registry: Dict[str, ft.Text] = {}
 
     def make_stat_card(label: str, value: str, icon_name: str, color: str = COLOR_ACCENT, key: str = None) -> ft.Control:
-        icon_value = getattr(ft.Icons, icon_name, ft.Icons.QUESTION_MARK_ROUNDED)
+        icon_value = getattr(ft.icons, icon_name, ft.icons.QUESTION_MARK_ROUNDED)
         val_text = ft.Text(value, size=20, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
         if key:
             card_registry[key] = val_text
@@ -1441,7 +1441,7 @@ def main(page: ft.Page) -> None:
                 label="Notas",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.INFO_OUTLINE_ROUNDED,
+                    icon=ft.icons.INFO_OUTLINE_ROUNDED,
                     tooltip="Ver notas" if row.get("notas") else "Sin notas",
                     icon_color=COLOR_INFO if row.get("notas") else ft.Colors.GREY_400,
                     on_click=lambda _: open_form(
@@ -1475,7 +1475,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.EDIT_ROUNDED,
+                    icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar entidad completa",
                     icon_color=COLOR_ACCENT,
                     on_click=lambda e, rid=row.get("id"): open_editar_entidad(int(rid)),
@@ -1487,7 +1487,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.Icons.DO_NOT_DISTURB_ON_ROUNDED,
+                    icon=ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.icons.DO_NOT_DISTURB_ON_ROUNDED,
                     tooltip="Activar entidad" if not row.get("activo") else "Desactivar entidad",
                     icon_color=COLOR_SUCCESS if not row.get("activo") else COLOR_WARNING,
                     on_click=lambda e, rid=row.get("id"), is_act=row.get("activo"): (
@@ -1557,7 +1557,7 @@ def main(page: ft.Page) -> None:
             actions=[
                 ft.ElevatedButton(
                     "Nueva Entidad", 
-                    icon=ft.Icons.ADD_ROUNDED, 
+                    icon=ft.icons.ADD_ROUNDED, 
                     bgcolor=COLOR_ACCENT, 
                     color="#FFFFFF",
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -1794,7 +1794,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.INFO_OUTLINE_ROUNDED,
+                    icon=ft.icons.INFO_OUTLINE_ROUNDED,
                     tooltip="Ver detalles completos",
                     icon_color=COLOR_TEXT_MUTED,
                     on_click=lambda e, rid=row.get("id"): open_detalle_articulo(int(rid)),
@@ -1806,7 +1806,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.EDIT_ROUNDED,
+                    icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar artículo completo",
                     icon_color=COLOR_ACCENT,
                     on_click=lambda e, rid=row.get("id"): open_editar_articulo(int(rid)),
@@ -1818,7 +1818,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.Icons.DO_NOT_DISTURB_ON_ROUNDED,
+                    icon=ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED if not row.get("activo") else ft.icons.DO_NOT_DISTURB_ON_ROUNDED,
                     tooltip="Activar artículo" if not row.get("activo") else "Desactivar artículo",
                     icon_color=COLOR_SUCCESS if not row.get("activo") else COLOR_WARNING,
                     on_click=lambda e, rid=row.get("id"), is_act=row.get("activo"): (
@@ -1887,7 +1887,7 @@ def main(page: ft.Page) -> None:
             actions=[
                 ft.ElevatedButton(
                     "Nuevo Artículo", 
-                    icon=ft.Icons.ADD_ROUNDED, 
+                    icon=ft.icons.ADD_ROUNDED, 
                     bgcolor=COLOR_ACCENT, 
                     color="#FFFFFF",
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -1978,7 +1978,7 @@ def main(page: ft.Page) -> None:
     # New Fields for Entity
     nueva_entidad_provincia = AsyncSelect(label="Provincia *", loader=province_loader, width=250, on_change=lambda _: _on_provincia_change(None))
     nueva_entidad_localidad = AsyncSelect(label="Localidad *", loader=locality_loader, width=250, disabled=True)
-    nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA *", width=250, options=[], enable_search=True)
+    nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA *", width=250, options=[])
     _style_input(nueva_entidad_condicion_iva)
     nueva_entidad_notas = ft.TextField(label="Notas", width=510, multiline=True, min_lines=2, max_lines=4)
     _style_input(nueva_entidad_notas)
@@ -2128,7 +2128,7 @@ def main(page: ft.Page) -> None:
             _cancel_button("Cancelar", on_click=close_form),
             ft.ElevatedButton(
                 "Crear", 
-                icon=ft.Icons.ADD, 
+                icon=ft.icons.ADD, 
                 bgcolor=COLOR_ACCENT, 
                 color="#FFFFFF", 
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), 
@@ -2206,7 +2206,7 @@ def main(page: ft.Page) -> None:
             
             open_form("Editar entidad", _prepare_entity_form_content(), [
                 _cancel_button("Cancelar", on_click=close_form),
-                ft.ElevatedButton("Guardar Cambios", icon=ft.Icons.SAVE_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF",
+                ft.ElevatedButton("Guardar Cambios", icon=ft.icons.SAVE_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF",
                                   style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)), on_click=guardar_edicion_entidad),
             ])
         except Exception as exc:
@@ -2727,7 +2727,7 @@ def main(page: ft.Page) -> None:
                 _cancel_button("Cancelar", on_click=close_form),
                 ft.ElevatedButton(
                     "Crear",
-                    icon=ft.Icons.ADD,
+                    icon=ft.icons.ADD,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -2795,7 +2795,7 @@ def main(page: ft.Page) -> None:
 
             status_btn = ft.ElevatedButton(
                 "Desactivar" if is_active else "Activar",
-                icon=ft.Icons.DO_NOT_DISTURB_ON_ROUNDED if is_active else ft.Icons.CHECK_CIRCLE_ROUNDED,
+                icon=ft.icons.DO_NOT_DISTURB_ON_ROUNDED if is_active else ft.icons.CHECK_CIRCLE_ROUNDED,
                 bgcolor=COLOR_ERROR if is_active else COLOR_SUCCESS,
                 color="#FFFFFF",
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -2809,16 +2809,16 @@ def main(page: ft.Page) -> None:
                         ft.Divider(height=1, color=COLOR_BORDER),
                                 ft.Row([
                                     ft.Column([
-                                        info_row("Marca", art.get('marca'), ft.Icons.LABEL_ROUNDED),
-                                        info_row("Rubro", art.get('rubro'), ft.Icons.CATEGORY_ROUNDED),
-                                        info_row("Proveedor", art.get('proveedor'), ft.Icons.BUSINESS_ROUNDED),
-                                        info_row("PGan 2", f"{float(art.get('porcentaje_ganancia_2', 0)):.2f}%" if art.get('porcentaje_ganancia_2') is not None else "—", ft.Icons.PERCENT_ROUNDED),
-                                        info_row("Notas", art.get('observacion'), ft.Icons.NOTE_ROUNDED),
+                                        info_row("Marca", art.get('marca'), ft.icons.LABEL_ROUNDED),
+                                        info_row("Rubro", art.get('rubro'), ft.icons.CATEGORY_ROUNDED),
+                                        info_row("Proveedor", art.get('proveedor'), ft.icons.BUSINESS_ROUNDED),
+                                        info_row("PGan 2", f"{float(art.get('porcentaje_ganancia_2', 0)):.2f}%" if art.get('porcentaje_ganancia_2') is not None else "—", ft.icons.PERCENT_ROUNDED),
+                                        info_row("Notas", art.get('observacion'), ft.icons.NOTE_ROUNDED),
                                     ], expand=True),
                                     ft.Column([
-                                        info_row("Costo", _format_money(art.get('costo')), ft.Icons.MONEY_ROUNDED),
-                                        info_row("Stock Actual", f"{float(art.get('stock_actual', 0)):.2f} {art.get('unidad_abreviatura') or ''}", ft.Icons.INVENTORY_ROUNDED),
-                                        info_row("Ubicación", art.get('ubicacion'), ft.Icons.LOCATION_ON_ROUNDED),
+                                        info_row("Costo", _format_money(art.get('costo')), ft.icons.MONEY_ROUNDED),
+                                        info_row("Stock Actual", f"{float(art.get('stock_actual', 0)):.2f} {art.get('unidad_abreviatura') or ''}", ft.icons.INVENTORY_ROUNDED),
+                                        info_row("Ubicación", art.get('ubicacion'), ft.icons.LOCATION_ON_ROUNDED),
                                     ], expand=True),
                                 ], spacing=40),
                     ], spacing=15),
@@ -2929,7 +2929,7 @@ def main(page: ft.Page) -> None:
                 _cancel_button("Cancelar", on_click=close_form),
                 ft.ElevatedButton(
                     "Guardar Cambios",
-                    icon=ft.Icons.SAVE_ROUNDED,
+                    icon=ft.icons.SAVE_ROUNDED,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -3059,7 +3059,7 @@ def main(page: ft.Page) -> None:
     # Drop zone for logo
     logo_drop_zone = ft.Container(
         content=ft.Column([
-            ft.Icon(ft.Icons.CLOUD_UPLOAD_ROUNDED, size=40, color=COLOR_TEXT_MUTED),
+            ft.Icon(ft.icons.CLOUD_UPLOAD_ROUNDED, size=40, color=COLOR_TEXT_MUTED),
             ft.Text("Arrastrá una imagen aquí", size=14, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.CENTER),
             ft.Text("o", size=12, color=COLOR_TEXT_MUTED),
             ft.TextButton("Seleccionar archivo", on_click=select_logo_click),
@@ -3078,7 +3078,7 @@ def main(page: ft.Page) -> None:
         ft.Column([
             sys_logo_preview,
             sys_logo_label,
-            ft.TextButton("Quitar logo", icon=ft.Icons.DELETE_OUTLINE, on_click=clear_logo, visible=True),
+            ft.TextButton("Quitar logo", icon=ft.icons.DELETE_OUTLINE, on_click=clear_logo, visible=True),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
     ], spacing=20, vertical_alignment=ft.CrossAxisAlignment.START)
 
@@ -3097,7 +3097,7 @@ def main(page: ft.Page) -> None:
             ft.Text("Logo de la Empresa", size=18, weight=ft.FontWeight.BOLD, color=COLOR_TEXT),
             logo_section,
             ft.Container(height=30),
-            ft.ElevatedButton("Guardar Configuración del Sistema", icon=ft.Icons.SAVE_ROUNDED, on_click=save_sistema_config, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.ElevatedButton("Guardar Configuración del Sistema", icon=ft.icons.SAVE_ROUNDED, on_click=save_sistema_config, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
             ft.Container(height=30), # Padding at bottom
         ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True),
         padding=ft.padding.only(left=10, right=10),
@@ -3249,7 +3249,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
+                    icon=ft.icons.DELETE_OUTLINE,
                     tooltip="Eliminar marca",
                     icon_color="#DC2626",
                     on_click=lambda e, rid=row.get("id"): (
@@ -3285,7 +3285,7 @@ def main(page: ft.Page) -> None:
                 label="",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
+                    icon=ft.icons.DELETE_OUTLINE,
                     tooltip="Eliminar rubro",
                     icon_color="#DC2626",
                     on_click=lambda e, rid=row.get("id"): (
@@ -3345,7 +3345,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta provincia?", "Eliminar", lambda: delete_provincia(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3375,7 +3375,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta localidad?", "Eliminar", lambda: delete_localidad(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3414,7 +3414,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta unidad?", "Eliminar", lambda: delete_unidad(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3444,7 +3444,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este registro?", "Eliminar", lambda: delete_civa(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3471,7 +3471,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de IVA?", "Eliminar", lambda: delete_tiva(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3505,7 +3505,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este rubro?", "Eliminar", lambda: delete_deposito(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3534,7 +3534,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar esta forma de pago?", "Eliminar", lambda: delete_fpay(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3578,7 +3578,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_toggle", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.UNPUBLISHED_OUTLINED if row.get("activa") else ft.Icons.CHECK_CIRCLE_OUTLINE,
+                    icon=ft.icons.UNPUBLISHED_OUTLINED if row.get("activa") else ft.icons.CHECK_CIRCLE_OUTLINE,
                     tooltip="Desactivar" if row.get("activa") else "Activar",
                     icon_color="#DC2626" if row.get("activa") else "#10B981", # Rojo si esta activa (para desactivar), Verde si inactiva (para activar)
                     on_click=lambda e: toggle_lista_precio(int(row["id"]), row.get("activa", False))
@@ -3623,7 +3623,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de porcentaje?", "Eliminar", lambda: delete_ptype(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3653,7 +3653,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de doc?", "Eliminar", lambda: delete_dtype(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3693,7 +3693,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
+                    icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color="#DC2626",
                     on_click=lambda e: ask_confirm("Eliminar", "¿Eliminar este tipo de mov?", "Eliminar", lambda: delete_mtype(int(row["id"])))
                 ) if CURRENT_USER_ROLE == "ADMIN" else ft.Container()
             ),
@@ -3730,7 +3730,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_toggle", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.PERSON_OFF_ROUNDED if row.get("activo") else ft.Icons.PERSON_ADD_ROUNDED,
+                    icon=ft.icons.PERSON_OFF_ROUNDED if row.get("activo") else ft.icons.PERSON_ADD_ROUNDED,
                     tooltip="Desactivar Usuario" if row.get("activo") else "Reactivar Usuario",
                     icon_color=("#94A3B8" if (db.current_user_id and int(row.get("id")) == int(db.current_user_id)) else ("#DC2626" if row.get("activo") else "#10B981")),
                     disabled=True if (db.current_user_id and int(row.get("id")) == int(db.current_user_id)) else False,
@@ -3824,7 +3824,7 @@ def main(page: ft.Page) -> None:
         tabs=[
             make_tab(
                 text="Lista de Usuarios",
-                icon=ft.Icons.PEOPLE_OUTLINE_ROUNDED,
+                icon=ft.icons.PEOPLE_OUTLINE_ROUNDED,
                 content=ft.Container(
                     padding=10,
                     content=make_card(
@@ -3834,7 +3834,7 @@ def main(page: ft.Page) -> None:
                         actions=[
                             ft.ElevatedButton(
                                 "Nuevo Usuario", 
-                                icon=ft.Icons.PERSON_ADD_ROUNDED, 
+                                icon=ft.icons.PERSON_ADD_ROUNDED, 
                                 bgcolor=COLOR_ACCENT, 
                                 color="#FFFFFF",
                                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -3846,7 +3846,7 @@ def main(page: ft.Page) -> None:
             ),
             make_tab(
                 text="Sesiones Activas",
-                icon=ft.Icons.SATELLITE_ALT_ROUNDED,
+                icon=ft.icons.SATELLITE_ALT_ROUNDED,
                 content=ft.Container(
                     padding=10,
                     content=make_card(
@@ -4431,7 +4431,7 @@ def main(page: ft.Page) -> None:
             if estado == "BORRADOR":
                 actions.insert(0, ft.ElevatedButton(
                     "Confirmar Comprobante",
-                    icon=ft.Icons.CHECK_CIRCLE,
+                    icon=ft.icons.CHECK_CIRCLE,
                     bgcolor=COLOR_SUCCESS,
                     color="#FFFFFF",
                     on_click=lambda _: _confirm_document(doc_id, close_after=True),
@@ -4441,7 +4441,7 @@ def main(page: ft.Page) -> None:
             if _can_authorize_afip(doc_row):
                 actions.insert(0, ft.ElevatedButton(
                     "Autorizar AFIP",
-                    icon=ft.Icons.SECURITY,
+                    icon=ft.icons.SECURITY,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
                     on_click=lambda _: _confirm_afip_authorization(doc_row, close_after=True),
@@ -4568,7 +4568,7 @@ def main(page: ft.Page) -> None:
             if db:
                 actions.insert(0, ft.ElevatedButton(
                     "Imprimir remito",
-                    icon=ft.Icons.PRINT_ROUNDED,
+                    icon=ft.icons.PRINT_ROUNDED,
                     bgcolor=COLOR_ACCENT,
                     color="#FFFFFF",
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -4705,7 +4705,7 @@ def main(page: ft.Page) -> None:
         ent_options = [ft.dropdown.Option("0", "Todas")]
 
     doc_adv_entidad = AsyncSelect(label="Entidad", loader=entity_loader, width=280, on_change=lambda _: _doc_live(None))
-    doc_adv_tipo = ft.Dropdown(label="Tipo", options=tipo_options, width=160, value="Todos", enable_search=True); _style_input(doc_adv_tipo)
+    doc_adv_tipo = ft.Dropdown(label="Tipo", options=tipo_options, width=160, value="Todos"); _style_input(doc_adv_tipo)
     
     doc_adv_letra = ft.Dropdown(
         label="Letra", 
@@ -4799,7 +4799,7 @@ def main(page: ft.Page) -> None:
                 key="_confirm", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
                     row.get("estado") == "BORRADOR",
-                    icon=ft.Icons.CHECK_CIRCLE,
+                    icon=ft.icons.CHECK_CIRCLE,
                     tooltip="Confirmar comprobante",
                     icon_color=COLOR_SUCCESS,
                     icon_size=18,
@@ -4809,7 +4809,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_detail", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.INFO_OUTLINE, tooltip="Ver detalle",
+                    icon=ft.icons.INFO_OUTLINE, tooltip="Ver detalle",
                     icon_color=COLOR_TEXT_MUTED,
                     on_click=lambda e: view_doc_detail(row)
                 )
@@ -4818,7 +4818,7 @@ def main(page: ft.Page) -> None:
                 key="_edit", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
                     row.get("estado") == "BORRADOR" and not row.get("cae"),
-                    icon=ft.Icons.EDIT_ROUNDED,
+                    icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar borrador",
                     icon_color=COLOR_ACCENT,
                     on_click=lambda e, rid=row["id"]: open_nuevo_comprobante(edit_doc_id=rid),
@@ -4827,7 +4827,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_copy", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.COPY_ALL_ROUNDED,
+                    icon=ft.icons.COPY_ALL_ROUNDED,
                     tooltip="Copiar como nuevo",
                     icon_color=ft.Colors.BLUE_400,
                     icon_size=18,
@@ -4837,7 +4837,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_print", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.PRINT_ROUNDED,
+                    icon=ft.icons.PRINT_ROUNDED,
                     tooltip="Imprimir",
                     icon_color=COLOR_TEXT_MUTED,
                     icon_size=18,
@@ -4848,7 +4848,7 @@ def main(page: ft.Page) -> None:
                 key="_afip", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
                     _can_authorize_afip(row),
-                    icon=ft.Icons.SECURITY,
+                    icon=ft.icons.SECURITY,
                     tooltip="Autorizar AFIP",
                     icon_color=COLOR_ACCENT,
                     icon_size=18,
@@ -4859,7 +4859,7 @@ def main(page: ft.Page) -> None:
                 key="_annul", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
                     row.get("estado") != "ANULADO" and not row.get("cae"),
-                    icon=ft.Icons.BLOCK_ROUNDED,
+                    icon=ft.icons.BLOCK_ROUNDED,
                     tooltip="Anular comprobante",
                     icon_color=COLOR_ERROR,
                     on_click=lambda e: ask_confirm(
@@ -4874,7 +4874,7 @@ def main(page: ft.Page) -> None:
                 key="_nc", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
                     row.get("estado") == "CONFIRMADO" and row.get("cae"),
-                    icon=ft.Icons.RECEIPT_LONG_OUTLINED,
+                    icon=ft.icons.RECEIPT_LONG_OUTLINED,
                     tooltip="Generar Nota de Crédito",
                     icon_color=COLOR_WARNING,
                     on_click=lambda e, rid=row["id"]: open_nuevo_comprobante(copy_doc_id=rid),
@@ -4910,7 +4910,7 @@ def main(page: ft.Page) -> None:
             "Consulta de facturas, presupuestos y compras.", 
             documentos_summary_table.build(),
             actions=[
-                ft.ElevatedButton("Nuevo Comprobante", icon=ft.Icons.ADD_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
+                ft.ElevatedButton("Nuevo Comprobante", icon=ft.icons.ADD_ROUNDED, bgcolor=COLOR_ACCENT, color="#FFFFFF", 
                                    on_click=lambda e: open_nuevo_comprobante(),
                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
             ]
@@ -4980,7 +4980,7 @@ def main(page: ft.Page) -> None:
             _cancel_button("Cancelar", on_click=_close_dialog),
             ft.ElevatedButton(
                 "Guardar",
-                icon=ft.Icons.CHECK,
+                icon=ft.icons.CHECK,
                 bgcolor=COLOR_ACCENT,
                 color="#FFFFFF",
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -5004,7 +5004,7 @@ def main(page: ft.Page) -> None:
     def _movimiento_observacion_icon(row: Dict[str, Any]) -> ft.Control:
         texto = row.get("observacion") or ""
         return ft.IconButton(
-            icon=ft.Icons.INFO_OUTLINE,
+            icon=ft.icons.INFO_OUTLINE,
             tooltip=texto or "Sin observaciones",
             icon_color=COLOR_ACCENT if texto else COLOR_TEXT_MUTED,
             icon_size=18,
@@ -5060,7 +5060,7 @@ def main(page: ft.Page) -> None:
                 sortable=False,
                 width=40,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.INFO_OUTLINE,
+                    icon=ft.icons.INFO_OUTLINE,
                     tooltip="Ver remito",
                     icon_color=COLOR_TEXT_MUTED,
                     on_click=lambda e, r=row: view_remito_detail(r),
@@ -5072,7 +5072,7 @@ def main(page: ft.Page) -> None:
                 sortable=False,
                 width=60,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.SWAP_HORIZ_ROUNDED,
+                    icon=ft.icons.SWAP_HORIZ_ROUNDED,
                     tooltip="Cambiar estado",
                     icon_color=COLOR_ACCENT,
                     on_click=lambda e, r=row: _open_remito_estado_dialog(r),
@@ -5276,7 +5276,7 @@ def main(page: ft.Page) -> None:
                 label="Info",
                 width=60,
                 sortable=False,
-                renderer=lambda row: ft.IconButton(ft.Icons.INFO_OUTLINE, tooltip="Ver observaciones", icon_color=COLOR_ACCENT if row.get("observacion") else "grey", on_click=lambda _: show_payment_info(row.get("observacion"))),
+                renderer=lambda row: ft.IconButton(ft.icons.INFO_OUTLINE, tooltip="Ver observaciones", icon_color=COLOR_ACCENT if row.get("observacion") else "grey", on_click=lambda _: show_payment_info(row.get("observacion"))),
             ),
         ],
         data_provider=create_catalog_provider(db.fetch_pagos, db.count_pagos),
@@ -5429,7 +5429,7 @@ def main(page: ft.Page) -> None:
             actions=[
                  ft.ElevatedButton(
                      "Nuevo Pago", 
-                     icon=ft.Icons.ADD_ROUNDED, 
+                     icon=ft.icons.ADD_ROUNDED, 
                      bgcolor=COLOR_ACCENT, 
                      color="#FFFFFF", 
                      on_click=open_nuevo_pago,
@@ -5457,7 +5457,7 @@ def main(page: ft.Page) -> None:
 
     cc_adv_tipo = _dropdown("Tipo", [("", "Todos"), ("CLIENTE", "Clientes"), ("PROVEEDOR", "Proveedores")], value="", width=180, on_change=_cc_live)
     cc_adv_estado = _dropdown("Estado", [("", "Todos"), ("DEUDOR", "Deudores"), ("A_FAVOR", "A Favor"), ("AL_DIA", "Al Día")], value="", width=180, on_change=_cc_live)
-    cc_adv_solo_saldo = ft.Switch(label="Solo con saldo", value=True, on_change=_cc_live)
+    cc_adv_solo_saldo = ft.Switch(label="Solo con saldo", value=False, on_change=_cc_live)
 
     def cuentas_provider(offset, limit, search, simple, advanced, sorts):
         if db is None:
@@ -5690,7 +5690,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="ultimo_movimiento", label="Últ. Movimiento", width=150),
             ColumnConfig(key="total_movimientos", label="Movs.", width=80),
             ColumnConfig(key="acciones", label="", width=80, renderer=lambda row: ft.IconButton(
-                ft.Icons.HISTORY_ROUNDED, 
+                ft.icons.HISTORY_ROUNDED, 
                 tooltip="Ver movimientos",
                 icon_color=COLOR_ACCENT,
                 on_click=lambda e, eid=row.get("id_entidad_comercial"): ver_movimientos_entidad(e, eid)
@@ -5702,6 +5702,7 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("estado", cc_adv_estado),
             AdvancedFilterControl("solo_con_saldo", cc_adv_solo_saldo, getter=lambda c: c.value),
         ],
+        id_field="id_entidad_comercial",
         show_inline_controls=False,
         show_mass_actions=False,
         auto_load=True,
@@ -5731,28 +5732,28 @@ def main(page: ft.Page) -> None:
         ft.Row([
             ft.Container(
                 content=ft.Row([
-                    ft.Container(content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_ROUNDED, color=COLOR_ERROR, size=24), bgcolor=f"{COLOR_ERROR}1A", padding=10, border_radius=12),
+                    ft.Container(content=ft.Icon(ft.icons.ACCOUNT_BALANCE_ROUNDED, color=COLOR_ERROR, size=24), bgcolor=f"{COLOR_ERROR}1A", padding=10, border_radius=12),
                     ft.Column([ft.Text("Deuda Clientes", size=12, color=COLOR_TEXT_MUTED), cc_stat_deuda], spacing=-2),
                 ], spacing=12),
                 padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
             ),
             ft.Container(
                 content=ft.Row([
-                    ft.Container(content=ft.Icon(ft.Icons.PEOPLE_ALT_ROUNDED, color=COLOR_WARNING, size=24), bgcolor=f"{COLOR_WARNING}1A", padding=10, border_radius=12),
+                    ft.Container(content=ft.Icon(ft.icons.PEOPLE_ALT_ROUNDED, color=COLOR_WARNING, size=24), bgcolor=f"{COLOR_WARNING}1A", padding=10, border_radius=12),
                     ft.Column([ft.Text("Clientes Deudores", size=12, color=COLOR_TEXT_MUTED), cc_stat_deudores], spacing=-2),
                 ], spacing=12),
                 padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
             ),
             ft.Container(
                 content=ft.Row([
-                    ft.Container(content=ft.Icon(ft.Icons.PAYMENTS_ROUNDED, color=COLOR_SUCCESS, size=24), bgcolor=f"{COLOR_SUCCESS}1A", padding=10, border_radius=12),
+                    ft.Container(content=ft.Icon(ft.icons.PAYMENTS_ROUNDED, color=COLOR_SUCCESS, size=24), bgcolor=f"{COLOR_SUCCESS}1A", padding=10, border_radius=12),
                     ft.Column([ft.Text("Cobros Hoy", size=12, color=COLOR_TEXT_MUTED), cc_stat_cobros], spacing=-2),
                 ], spacing=12),
                 padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
             ),
             ft.Container(
                 content=ft.Row([
-                    ft.Container(content=ft.Icon(ft.Icons.SWAP_VERT_ROUNDED, color=COLOR_ACCENT, size=24), bgcolor=f"{COLOR_ACCENT}1A", padding=10, border_radius=12),
+                    ft.Container(content=ft.Icon(ft.icons.SWAP_VERT_ROUNDED, color=COLOR_ACCENT, size=24), bgcolor=f"{COLOR_ACCENT}1A", padding=10, border_radius=12),
                     ft.Column([ft.Text("Movimientos Hoy", size=12, color=COLOR_TEXT_MUTED), cc_stat_movs], spacing=-2),
                 ], spacing=12),
                 padding=16, bgcolor=COLOR_CARD, border_radius=16, border=ft.border.all(1, COLOR_BORDER), expand=True,
@@ -5766,7 +5767,7 @@ def main(page: ft.Page) -> None:
             actions=[
                 ft.ElevatedButton(
                     "Registrar Pago",
-                    icon=ft.Icons.ATTACH_MONEY_ROUNDED,
+                    icon=ft.icons.ATTACH_MONEY_ROUNDED,
                     bgcolor=COLOR_SUCCESS,
                     color="#FFFFFF",
                     on_click=open_pago_cc,
@@ -5774,7 +5775,7 @@ def main(page: ft.Page) -> None:
                 ),
                 ft.ElevatedButton(
                     "Ajuste de Saldo",
-                    icon=ft.Icons.TUNE_ROUNDED,
+                    icon=ft.icons.TUNE_ROUNDED,
                     bgcolor=COLOR_WARNING,
                     color="#FFFFFF",
                     on_click=open_ajuste_cc,
@@ -5837,7 +5838,7 @@ def main(page: ft.Page) -> None:
     precios_view = make_card(
         "Listas de Precio", "Definición y actualización de listas.",
         ft.Column([
-            ft.Row([nueva_lp_nom, nueva_lp_orden, ft.ElevatedButton("Crear Lista", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_lp, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10),
+            ft.Row([nueva_lp_nom, nueva_lp_orden, ft.ElevatedButton("Crear Lista", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_lp, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10),
             precios_table.build()
         ], expand=True, spacing=10)
     )
@@ -5884,7 +5885,7 @@ def main(page: ft.Page) -> None:
                 text="Marcas",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_marca, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_marca, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_marca, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_marca, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         marcas_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5894,7 +5895,7 @@ def main(page: ft.Page) -> None:
                 text="Rubros",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_rubro, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_rubro, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_rubro, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_rubro, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         rubros_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5904,7 +5905,7 @@ def main(page: ft.Page) -> None:
                 text="Unidades",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_uni_nombre, nueva_uni_abr, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_unidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_uni_nombre, nueva_uni_abr, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_unidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         unidades_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5914,7 +5915,7 @@ def main(page: ft.Page) -> None:
                 text="Provincias",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_provincia_input, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_provincia, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_provincia_input, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_provincia, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         provincias_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5924,7 +5925,7 @@ def main(page: ft.Page) -> None:
                 text="Localidades",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_loc_nombre, nueva_loc_prov, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_localidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_loc_nombre, nueva_loc_prov, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_localidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         localidades_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5934,7 +5935,7 @@ def main(page: ft.Page) -> None:
                 text="Condiciones IVA",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_civa, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_civa, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_civa, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_civa, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         civa_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5944,7 +5945,7 @@ def main(page: ft.Page) -> None:
                 text="Tipos IVA",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_tiva_porc, nueva_tiva_desc, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_tiva, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_tiva_porc, nueva_tiva_desc, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_tiva, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         tiva_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5954,7 +5955,7 @@ def main(page: ft.Page) -> None:
                 text="Depósitos",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nuevo_depo_nom, nuevo_depo_ubi, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_deposito, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nuevo_depo_nom, nuevo_depo_ubi, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_deposito, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         depo_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5964,7 +5965,7 @@ def main(page: ft.Page) -> None:
                 text="Formas Pago",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nueva_fpay, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_fpay, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nueva_fpay, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_fpay, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         fpay_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5974,7 +5975,7 @@ def main(page: ft.Page) -> None:
                 text="Tipos Porcentaje",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nuevo_ptype, ft.ElevatedButton("Agregar", height=40, icon=ft.Icons.ADD_ROUNDED, on_click=agregar_ptype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nuevo_ptype, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_ptype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         ptype_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -5990,7 +5991,7 @@ def main(page: ft.Page) -> None:
                             nuevo_dtype_letra, 
                             nuevo_dtype_stock,
                             nuevo_dtype_cta,
-                            ft.ElevatedButton("Agregar", icon=ft.Icons.ADD_ROUNDED, on_click=agregar_dtype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
+                            ft.ElevatedButton("Agregar", icon=ft.icons.ADD_ROUNDED, on_click=agregar_dtype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
                         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         dtype_table.build(),
                     ],
@@ -6001,7 +6002,7 @@ def main(page: ft.Page) -> None:
                 text="Tipos Movimiento",
                 content=ft.Column(
                     [
-                        ft.Container(content=ft.Row([nuevo_mtype_nom, nuevo_mtype_signo, ft.ElevatedButton("Agregar", icon=ft.Icons.ADD_ROUNDED, on_click=agregar_mtype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
+                        ft.Container(content=ft.Row([nuevo_mtype_nom, nuevo_mtype_signo, ft.ElevatedButton("Agregar", icon=ft.icons.ADD_ROUNDED, on_click=agregar_mtype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         mtype_table.build(),
                     ],
                     expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
@@ -6164,6 +6165,9 @@ def main(page: ft.Page) -> None:
                 # Suppress transient Flet errors like "content must be visible" during transitions
                 if not window_is_closing and db and not db.is_closing:
                     err_msg = str(e).lower()
+                    # Skip noise during schema sync (pool is None)
+                    if "'nonetype' object has no attribute 'connection'" in err_msg:
+                        return
                     if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
                         print(f"Error refreshing stats: {e}")
             finally:
@@ -6189,7 +6193,7 @@ def main(page: ft.Page) -> None:
     login_email = ft.TextField(
         label="Email o Usuario",
         width=320,
-        prefix_icon=ft.Icons.EMAIL_ROUNDED,
+        prefix_icon=ft.icons.EMAIL_ROUNDED,
         border_radius=12,
         filled=True,
         bgcolor="#FFFFFF",
@@ -6203,7 +6207,7 @@ def main(page: ft.Page) -> None:
         password=True,
         can_reveal_password=True,
         width=320,
-        prefix_icon=ft.Icons.LOCK_ROUNDED,
+        prefix_icon=ft.icons.LOCK_ROUNDED,
         border_radius=12,
         filled=True,
         bgcolor="#FFFFFF",
@@ -6235,7 +6239,7 @@ def main(page: ft.Page) -> None:
         content=ft.Column(
             [
                 ft.Container(
-                    content=ft.Icon(ft.Icons.CLOUD_SYNC_ROUNDED, size=64, color=COLOR_ACCENT),
+                    content=ft.Icon(ft.icons.CLOUD_SYNC_ROUNDED, size=64, color=COLOR_ACCENT),
                     bgcolor=f"{COLOR_ACCENT}15",
                     padding=25,
                     border_radius=30,
@@ -6362,6 +6366,7 @@ def main(page: ft.Page) -> None:
                     "Verificando respaldos y esquema...",
                     progress=None,
                 )
+                # print("DEBUG: Starting startup sequence...", flush=True)
 
                 try:
                     from desktop_app.services.backup_manager import BackupManager
@@ -6369,7 +6374,18 @@ def main(page: ft.Page) -> None:
                     from services.backup_manager import BackupManager  # type: ignore
 
                 backup_manager = BackupManager(db, pg_bin_path=config.pg_bin_path)
+                
+                # Limpiar registros de backups cuyos archivos físicos no existen
+                try:
+                    purged = backup_manager.purge_invalid_backups()
+                    # if purged > 0:
+                    #     print(f"DEBUG: Se limpiaron {purged} registros de backups inexistentes.", flush=True)
+                except Exception as e:
+                    pass # print(f"DEBUG: Error al purgar backups: {e}", flush=True)
+
+                # print("DEBUG: Checking missed backups...", flush=True)
                 missed = backup_manager.check_missed_backups()
+                # print(f"DEBUG: Missed backups result: {missed}", flush=True)
                 if missed:
                     results = backup_manager.execute_missed_backups(
                         missed,
@@ -6396,7 +6412,18 @@ def main(page: ft.Page) -> None:
                     logs_dir=PROJECT_ROOT / "logs",
                 )
                 if schema_sync.needs_sync():
+                    # print("DEBUG: Closing DB pool to release locks...", flush=True)
+                    if db:
+                        db.close_pool()
+                    
+                    # print("DEBUG: Calling schema_sync.apply...", flush=True)
                     result = schema_sync.apply(progress_callback=_schema_progress)
+                    # print(f"DEBUG: schema_sync returned: {result}", flush=True)
+                    
+                    # print("DEBUG: Reconnecting DB pool...", flush=True)
+                    if db:
+                        db.reconnect()
+
                     if not result.success:
                         _set_overlay_state(
                             "Error actualizando esquema",
@@ -6567,7 +6594,7 @@ def main(page: ft.Page) -> None:
                     content=ft.Column(
                         [
                             ft.Container(
-                                content=ft.Icon(ft.Icons.STOREFRONT_ROUNDED, size=56, color=COLOR_ACCENT),
+                                content=ft.Icon(ft.icons.STOREFRONT_ROUNDED, size=56, color=COLOR_ACCENT),
                                 bgcolor=f"{COLOR_ACCENT}15",
                                 padding=20,
                                 border_radius=20,
@@ -6746,7 +6773,7 @@ def main(page: ft.Page) -> None:
     admin_only_keys = {"usuarios", "backups", "logs"}
 
     def nav_item(key: str, label: str, icon_name: str):
-        icon_value = getattr(ft.Icons, icon_name, ft.Icons.QUESTION_MARK_ROUNDED)
+        icon_value = getattr(ft.icons, icon_name, ft.icons.QUESTION_MARK_ROUNDED)
         
         # Start admin-only items as hidden (will be shown after login if ADMIN)
         if key in admin_only_keys:
@@ -6829,7 +6856,7 @@ def main(page: ft.Page) -> None:
                             bgcolor=COLOR_ACCENT,
                             border_radius=12,
                             alignment=ft.alignment.center,
-                            content=ft.Icon(ft.Icons.BOLT_ROUNDED, color="#FFFFFF", size=24),
+                            content=ft.Icon(ft.icons.BOLT_ROUNDED, color="#FFFFFF", size=24),
                         ),
                         ft.Column([
                             ft.Text("Nexoryn", size=18, weight=ft.FontWeight.W_900, color="#FFFFFF"),
@@ -6885,14 +6912,14 @@ def main(page: ft.Page) -> None:
                                     bgcolor="#4F46E5",
                                     border_radius=18,
                                     alignment=ft.alignment.center,
-                                    content=ft.Icon(ft.Icons.PERSON_ROUNDED, color="#FFFFFF", size=20),
+                                    content=ft.Icon(ft.icons.PERSON_ROUNDED, color="#FFFFFF", size=20),
                                 ),
                                 ft.Column([
                                     sidebar_user_name,
                                     sidebar_user_role,
                                 ], spacing=0, expand=True),
                                 ft.IconButton(
-                                    ft.Icons.LOGOUT_ROUNDED,
+                                    ft.icons.LOGOUT_ROUNDED,
                                     icon_color="#EF4444",
                                     icon_size=22,
                                     tooltip="Cerrar Sesión",
@@ -7343,7 +7370,7 @@ def main(page: ft.Page) -> None:
             }
 
             delete_btn = ft.IconButton(
-                icon=ft.Icons.DELETE, 
+                icon=ft.icons.DELETE, 
                 icon_color=COLOR_ERROR, 
                 tooltip="Eliminar línea",
                 on_click=lambda e: _remove_line(e.control.parent)
@@ -7533,7 +7560,7 @@ def main(page: ft.Page) -> None:
                     ft.Container(height=20), # Header Spacer
                     ft.Row([
                         ft.Text("Nuevo Comprobante", size=20, weight=ft.FontWeight.BOLD),
-                        ft.IconButton(ft.Icons.CLOSE, on_click=close_form)
+                        ft.IconButton(ft.icons.CLOSE, on_click=close_form)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Row([field_fecha, field_vto, dropdown_tipo], spacing=10),
                     ft.Row([ft.Column([dropdown_entidad, field_saldo], spacing=2)], alignment=ft.MainAxisAlignment.START),
@@ -7554,7 +7581,7 @@ def main(page: ft.Page) -> None:
                     ft.Row([
                          ft.ElevatedButton(
                              "Agregar Línea", 
-                             icon=ft.Icons.ADD, 
+                             icon=ft.icons.ADD, 
                              on_click=_add_line, 
                              bgcolor=COLOR_ACCENT,
                              color="white",
@@ -7579,7 +7606,7 @@ def main(page: ft.Page) -> None:
                             _cancel_button("Cancelar", on_click=close_form),
                             ft.ElevatedButton(
                                 "Guardar" if edit_doc_id else "Crear Comprobante", 
-                                icon=ft.Icons.CHECK,
+                                icon=ft.icons.CHECK,
                                 on_click=_save,
                                 style=ft.ButtonStyle(
                                     shape=ft.RoundedRectangleBorder(radius=8),
@@ -7659,7 +7686,7 @@ def main(page: ft.Page) -> None:
                     nombre = current_user.get("nombre")
                     logout_logged = db.log_logout(reason, usuario=nombre, use_pool=False)
             except Exception as ex:
-                print(f"DEBUG: Error logging logout: {ex}")
+                pass # print(f"DEBUG: Error logging logout: {ex}")
             try:
                 db.close()
             except Exception:
@@ -7670,9 +7697,9 @@ def main(page: ft.Page) -> None:
                 pass
 
     atexit.register(lambda: _shutdown("salida_programa"))
-    page.on_window_event = None
-    page.on_close = None
-    page.on_disconnect = None
+    # page.on_window_event = None
+    # page.on_close = None
+    # page.on_disconnect = None
 
 
 

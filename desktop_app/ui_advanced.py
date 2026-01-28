@@ -184,10 +184,10 @@ def main(page: ft.Page) -> None:
             bgcolor=COLOR_SURFACE_2,
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.INFO_OUTLINE, color=COLOR_TEXT_MUTED),
+                    ft.Icon(ft.icons.INFO_OUTLINE, color=COLOR_TEXT_MUTED),
                     ft.Container(message_text, expand=1),
                     ft.IconButton(
-                        icon=ft.Icons.CLOSE,
+                        icon=ft.icons.CLOSE,
                         tooltip="Cerrar",
                         on_click=lambda e: hide_message(),
                     ),
@@ -331,7 +331,7 @@ def main(page: ft.Page) -> None:
         entity_detail = ft.Container(
             content=ft.Column(
                 [
-                    ft.Icon(getattr(ft.Icons, "PERSON_SEARCH_OUTLINED", ft.Icons.SEARCH), size=34, color=ft.Colors.BLUE_GREY_300),
+                    ft.Icon(getattr(ft.icons, "PERSON_SEARCH_OUTLINED", ft.icons.SEARCH), size=34, color=ft.Colors.BLUE_GREY_300),
                     ft.Text("Detalle de entidad", weight=ft.FontWeight.BOLD),
                     ft.Text("Seleccioná una fila o tocá el ícono de info.", size=12, color=COLOR_TEXT_MUTED),
                 ],
@@ -428,7 +428,7 @@ def main(page: ft.Page) -> None:
                 label="Detalle",
                 sortable=False,
                 renderer=lambda row: ft.IconButton(
-                    icon=ft.Icons.INFO_OUTLINE,
+                    icon=ft.icons.INFO_OUTLINE,
                     tooltip="Ver detalle",
                     on_click=lambda e, ent=row: update_entity_detail(ent),
                 ),
@@ -492,7 +492,7 @@ def main(page: ft.Page) -> None:
             alignment=ft.Alignment(0, 0),
             content=ft.Column(
                 [
-                    ft.Icon(getattr(ft.Icons, "CHECK_CIRCLE_OUTLINE", ft.Icons.CHECK_CIRCLE), size=34, color=ft.Colors.GREEN_400),
+                    ft.Icon(getattr(ft.icons, "CHECK_CIRCLE_OUTLINE", ft.icons.CHECK_CIRCLE), size=34, color=ft.Colors.GREEN_400),
                     ft.Text("Sin alertas", weight=ft.FontWeight.BOLD, color=COLOR_TEXT),
                     ft.Text("No hay artículos por debajo del mínimo.", size=12, color=COLOR_TEXT_MUTED),
                 ],
@@ -524,7 +524,7 @@ def main(page: ft.Page) -> None:
             buttons.append(
                 ft.ElevatedButton(
                     "Actualizar",
-                    icon=ft.Icons.REFRESH,
+                    icon=ft.icons.REFRESH,
                     bgcolor=COLOR_PRIMARY,
                     color=ft.Colors.WHITE,
                     on_click=lambda e: on_refresh(),
@@ -729,7 +729,7 @@ def main(page: ft.Page) -> None:
                     cancel_button("Cancelar", on_click=close_form),
                     ft.ElevatedButton(
                         "Crear",
-                        icon=ft.Icons.ADD,
+                        icon=ft.icons.ADD,
                         bgcolor=COLOR_PRIMARY,
                         color=ft.Colors.WHITE,
                         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
@@ -835,7 +835,7 @@ def main(page: ft.Page) -> None:
                     cancel_button("Cancelar", on_click=close_form),
                     ft.ElevatedButton(
                         "Crear",
-                        icon=ft.Icons.ADD,
+                        icon=ft.icons.ADD,
                         bgcolor=COLOR_PRIMARY,
                         color=ft.Colors.WHITE,
                         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=12)),
@@ -853,16 +853,16 @@ def main(page: ft.Page) -> None:
                     actions=[
                         ft.OutlinedButton(
                             "Nueva",
-                            icon=ft.Icons.ADD,
+                            icon=ft.icons.ADD,
                             on_click=open_new_entity,
                         )
                     ],
                 ),
                 ft.Row(
                     [
-                        metric_card("Total", entities_total_text, getattr(ft.Icons, "GROUP_OUTLINED", ft.Icons.GROUP)),
-                        metric_card("Clientes", entities_clientes_text, getattr(ft.Icons, "PERSON_OUTLINED", ft.Icons.PERSON)),
-                        metric_card("Proveedores", entities_proveedores_text, getattr(ft.Icons, "LOCAL_SHIPPING_OUTLINED", ft.Icons.LOCAL_SHIPPING)),
+                        metric_card("Total", entities_total_text, getattr(ft.icons, "GROUP_OUTLINED", ft.icons.GROUP)),
+                        metric_card("Clientes", entities_clientes_text, getattr(ft.icons, "PERSON_OUTLINED", ft.icons.PERSON)),
+                        metric_card("Proveedores", entities_proveedores_text, getattr(ft.icons, "LOCAL_SHIPPING_OUTLINED", ft.icons.LOCAL_SHIPPING)),
                     ],
                     spacing=12,
                 ),
@@ -895,16 +895,16 @@ def main(page: ft.Page) -> None:
                     actions=[
                         ft.OutlinedButton(
                             "Nuevo",
-                            icon=ft.Icons.ADD,
+                            icon=ft.icons.ADD,
                             on_click=open_new_article,
                         )
                     ],
                 ),
                 ft.Row(
                     [
-                        metric_card("Total", articulos_total_text, getattr(ft.Icons, "INVENTORY_2_OUTLINED", ft.Icons.INVENTORY_2)),
-                        metric_card("Activos", articulos_activos_text, getattr(ft.Icons, "CHECK_CIRCLE_OUTLINE", ft.Icons.CHECK_CIRCLE)),
-                        metric_card("Alertas stock", stock_alertas_text, getattr(ft.Icons, "WARNING_AMBER_OUTLINED", ft.Icons.WARNING_AMBER)),
+                        metric_card("Total", articulos_total_text, getattr(ft.icons, "INVENTORY_2_OUTLINED", ft.icons.INVENTORY_2)),
+                        metric_card("Activos", articulos_activos_text, getattr(ft.icons, "CHECK_CIRCLE_OUTLINE", ft.icons.CHECK_CIRCLE)),
+                        metric_card("Alertas stock", stock_alertas_text, getattr(ft.icons, "WARNING_AMBER_OUTLINED", ft.icons.WARNING_AMBER)),
                     ],
                     spacing=12,
                 ),
@@ -965,10 +965,10 @@ def main(page: ft.Page) -> None:
                 page.update()
                 backup_view_component.load_data()
 
-        ICON_ENTIDADES = getattr(ft.Icons, "GROUP", ft.Icons.DASHBOARD)
-        ICON_ARTICULOS = getattr(ft.Icons, "CATEGORY", ft.Icons.DASHBOARD)
-        ICON_STOCK = getattr(ft.Icons, "SHOW_CHART", ft.Icons.DASHBOARD)
-        ICON_BACKUP = getattr(ft.Icons, "BACKUP", ft.Icons.DASHBOARD)
+        ICON_ENTIDADES = getattr(ft.icons, "GROUP", ft.icons.DASHBOARD)
+        ICON_ARTICULOS = getattr(ft.icons, "CATEGORY", ft.icons.DASHBOARD)
+        ICON_STOCK = getattr(ft.icons, "SHOW_CHART", ft.icons.DASHBOARD)
+        ICON_BACKUP = getattr(ft.icons, "BACKUP", ft.icons.DASHBOARD)
         view_keys = ["entidades", "articulos", "stock", "backups"]
 
         navigation = ft.NavigationRail(
@@ -1006,7 +1006,7 @@ def main(page: ft.Page) -> None:
             elevation=0,
             actions=[
                 conn_badge,
-                ft.IconButton(icon=ft.Icons.REFRESH, tooltip="Actualizar", on_click=lambda e: refresh_current()),
+                ft.IconButton(icon=ft.icons.REFRESH, tooltip="Actualizar", on_click=lambda e: refresh_current()),
             ],
         )
 
@@ -1051,7 +1051,7 @@ def main(page: ft.Page) -> None:
             content=ft.Column(
                 [
                     ft.Container(
-                        content=ft.Icon(ft.Icons.SETTINGS_SUGGEST_ROUNDED, size=56, color=COLOR_PRIMARY),
+                        content=ft.Icon(ft.icons.SETTINGS_SUGGEST_ROUNDED, size=56, color=COLOR_PRIMARY),
                         bgcolor=f"{COLOR_PRIMARY}15",
                         padding=22,
                         border_radius=30,

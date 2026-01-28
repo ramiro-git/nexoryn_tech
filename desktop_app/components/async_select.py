@@ -139,7 +139,7 @@ class AsyncSelect(ft.Column):
                         no_wrap=True,
                     ),
                     ft.Icon(
-                        ft.Icons.ARROW_DROP_DOWN,
+                        ft.icons.ARROW_DROP_DOWN,
                         color="#475569",
                         size=24,
                     ),
@@ -325,7 +325,7 @@ class AsyncSelect(ft.Column):
             icon = self._trigger.content.controls[1]
             icon.size = 24
             icon.color = "#475569"
-            icon.icon = ft.Icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.Icons.ARROW_DROP_DOWN
+            icon.icon = ft.icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.icons.ARROW_DROP_DOWN
             try: self._trigger.update()
             except: pass
 
@@ -485,7 +485,7 @@ class AsyncSelect(ft.Column):
             border_radius=8,
             height=44,
             text_size=14,
-            prefix_icon=ft.Icons.SEARCH_ROUNDED,
+            prefix_icon=ft.icons.SEARCH_ROUNDED,
             autofocus=True,
         )
 
@@ -509,7 +509,7 @@ class AsyncSelect(ft.Column):
 
         self._error_row = ft.Row(
             [
-                ft.Icon(ft.Icons.ERROR_OUTLINE, color="#EF4444", size=16),
+                ft.Icon(ft.icons.ERROR_OUTLINE, color="#EF4444", size=16),
                 ft.Text("Error al cargar", size=13, color="#EF4444", expand=True),
                 ft.TextButton("Reintentar", on_click=self._on_retry),
             ],
@@ -544,7 +544,7 @@ class AsyncSelect(ft.Column):
                     content=ft.Column([
                         ft.Row([
                             ft.Text(self.label or "Seleccionar", size=18, weight=ft.FontWeight.BOLD, color="#1E293B"),
-                            ft.IconButton(ft.Icons.CLOSE_ROUNDED, icon_size=24, on_click=self._close_dialog)
+                            ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=24, on_click=self._close_dialog)
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         self._search_field,
                         ft.Divider(height=1, color="#F1F5F9"),
@@ -597,7 +597,7 @@ class AsyncSelect(ft.Column):
         return ft.Container(
             content=ft.Row([
                 ft.Text(option.get("label", ""), size=14, color="#1E293B", expand=True),
-                ft.Icon(ft.Icons.CHECK_ROUNDED, size=16, color=self.focused_border_color, visible=is_selected)
+                ft.Icon(ft.icons.CHECK_ROUNDED, size=16, color=self.focused_border_color, visible=is_selected)
             ]),
             padding=ft.padding.symmetric(horizontal=12, vertical=10),
             border_radius=8,

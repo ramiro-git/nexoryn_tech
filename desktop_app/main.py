@@ -7,13 +7,20 @@ import sys
 import flet as ft
 
 # Damp Flet AssertionError: content must be visible in DataTable
+# Damp Flet AssertionError: content must be visible in DataTable
 _original_before_update = ft.DataTable.before_update
 def _patched_before_update(self):
     try:
         if _original_before_update:
             _original_before_update(self)
-    except (Exception, AssertionError):
-        pass
+    except AssertionError as e:
+        if "content must be visible" in str(e):
+            pass
+        else:
+            raise
+    except Exception:
+        # Let other exceptions bubble up to avoid hiding regressions
+        raise
 ft.DataTable.before_update = _patched_before_update
 
 

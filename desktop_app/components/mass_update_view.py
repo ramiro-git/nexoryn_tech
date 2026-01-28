@@ -168,7 +168,7 @@ class MassUpdateView(ft.Container):
         # Buttons
         self.btn_preview = ft.ElevatedButton(
             "Generar Vista Previa",
-            icon=ft.Icons.PREVIEW_ROUNDED,
+            icon=ft.icons.PREVIEW_ROUNDED,
             on_click=self._run_preview,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=4),
@@ -178,7 +178,7 @@ class MassUpdateView(ft.Container):
 
         self.btn_apply = ft.ElevatedButton(
             "APLICAR CAMBIOS SELECCIONADOS",
-            icon=ft.Icons.SAVE_ROUNDED,
+            icon=ft.icons.SAVE_ROUNDED,
             bgcolor="#4F46E5",
             color="#FFFFFF",
             on_click=self._confirm_apply,
@@ -191,7 +191,7 @@ class MassUpdateView(ft.Container):
         
         self.btn_load_more = ft.TextButton(
             "Cargar más resultados...",
-            icon=ft.Icons.DOWNLOAD_ROUNDED,
+            icon=ft.icons.DOWNLOAD_ROUNDED,
             on_click=lambda _: self._load_next_batch(),
             visible=False,
         )
@@ -258,7 +258,7 @@ class MassUpdateView(ft.Container):
                                     ft.Row([
                                         ft.Text("1. Filtrar Artículos", weight=ft.FontWeight.W_600, color="#1E293B", size=16),
                                         ft.IconButton(
-                                            icon=ft.Icons.FILTER_ALT_OFF_ROUNDED,
+                                            icon=ft.icons.FILTER_ALT_OFF_ROUNDED,
                                             icon_color="#64748B",
                                             icon_size=20,
                                             tooltip="Resetear filtros",

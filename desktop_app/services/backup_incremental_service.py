@@ -42,6 +42,9 @@ class BackupIncrementalService:
         
         for d in [self.full_dir, self.differential_dir, self.incremental_dir]:
             d.mkdir(parents=True, exist_ok=True)
+
+        self.stats_dir = self.backup_dir / "stats"
+        self.stats_dir.mkdir(parents=True, exist_ok=True)
     
     def _get_db_config(self) -> Dict[str, str]:
         return {
@@ -70,28 +73,13 @@ class BackupIncrementalService:
             r"C:\Program Files\PostgreSQL\17\bin\pg_dump.exe",
             r"C:\Program Files\PostgreSQL\16\bin\pg_dump.exe",
             r"C:\Program Files\PostgreSQL\15\bin\pg_dump.exe",
+            r"C:\Program Files\PostgreSQL\14\bin\pg_dump.exe",
         ]
         for p in common_paths:
             if os.path.exists(p):
                 return p
         
         raise FileNotFoundError("pg_dump not found")
-    
-    def _get_psql_path(self) -> str:
-        path = shutil.which("psql")
-        if path:
-            return path
-        
-        common_paths = [
-            r"C:\Program Files\PostgreSQL\18\bin\psql.exe",
-            r"C:\Program Files\PostgreSQL\17\bin\psql.exe",
-            r"C:\Program Files\PostgreSQL\16\bin\psql.exe",
-        ]
-        for p in common_paths:
-            if os.path.exists(p):
-                return p
-        
-        raise FileNotFoundError("psql not found")
     
     def _calculate_checksum(self, file_path: Path) -> str:
         sha256_hash = hashlib.sha256()
@@ -100,16 +88,48 @@ class BackupIncrementalService:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
     
-    def _get_current_lsn(self) -> Tuple[str, str]:
-        query = "SELECT pg_current_wal_lsn(), pg_current_wal_flush_lsn()"
+    def _get_current_table_stats(self) -> Dict[str, int]:
+        """
+        Returns a dictionary {schema.table: total_modifications}
+        total_modifications = n_tup_ins + n_tup_upd + n_tup_del
+        """
+        query = """
+            SELECT schemaname, relname, n_tup_ins, n_tup_upd, n_tup_del
+            FROM pg_stat_user_tables
+        """
+        stats = {}
         with self.db.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
-                row = cur.fetchone()
-                lsn = str(row[0]) if row else "0/0"
-                flushed = str(row[1]) if len(row) > 1 else lsn
-                return lsn, flushed
-    
+                for row in cur.fetchall():
+                    schema, table = row[0], row[1]
+                    total_ops = (row[2] or 0) + (row[3] or 0) + (row[4] or 0)
+                    key = f"{schema}.{table}"
+                    stats[key] = total_ops
+        return stats
+
+    def _save_stats(self, backup_filename: str, stats: Dict[str, int]):
+        stats_file = self.stats_dir / f"{backup_filename}.json"
+        with open(stats_file, 'w') as f:
+            json.dump(stats, f)
+
+    def _load_stats(self, backup_filename: str) -> Dict[str, int]:
+        stats_file = self.stats_dir / f"{backup_filename}.json"
+        if not stats_file.exists():
+            return {}
+        with open(stats_file, 'r') as f:
+            return json.load(f)
+
+    def _get_changed_tables(self, base_stats: Dict[str, int], current_stats: Dict[str, int]) -> List[str]:
+        changed = []
+        for key, curr_val in current_stats.items():
+            prev_val = base_stats.get(key, -1)
+            # If table is new or ops count increased, it changed.
+            # Note: if postgres restarted stats, curr_val might be smaller, count as changed to be safe.
+            if prev_val == -1 or curr_val != prev_val:
+                changed.append(key)
+        return changed
+
     def _get_last_full_backup(self) -> Optional[BackupInfo]:
         query = """
         SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
@@ -123,97 +143,28 @@ class BackupIncrementalService:
             with conn.cursor() as cur:
                 cur.execute(query)
                 row = cur.fetchone()
-                if not row:
-                    return None
-                return BackupInfo(
-                    id=row[0],
-                    tipo=row[1],
-                    archivo=row[2],
-                    fecha_inicio=row[3],
-                    fecha_fin=row[4],
-                    tamano=row[5],
-                    checksum=row[6],
-                    estado=row[7],
-                    lsn_inicio=row[8],
-                    lsn_fin=row[9],
-                    backup_base_id=row[10]
-                )
-    
-    def _get_last_differential_backup(self, full_id: Optional[int] = None) -> Optional[BackupInfo]:
-        if full_id is None:
-            full = self._get_last_full_backup()
-            full_id = full.id if full else None
-        
-        if full_id is None:
-            return None
-        
+                if not row: return None
+                return BackupInfo(*row)
+
+    def _get_last_backup(self) -> Optional[BackupInfo]:
         query = """
         SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
                tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
         FROM seguridad.backup_manifest
-        WHERE tipo_backup = 'DIFERENCIAL' AND estado = 'COMPLETADO'
-          AND backup_base_id = %s
+        WHERE estado = 'COMPLETADO'
         ORDER BY fecha_inicio DESC
         LIMIT 1
         """
         with self.db.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (full_id,))
+                cur.execute(query)
                 row = cur.fetchone()
-                if not row:
-                    return None
-                return BackupInfo(
-                    id=row[0],
-                    tipo=row[1],
-                    archivo=row[2],
-                    fecha_inicio=row[3],
-                    fecha_fin=row[4],
-                    tamano=row[5],
-                    checksum=row[6],
-                    estado=row[7],
-                    lsn_inicio=row[8],
-                    lsn_fin=row[9],
-                    backup_base_id=row[10]
-                )
-    
-    def _get_last_incremental_backup(self, base_id: Optional[int] = None) -> Optional[BackupInfo]:
-        query = """
-        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
-               tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
-        FROM seguridad.backup_manifest
-        WHERE tipo_backup = 'INCREMENTAL' AND estado = 'COMPLETADO'
-        """
-        params: List[Any] = []
-        if base_id is not None:
-            query += " AND backup_base_id = %s"
-            params.append(base_id)
-        query += """
-        ORDER BY fecha_inicio DESC
-        LIMIT 1
-        """
-        with self.db.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, tuple(params))
-                row = cur.fetchone()
-                if not row:
-                    return None
-                return BackupInfo(
-                    id=row[0],
-                    tipo=row[1],
-                    archivo=row[2],
-                    fecha_inicio=row[3],
-                    fecha_fin=row[4],
-                    tamano=row[5],
-                    checksum=row[6],
-                    estado=row[7],
-                    lsn_inicio=row[8],
-                    lsn_fin=row[9],
-                    backup_base_id=row[10]
-                )
+                if not row: return None
+                return BackupInfo(*row)
     
     def _register_backup_manifest(self, tipo: str, archivo: Path, fecha_inicio: datetime,
                                  fecha_fin: datetime, tamano: int, checksum: str,
-                                 lsn_inicio: str, lsn_fin: str, backup_base_id: Optional[int] = None) -> int:
+                                 lsn_inicio: str = "0/0", lsn_fin: str = "0/0", backup_base_id: Optional[int] = None) -> int:
         query = """
         INSERT INTO seguridad.backup_manifest (
             tipo_backup, archivo_nombre, archivo_ruta, fecha_inicio, fecha_fin,
@@ -225,25 +176,14 @@ class BackupIncrementalService:
         with self.db.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (
-                    tipo,
-                    archivo.name,
-                    str(archivo),
-                    fecha_inicio,
-                    fecha_fin,
-                    tamano,
-                    checksum,
-                    lsn_inicio,
-                    lsn_fin,
-                    'COMPLETADO',
-                    True,
-                    backup_base_id,
-                    'Sistema'
+                    tipo, archivo.name, str(archivo), fecha_inicio, fecha_fin,
+                    tamano, checksum, lsn_inicio, lsn_fin, 'COMPLETADO', True,
+                    backup_base_id, 'Sistema'
                 ))
                 return cur.fetchone()[0]
     
     def _create_full_backup(self) -> str:
         logger.info("Iniciando backup FULL...")
-        
         config = self._get_db_config()
         pg_dump = self._get_pg_dump_path()
         
@@ -252,159 +192,146 @@ class BackupIncrementalService:
         filepath = self.full_dir / filename
         
         fecha_inicio = datetime.now()
-        lsn_inicio, _ = self._get_current_lsn()
         
         env = os.environ.copy()
         env["PGPASSWORD"] = config["password"]
         
         try:
+            # Capture stats BEFORE dump (or after? usually better to capture close to dump)
+            current_stats = self._get_current_table_stats()
+            
             cmd = [
                 pg_dump,
-                "-h", config["host"],
-                "-p", config["port"],
-                "-U", config["user"],
-                "-F", "c",
-                "-b",
-                "-v",
-                "-f", str(filepath),
+                "-h", config["host"], "-p", config["port"], "-U", config["user"],
+                "-F", "c", "-b", "-v", "-f", str(filepath),
                 config["name"]
             ]
             
-            logger.info(f"Ejecutando pg_dump: {filepath}")
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            logger.info(f"Ejecutando pg_dump FULL: {filepath}")
+            subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
             
             tamano = filepath.stat().st_size
             checksum = self._calculate_checksum(filepath)
             fecha_fin = datetime.now()
-            lsn_fin, _ = self._get_current_lsn()
             
-            backup_id = self._register_backup_manifest(
-                'FULL', filepath, fecha_inicio, fecha_fin, tamano, checksum,
-                lsn_inicio, lsn_fin
-            )
+            # Save stats associated with this backup
+            self._save_stats(filename, current_stats)
             
-            logger.info(f"Backup FULL completado: {filepath} ({tamano} bytes)")
-            logger.info(f"LSN range: {lsn_inicio} - {lsn_fin}")
-            
+            self._register_backup_manifest('FULL', filepath, fecha_inicio, fecha_fin, tamano, checksum)
             return str(filepath)
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error en backup FULL: {e}")
-            logger.error(f"stderr: {e.stderr}")
-            raise RuntimeError(f"Backup FULL fallido: {str(e)}")
-    
-    def _create_differential_backup(self, full_backup: BackupInfo) -> str:
-        logger.info("Iniciando backup DIFERENCIAL...")
+            logger.error(f"Error en backup FULL: {e.stderr}")
+            raise RuntimeError(f"Backup FULL fallido: {e.stderr}")
+
+    def _dump_subset(self, filepath: Path, tables: List[str], config: Dict[str, str], pg_dump: str, env: Dict):
+        if not tables:
+            # Create an empty dummy file or a minimal dump
+            # pg_dump of a non-existent table? Or just metadata?
+            # Better: create a valid custom archive with no tables?
+            # pg_dump -F c --schema-only --exclude-schema=* ? No that's metadata.
+            # Logical incremental for "Usage" usually implies we just skip if empty?
+            # But the user expects a file.
+            pass
+
+        cmd = [
+            pg_dump,
+            "-h", config["host"], "-p", config["port"], "-U", config["user"],
+            "-F", "c", "-v", "-f", str(filepath)
+        ]
+
+        if not tables:
+             logger.debug("No detected changes. Creating empty valid archive (metadata only).")
+             cmd.append("--schema-only")
+        else:
+            cmd.append("--data-only")
+            for t in tables:
+                cmd.extend(["-t", t])
         
+        # Database name must be the last argument
+        cmd.append(config["name"])
+
+        subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+
+    def _create_partial_backup(self, tipo: str, base_backup: BackupInfo) -> str:
+        logger.info(f"Iniciando backup {tipo}...")
         config = self._get_db_config()
         pg_dump = self._get_pg_dump_path()
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"dif_{timestamp}.backup"
-        filepath = self.differential_dir / filename
+        prefix = "dif" if tipo == 'DIFERENCIAL' else "inc"
+        subdir = self.differential_dir if tipo == 'DIFERENCIAL' else self.incremental_dir
+        filename = f"{prefix}_{timestamp}.backup"
+        filepath = subdir / filename
         
         fecha_inicio = datetime.now()
-        lsn_inicio = full_backup.lsn_fin or "0/0"
-        
         env = os.environ.copy()
         env["PGPASSWORD"] = config["password"]
         
         try:
+            current_stats = self._get_current_table_stats()
+            base_stats = self._load_stats(Path(base_backup.archivo).name)
+            
+            changed_tables = self._get_changed_tables(base_stats, current_stats)
+            logger.info(f"Tablas modificadas: {len(changed_tables)}")
+            
+            # Logic: If tables changed, dump them.
+            # If no tables changed, we still produce an archive (maybe tiny) to maintain chain?
+            # Yes, pg_dump without tables dumps nothing if using -t?
+            # Actually, we need to construct the command carefully.
+            
             cmd = [
                 pg_dump,
-                "-h", config["host"],
-                "-p", config["port"],
-                "-U", config["user"],
-                "-F", "c",
-                "-b",
-                "-v",
-                "-f", str(filepath),
-                config["name"]
+                "-h", config["host"], "-p", config["port"], "-U", config["user"],
+                "-F", "c", "-v", "-f", str(filepath)
             ]
             
-            logger.info(f"Ejecutando backup DIFERENCIAL desde LSN: {lsn_inicio}")
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            if not changed_tables:
+                 logger.debug("No detection changes. Force dumping nothing (empty archive).")
+                 cmd.append("--schema-only")
+                 cmd.append("--exclude-schema=*")
+            else:
+                cmd.append("--data-only")
+                for t in changed_tables:
+                    cmd.extend(["-t", t])
+            
+            # Database name must be the last argument
+            cmd.append(config["name"])
+            
+            subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
             
             tamano = filepath.stat().st_size
             checksum = self._calculate_checksum(filepath)
             fecha_fin = datetime.now()
-            lsn_fin, _ = self._get_current_lsn()
             
-            backup_id = self._register_backup_manifest(
-                'DIFERENCIAL', filepath, fecha_inicio, fecha_fin, tamano, checksum,
-                lsn_inicio, lsn_fin, full_backup.id
-            )
-            
-            logger.info(f"Backup DIFERENCIAL completado: {filepath} ({tamano} bytes)")
-            logger.info(f"LSN range: {lsn_inicio} - {lsn_fin}")
-            
+            self._save_stats(filename, current_stats)
+            self._register_backup_manifest(tipo, filepath, fecha_inicio, fecha_fin, tamano, checksum, backup_base_id=base_backup.id)
             return str(filepath)
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error en backup DIFERENCIAL: {e}")
-            raise RuntimeError(f"Backup DIFERENCIAL fallido: {str(e)}")
-    
-    def _create_incremental_backup(self, base_backup: BackupInfo) -> str:
-        logger.info("Iniciando backup INCREMENTAL...")
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"inc_{timestamp}.backup"
-        filepath = self.incremental_dir / filename
-        
-        fecha_inicio = datetime.now()
-        lsn_inicio = base_backup.lsn_fin or "0/0"
-        
-        try:
-            with open(filepath, 'w') as f:
-                f.write(f"-- Incremental Backup\n")
-                f.write(f"-- LSN Start: {lsn_inicio}\n")
-                f.write(f"-- Date: {datetime.now().isoformat()}\n")
-            
-            tamano = filepath.stat().st_size
-            checksum = self._calculate_checksum(filepath)
-            fecha_fin = datetime.now()
-            lsn_fin, _ = self._get_current_lsn()
-            
-            backup_id = self._register_backup_manifest(
-                'INCREMENTAL', filepath, fecha_inicio, fecha_fin, tamano, checksum,
-                lsn_inicio, lsn_fin, base_backup.id
-            )
-            
-            logger.info(f"Backup INCREMENTAL completado: {filepath}")
-            
-            return str(filepath)
-            
-        except Exception as e:
-            logger.error(f"Error en backup INCREMENTAL: {e}")
-            raise RuntimeError(f"Backup INCREMENTAL fallido: {str(e)}")
-    
+            logger.error(f"Error en backup {tipo}: {e.stderr}")
+            raise RuntimeError(f"Backup {tipo} fallido: {e.stderr}")
+
     def create_backup(self, backup_type: str) -> str:
-        if backup_type not in ['FULL', 'DIFERENCIAL', 'INCREMENTAL', 'MANUAL']:
-            raise ValueError(f"Tipo de backup inválido: {backup_type}")
-        
         if backup_type in ['FULL', 'MANUAL']:
             return self._create_full_backup()
         
         elif backup_type == 'DIFERENCIAL':
             full_backup = self._get_last_full_backup()
             if not full_backup:
-                logger.warning("No existe backup FULL previo, creando uno nuevo...")
-                self._create_full_backup()
-                full_backup = self._get_last_full_backup()
-            return self._create_differential_backup(full_backup)
+                return self._create_full_backup()
+            return self._create_partial_backup('DIFERENCIAL', full_backup)
         
         elif backup_type == 'INCREMENTAL':
-            last_backup = self._get_last_incremental_backup()
-            if not last_backup:
-                logger.warning("No existe backup INCREMENTAL previo")
-                full_backup = self._get_last_full_backup()
-                if not full_backup:
-                    logger.warning("No existe backup FULL previo, creando uno...")
-                    self._create_full_backup()
-                    full_backup = self._get_last_full_backup()
-                last_backup = full_backup
-            return self._create_incremental_backup(last_backup)
-    
+             # Base is the LAST backup (any type)
+            last = self._get_last_backup()
+            if not last:
+                return self._create_full_backup()
+            return self._create_partial_backup('INCREMENTAL', last)
+        
+        raise ValueError("Invalid backup type")
+
+    # Keep helpers for UI
     def get_backup_info(self, backup_id: int) -> Optional[BackupInfo]:
         query = """
         SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
@@ -416,22 +343,9 @@ class BackupIncrementalService:
             with conn.cursor() as cur:
                 cur.execute(query, (backup_id,))
                 row = cur.fetchone()
-                if not row:
-                    return None
-                return BackupInfo(
-                    id=row[0],
-                    tipo=row[1],
-                    archivo=row[2],
-                    fecha_inicio=row[3],
-                    fecha_fin=row[4],
-                    tamano=row[5],
-                    checksum=row[6],
-                    estado=row[7],
-                    lsn_inicio=row[8],
-                    lsn_fin=row[9],
-                    backup_base_id=row[10]
-                )
-    
+                if not row: return None
+                return BackupInfo(*row)
+
     def list_backups(self, tipo: Optional[str] = None, limit: int = 50) -> List[Dict]:
         query = """
         SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
@@ -440,11 +354,9 @@ class BackupIncrementalService:
         WHERE estado = 'COMPLETADO'
         """
         params = []
-        
         if tipo:
             query += " AND tipo_backup = %s"
             params.append(tipo)
-        
         query += " ORDER BY fecha_inicio DESC LIMIT %s"
         params.append(limit)
         
@@ -453,48 +365,48 @@ class BackupIncrementalService:
                 cur.execute(query, params)
                 rows = cur.fetchall()
                 return [{
-                    'id': r[0],
-                    'tipo': r[1],
-                    'archivo': r[2],
-                    'fecha_inicio': r[3],
-                    'fecha_fin': r[4],
-                    'tamano': r[5],
-                    'checksum': r[6],
-                    'estado': r[7],
-                    'nube_subido': r[8],
-                    'backup_base_id': r[9]
+                    'id': r[0], 'tipo': r[1], 'archivo': r[2], 'fecha_inicio': r[3],
+                    'fecha_fin': r[4], 'tamano': r[5], 'checksum': r[6],
+                    'estado': r[7], 'nube_subido': r[8], 'backup_base_id': r[9]
                 } for r in rows]
-    
+
     def get_backup_chain(self, target_date: datetime) -> Optional[List[BackupInfo]]:
-        query = """
-        SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
-               tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
-        FROM seguridad.backup_manifest
-        WHERE estado = 'COMPLETADO' AND fecha_inicio <= %s
-        ORDER BY tipo_backup DESC, fecha_inicio DESC
+        # Simplified chain logic: Find last FULL before target_date, then detected DIF/INCs.
+        # Note: If we use Inc-on-Inc, we need the whole chain from Full.
+        
+        # 1. Get closest FULL before target
+        query_full = """
+            SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
+                   tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
+            FROM seguridad.backup_manifest
+            WHERE tipo_backup = 'FULL' AND estado = 'COMPLETADO' AND fecha_inicio <= %s
+            ORDER BY fecha_inicio DESC LIMIT 1
         """
         
         with self.db.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (target_date,))
+                cur.execute(query_full, (target_date,))
+                row = cur.fetchone()
+                if not row: return None
+                full = BackupInfo(*row)
+                
+                # 2. Get all subsequent backups until target date that link back to this full (transitively)
+                # But since we do strict chaining layout (Inc depends on Last), we just grab range.
+                # Actually, standard logic: Full + Last Dif + Subsequent Incs.
+                # My implementation allows Inc on Inc.
+                # So we just get ALL backups between Full and Target.
+                
+                query_rest = """
+                    SELECT id, tipo_backup, archivo_ruta, fecha_inicio, fecha_fin,
+                           tamano_bytes, checksum_sha256, estado, lsn_inicio, lsn_fin, backup_base_id
+                    FROM seguridad.backup_manifest
+                    WHERE estado = 'COMPLETADO' 
+                      AND fecha_inicio > %s 
+                      AND fecha_inicio <= %s
+                    ORDER BY fecha_inicio ASC
+                """
+                cur.execute(query_rest, (full.fecha_inicio, target_date))
                 rows = cur.fetchall()
-                
-                backups = [BackupInfo(
-                    id=r[0], tipo=r[1], archivo=r[2], fecha_inicio=r[3],
-                    fecha_fin=r[4], tamano=r[5], checksum=r[6], estado=r[7],
-                    lsn_inicio=r[8], lsn_fin=r[9], backup_base_id=r[10]
-                ) for r in rows]
-                
-                full = next((b for b in backups if b.tipo == 'FULL'), None)
-                if not full:
-                    return None
-                
-                dif = next((b for b in backups if b.tipo == 'DIFERENCIAL' and b.fecha_inicio <= target_date), None)
-                incs = [b for b in backups if b.tipo == 'INCREMENTAL' and b.fecha_inicio <= target_date]
-                
                 chain = [full]
-                if dif:
-                    chain.append(dif)
-                chain.extend(sorted(incs, key=lambda x: x.fecha_inicio))
-                
+                chain.extend([BackupInfo(*r) for r in rows])
                 return chain

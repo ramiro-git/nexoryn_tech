@@ -32,7 +32,7 @@ class DashboardView(ft.Container):
         self.sections_column = ft.Column(spacing=15, expand=True)
         self.last_updated_text = ft.Text("Actualizando...", size=12, color=self.COLOR_TEXT_MUTED)
         self.refresh_button = ft.IconButton(
-            ft.Icons.REFRESH_ROUNDED, 
+            ft.icons.REFRESH_ROUNDED, 
             tooltip="Actualizar ahora",
             on_click=lambda _: self.load_data()
         )
@@ -108,7 +108,7 @@ class DashboardView(ft.Container):
                 ft.Column([
                     ft.Text("Tablero de Control", size=24, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
                     ft.Row([
-                        ft.Icon(ft.Icons.PERSON_ROUNDED, size=14, color=self.COLOR_TEXT_MUTED),
+                        ft.Icon(ft.icons.PERSON_ROUNDED, size=14, color=self.COLOR_TEXT_MUTED),
                         ft.Text(f"Rol: {self.role}", size=13, color=self.COLOR_TEXT_MUTED, weight=ft.FontWeight.W_500),
                     ], spacing=5),
                 ], spacing=2),
@@ -139,10 +139,10 @@ class DashboardView(ft.Container):
         r_pend = self.stats.get("operativas", {}).get("remitos_pend", 0)
         
         self.kpi_row.controls.extend([
-            self._kpi_card("Ventas Hoy", self._format_number(v_hoy, 2, "$"), ft.Icons.ATTACH_MONEY_ROUNDED, self.COLOR_SUCCESS, f"{v_cant} oper."),
-            self._kpi_card("Stock Crítico", str(s_bajo), ft.Icons.INVENTORY_2_ROUNDED, self.COLOR_WARNING if s_bajo > 0 else self.COLOR_INFO, "Requiere acción" if s_bajo > 0 else "Al día"),
-            self._kpi_card("Remitos Pend.", str(r_pend), ft.Icons.LOCAL_SHIPPING_ROUNDED, self.COLOR_PRIMARY, "Por entregar"),
-            self._kpi_card("Docs Hoy", str(self.stats.get("operativas", {}).get("mis_operaciones_hoy", 0)), ft.Icons.DESCRIPTION_ROUNDED, self.COLOR_INFO, "Mis registros")
+            self._kpi_card("Ventas Hoy", self._format_number(v_hoy, 2, "$"), ft.icons.ATTACH_MONEY_ROUNDED, self.COLOR_SUCCESS, f"{v_cant} oper."),
+            self._kpi_card("Stock Crítico", str(s_bajo), ft.icons.INVENTORY_2_ROUNDED, self.COLOR_WARNING if s_bajo > 0 else self.COLOR_INFO, "Requiere acción" if s_bajo > 0 else "Al día"),
+            self._kpi_card("Remitos Pend.", str(r_pend), ft.icons.LOCAL_SHIPPING_ROUNDED, self.COLOR_PRIMARY, "Por entregar"),
+            self._kpi_card("Docs Hoy", str(self.stats.get("operativas", {}).get("mis_operaciones_hoy", 0)), ft.icons.DESCRIPTION_ROUNDED, self.COLOR_INFO, "Mis registros")
         ])
 
         # 2. Category Sections
@@ -150,22 +150,22 @@ class DashboardView(ft.Container):
         
         # Ventas Section
         self.sections_column.controls.append(
-            self._section_container("VENTAS", ft.Icons.SHOPPING_CART_ROUNDED, self._build_ventas_section(), "documentos")
+            self._section_container("VENTAS", ft.icons.SHOPPING_CART_ROUNDED, self._build_ventas_section(), "documentos")
         )
 
         # Operativa Section
-        chart_icon = getattr(ft.Icons, "SHOW_CHART_ROUNDED", None)
+        chart_icon = getattr(ft.icons, "SHOW_CHART_ROUNDED", None)
         if not chart_icon:
-            chart_icon = getattr(ft.Icons, "SHOW_CHART", None)
+            chart_icon = getattr(ft.icons, "SHOW_CHART", None)
         if not chart_icon:
-            chart_icon = ft.Icons.DESCRIPTION_ROUNDED
+            chart_icon = ft.icons.DESCRIPTION_ROUNDED
         self.sections_column.controls.append(
             self._section_container("OPERATIVA Y MOVIMIENTOS", chart_icon, self._build_operativa_section(), "movimientos")
         )
         
         # Stock Section
         self.sections_column.controls.append(
-            self._section_container("STOCK e INVENTARIO", ft.Icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
+            self._section_container("STOCK e INVENTARIO", ft.icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
         )
         
         # Analítica de Productos (ADMIN/GERENTE)
@@ -174,24 +174,24 @@ class DashboardView(ft.Container):
             analitica_content = self._build_analitica_section()
             if analitica_content:
                 self.sections_column.controls.append(
-                    self._section_container("ANALÍTICA DE PRODUCTOS", ft.Icons.ANALYTICS_ROUNDED, analitica_content, "articulos")
+                    self._section_container("ANALÍTICA DE PRODUCTOS", ft.icons.ANALYTICS_ROUNDED, analitica_content, "articulos")
                 )
         
         # Entidades Section
         self.sections_column.controls.append(
-            self._section_container("CLIENTES y PROVEEDORES", ft.Icons.PEOPLE_ROUNDED, self._build_entidades_section(), "entidades")
+            self._section_container("CLIENTES y PROVEEDORES", ft.icons.PEOPLE_ROUNDED, self._build_entidades_section(), "entidades")
         )
         
         # Financial Section (Gerente/Admin)
         if self.role in ("ADMIN", "GERENTE") and "finanzas" in self.stats:
             self.sections_column.controls.append(
-                self._section_container("FINANZAS Y CAJA", ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, self._build_finanzas_section(), "pagos")
+                self._section_container("FINANZAS Y CAJA", ft.icons.ACCOUNT_BALANCE_WALLET_ROUNDED, self._build_finanzas_section(), "pagos")
             )
             
         # System Section (Admin only)
         if self.role == "ADMIN" and "sistema" in self.stats:
             self.sections_column.controls.append(
-                self._section_container("SISTEMA y SEGURIDAD", ft.Icons.SECURITY_ROUNDED, self._build_sistema_section(), "config")
+                self._section_container("SISTEMA y SEGURIDAD", ft.icons.SECURITY_ROUNDED, self._build_sistema_section(), "config")
             )
 
     def _kpi_card(self, title: str, value: str, icon: str, color: str, subtitle: str) -> ft.Container:
@@ -229,7 +229,7 @@ class DashboardView(ft.Container):
                     ft.Container(expand=True),
                     ft.TextButton(
                         "Ver detalles",
-                        icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                        icon=ft.icons.ARROW_FORWARD_ROUNDED,
                         icon_color=self.COLOR_PRIMARY,
                         style=ft.ButtonStyle(color=self.COLOR_PRIMARY),
                         on_click=lambda e: self.on_navigate(view_key) if self.on_navigate and view_key else None

@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import unicodedata
+from decimal import Decimal
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -69,12 +70,34 @@ class Database:
             pool_min = 1
         if pool_max < pool_min:
             pool_max = pool_min
+        
+        self.pool_min = pool_min
+        self.pool_max = pool_max
         self.pool = ConnectionPool(conninfo=dsn, min_size=pool_min, max_size=pool_max)
         self.current_user_id: Optional[int] = None
         self.current_ip: Optional[str] = None
         self.is_closing = False
         self._dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._dashboard_cache_lock = threading.RLock()
+
+    def close_pool(self) -> None:
+        """Close the connection pool temporarily."""
+        if self.pool:
+            try:
+                self.pool.close()
+            except Exception:
+                pass
+            self.pool = None
+
+    def reconnect(self) -> None:
+        """Reinitialize the connection pool."""
+        if self.pool:
+            return
+        self.pool = ConnectionPool(
+            conninfo=self.dsn, 
+            min_size=self.pool_min, 
+            max_size=self.pool_max
+        )
 
     def set_context(self, user_id: Optional[int], ip: Optional[str] = None) -> None:
         self.current_user_id = user_id
@@ -3936,13 +3959,8 @@ class Database:
 
     def fetch_movimientos_stock(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 80, offset: int = 0) -> List[Dict[str, Any]]:
         # Ensure view is updated (to support new traceability columns)
-        try:
-            with self.pool.connection() as conn:
-                with conn.cursor() as vcur:
-                    vcur.execute(f"CREATE OR REPLACE VIEW app.v_movimientos_full AS {self._movimientos_base_query()}")
-                    conn.commit()
-        except Exception:
-            pass
+        # DDL Removed: View updates should be handled by migration scripts, not per-query.
+        pass
 
         filters = ["1=1"]
         params = []
@@ -4321,10 +4339,20 @@ class Database:
                 payment_id = res.get("id") if isinstance(res, dict) else res[0]
 
                 # 2. Check balance and update status if fully paid
-                cur.execute("SELECT total FROM app.documento WHERE id = %s", (id_documento,))
+                cur.execute("SELECT total, id_entidad_comercial, numero_serie FROM app.documento WHERE id = %s", (id_documento,))
                 doc_res = cur.fetchone()
+                doc_total = 0.0
+                doc_entidad = None
+                doc_numero = None
                 if doc_res:
-                    doc_total = float(doc_res.get("total") if isinstance(doc_res, dict) else doc_res[0])
+                    if isinstance(doc_res, dict):
+                        doc_total = float(doc_res.get("total") if doc_res.get("total") is not None else 0)
+                        doc_entidad = doc_res.get("id_entidad_comercial")
+                        doc_numero = doc_res.get("numero_serie")
+                    else:
+                        doc_total = float(doc_res[0] if doc_res[0] is not None else 0)
+                        doc_entidad = doc_res[1]
+                        doc_numero = doc_res[2]
                     
                     cur.execute("SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE id_documento = %s", (id_documento,))
                     pay_res = cur.fetchone()
@@ -4335,6 +4363,29 @@ class Database:
                         cur.execute("UPDATE app.documento SET estado = 'PAGADO' WHERE id = %s", (id_documento,))
                         self._ensure_remito_for_document(cur, id_documento)
 
+                if doc_entidad:
+                    mov_concept = f"Pago doc {doc_numero or id_documento}"
+                    mov_obs = (observacion or "").strip()
+                    if referencia:
+                        if mov_obs:
+                            mov_obs = f"{mov_obs} Ref: {referencia}"
+                        else:
+                            mov_obs = f"Ref: {referencia}"
+                    if not mov_obs:
+                        mov_obs = None
+                    cur.execute(
+                        "SELECT app.registrar_movimiento_cc(%s::bigint, %s::varchar(20), %s::varchar(150), %s::numeric, %s::bigint, %s::bigint, %s::text, %s::bigint)",
+                        (
+                            int(doc_entidad),
+                            "CREDITO",
+                            mov_concept[:150],
+                            Decimal(str(monto)),
+                            int(id_documento),
+                            int(payment_id),
+                            mov_obs,
+                            int(self.current_user_id) if self.current_user_id is not None else None
+                        )
+                    )
                 conn.commit()
                 return payment_id
 
@@ -4550,18 +4601,18 @@ class Database:
         with self._transaction() as cur:
             cur.execute(
                 """
-                WITH updated AS (
-                    UPDATE app.documento d
-                    SET estado = 'CONFIRMADO'
-                    FROM ref.tipo_documento td
-                    WHERE d.id = %s
-                      AND d.estado = 'BORRADOR'
-                      AND td.id = d.id_tipo_documento
-                    RETURNING d.id, d.id_deposito, d.id_entidad_comercial, d.direccion_entrega, d.observacion, d.numero_serie,
-                              td.clase, td.afecta_stock
-                )
-                SELECT id, id_deposito, id_entidad_comercial, direccion_entrega, observacion, numero_serie, clase, afecta_stock FROM updated
-                """,
+                    WITH updated AS (
+                        UPDATE app.documento d
+                        SET estado = 'CONFIRMADO'
+                        FROM ref.tipo_documento td
+                        WHERE d.id = %s
+                          AND d.estado = 'BORRADOR'
+                          AND td.id = d.id_tipo_documento
+                        RETURNING d.id, d.id_deposito, d.id_entidad_comercial, d.direccion_entrega, d.observacion, d.numero_serie,
+                                  td.clase, td.afecta_stock, d.total, d.sena
+                    )
+                    SELECT id, id_deposito, id_entidad_comercial, direccion_entrega, observacion, numero_serie, clase, afecta_stock, total, sena FROM updated
+                    """,
                 (doc_id,),
             )
             doc = cur.fetchone()
@@ -4577,6 +4628,8 @@ class Database:
                 doc_numero = doc.get("numero_serie")
                 clase = doc["clase"]
                 afecta_stk = doc["afecta_stock"]
+                doc_total = doc.get("total")
+                doc_sena = doc.get("sena")
             else:
                 (
                     doc_id,
@@ -4587,7 +4640,12 @@ class Database:
                     doc_numero,
                     clase,
                     afecta_stk,
+                    doc_total,
+                    doc_sena,
                 ) = doc
+
+            doc_total = Decimal(str(doc_total or 0))
+            doc_sena = Decimal(str(doc_sena or 0))
 
             if afecta_stk:
                 id_tipo_mov = 2 if clase == "VENTA" else 1
@@ -4600,6 +4658,54 @@ class Database:
                     """,
                     (id_tipo_mov, depo_id, doc_id, clase, self.current_user_id, doc_id),
                 )
+
+            if clase == "VENTA" and entidad_id:
+                concepto_debito = f"{clase} {doc_numero or doc_id}"
+                observacion_debito = (observacion or "").strip() or None
+                if doc_total != 0:
+                    cur.execute(
+                        "SELECT app.registrar_movimiento_cc(%s::bigint, %s::varchar(20), %s::varchar(150), %s::numeric, %s::bigint, %s::bigint, %s::text, %s::bigint)",
+                        (
+                            int(entidad_id),
+                            "DEBITO",
+                            concepto_debito[:150],
+                            doc_total,
+                            int(doc_id),
+                            None,
+                            observacion_debito,
+                            int(self.current_user_id) if self.current_user_id is not None else None
+                        ),
+                    )
+                if doc_sena > 0:
+                    cur.execute(
+                        "SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE id_documento = %s",
+                        (doc_id,),
+                    )
+                    pagos_row = cur.fetchone()
+                    pagos_val = None
+                    if isinstance(pagos_row, (tuple, list)):
+                        pagos_val = pagos_row[0]
+                    else:
+                        pagos_val = pagos_row
+                    pagos_existentes = Decimal(str(pagos_val if pagos_val is not None else 0))
+                    credito_sena = doc_sena - pagos_existentes
+                    if credito_sena > 0:
+                        concepto_sena = f"Seña {doc_numero or doc_id}"
+                        observacion_sena = f"Seña del comprobante {doc_numero or doc_id}"
+                        cur.execute(
+                            "SELECT app.registrar_movimiento_cc(%s::bigint, %s::varchar(20), %s::varchar(150), %s::numeric, %s::bigint, %s::bigint, %s::text, %s::bigint)",
+                            (
+                                int(entidad_id),
+                                "CREDITO",
+                                concepto_sena[:150],
+                                credito_sena,
+                                int(doc_id),
+                                None,
+                                observacion_sena,
+                                int(self.current_user_id) if self.current_user_id is not None else None
+                            ),
+                        )
+
             if clase == "VENTA":
                 self._ensure_remito_for_document(
                     cur,
@@ -5317,14 +5423,16 @@ class Database:
             with conn.cursor() as cur:
                 self._setup_session(cur)
                 
-                # Insertar el pago
-                # Nota: id_documento puede ser NULL para pagos a cuenta
-                # Si la restricción actual no lo permite, registramos solo el movimiento
+        # Insertar el pago
+                cur.execute(pago_query, (id_forma_pago, monto, referencia, observacion))
+                res_pago = cur.fetchone()
+                id_pago = res_pago[0] if res_pago else None
                 
                 # Registrar movimiento de cuenta corriente como CREDITO (reduce deuda)
+                # Se pasa id_pago al movimiento para conciliación
                 cur.execute(
                     "SELECT app.registrar_movimiento_cc(%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (id_entidad, 'CREDITO', concepto, monto, None, None, 
+                    (id_entidad, 'CREDITO', concepto, monto, None, id_pago, 
                      f"{observacion or ''} Ref: {referencia or 'N/A'}".strip(), 
                      self.current_user_id)
                 )
@@ -5333,7 +5441,7 @@ class Database:
                 
                 conn.commit()
                 self.log_activity("CUENTA_CORRIENTE", "PAGO_RECIBIDO", id_entidad, 
-                                  detalle={"monto": monto, "forma_pago": id_forma_pago})
+                                  detalle={"monto": monto, "forma_pago": id_forma_pago, "id_pago": id_pago})
                 return mov_id
 
     def ajustar_saldo_cc(

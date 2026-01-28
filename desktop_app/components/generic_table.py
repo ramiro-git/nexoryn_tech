@@ -27,13 +27,13 @@ MassDeleteCallback = Callable[[List[Any]], None]
 
 def _expander(label: str, content: ft.Control) -> ft.Control:
     is_open = {"value": False}
-    chevron = ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=20, color="#64748B")
+    chevron = ft.Icon(ft.icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=20, color="#64748B")
     body = ft.Container(content=content, visible=False, padding=ft.padding.only(top=15, bottom=5))
 
     def toggle(_: Any) -> None:
         is_open["value"] = not is_open["value"]
         body.visible = is_open["value"]
-        chevron.icon = ft.Icons.KEYBOARD_ARROW_UP_ROUNDED if is_open["value"] else ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED
+        chevron.icon = ft.icons.KEYBOARD_ARROW_UP_ROUNDED if is_open["value"] else ft.icons.KEYBOARD_ARROW_DOWN_ROUNDED
         header.bgcolor = "#F8FAFC" if not is_open["value"] else "#FFFFFF"
         header.update()
         body.update()
@@ -291,17 +291,17 @@ class GenericTable:
         if self.simple_filter_dropdown:
             _style_input(self.simple_filter_dropdown)
         self.export_button = ft.IconButton(
-            icon=ft.Icons.FILE_DOWNLOAD_ROUNDED,
+            icon=ft.icons.FILE_DOWNLOAD_ROUNDED,
             tooltip="Exportar datos",
             on_click=lambda e: self._open_export_dialog(),
         )
         self.reset_button = ft.IconButton(
-            icon=ft.Icons.REPLAY,
+            icon=ft.icons.REPLAY,
             tooltip="Reiniciar filtros",
             on_click=lambda e: self._reset_filters(),
         )
         self.refresh_button = ft.IconButton(
-            icon=ft.Icons.REFRESH_ROUNDED,
+            icon=ft.icons.REFRESH_ROUNDED,
             tooltip="Actualizar",
             on_click=lambda e: self.refresh(),
         )
@@ -343,7 +343,7 @@ class GenericTable:
         )
         self.mass_edit_button = ft.ElevatedButton(
             "Aplicar Cambios",
-            icon=ft.Icons.AUTO_FIX_HIGH_ROUNDED,
+            icon=ft.icons.AUTO_FIX_HIGH_ROUNDED,
             bgcolor="#6366F1",
             color="#FFFFFF",
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -351,7 +351,7 @@ class GenericTable:
         )
         self.mass_delete_button = ft.ElevatedButton(
             "Eliminar Seleccionados",
-            icon=ft.Icons.DELETE_SWEEP_ROUNDED,
+            icon=ft.icons.DELETE_SWEEP_ROUNDED,
             bgcolor="#EF4444",
             color="#FFFFFF",
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -359,7 +359,7 @@ class GenericTable:
         )
         self.mass_activate_button = ft.ElevatedButton(
             "Activar Seleccionados",
-            icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
+            icon=ft.icons.CHECK_CIRCLE_ROUNDED,
             bgcolor="#10B981",
             color="#FFFFFF",
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -367,7 +367,7 @@ class GenericTable:
         )
         self.mass_deactivate_button = ft.ElevatedButton(
             "Desactivar Seleccionados",
-            icon=ft.Icons.DO_NOT_DISTURB_ON_ROUNDED,
+            icon=ft.icons.DO_NOT_DISTURB_ON_ROUNDED,
             bgcolor="#EA580C",
             color="#FFFFFF",
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -395,12 +395,12 @@ class GenericTable:
         _maybe_set(self.page_size_dropdown, "on_change", lambda e: self._on_page_size_change(e.control.value))
         _style_input(self.page_size_dropdown)
         self.first_button = ft.IconButton(
-            icon=ft.Icons.FIRST_PAGE,
+            icon=ft.icons.FIRST_PAGE,
             tooltip="Primera página",
             on_click=lambda e: self._goto_page(1),
         )
         self.prev_button = ft.IconButton(
-            icon=ft.Icons.ARROW_BACK,
+            icon=ft.icons.ARROW_BACK,
             tooltip="Página anterior",
             on_click=lambda e: self._goto_page(self.page - 1),
         )
@@ -411,17 +411,17 @@ class GenericTable:
         )
         _style_input(self.page_input)
         self.next_button = ft.IconButton(
-            icon=ft.Icons.ARROW_FORWARD,
+            icon=ft.icons.ARROW_FORWARD,
             tooltip="Página siguiente",
             on_click=lambda e: self._goto_page(self.page + 1),
         )
         self.last_button = ft.IconButton(
-            icon=ft.Icons.LAST_PAGE,
+            icon=ft.icons.LAST_PAGE,
             tooltip="Última página",
             on_click=lambda e: self._goto_page(self.total_pages),
         )
         self.clear_sort_button = ft.IconButton(
-            icon=ft.Icons.CLEAR_ALL,
+            icon=ft.icons.CLEAR_ALL,
             tooltip="Limpiar orden",
             on_click=lambda e: self._clear_sorts(),
             visible=False,
@@ -734,7 +734,7 @@ class GenericTable:
 
         row_controls = [
             self.search_field,
-            ft.IconButton(icon=ft.Icons.CLEAR_ROUNDED, tooltip="Limpiar", on_click=lambda e: self._clear_search()),
+            ft.IconButton(icon=ft.icons.CLEAR_ROUNDED, tooltip="Limpiar", on_click=lambda e: self._clear_search()),
             self.reset_button,
             self.refresh_button,
         ]

@@ -216,7 +216,7 @@ class BackupView:
                 self.page.update()
 
         tf.suffix = ft.IconButton(
-            ft.Icons.CALENDAR_MONTH_ROUNDED,
+            ft.icons.CALENDAR_MONTH_ROUNDED,
             on_click=open_picker,
             icon_size=18,
             tooltip="Seleccionar fecha"
@@ -266,13 +266,13 @@ class BackupView:
                     sortable=False,
                     renderer=lambda row: ft.Row([
                         ft.IconButton(
-                            ft.Icons.RESTORE,
+                            ft.icons.RESTORE,
                             icon_color=self.COLOR_WARNING,
                             tooltip="Restaurar backup",
                             on_click=lambda e: self._confirm_restore(row['path'])
                         ),
                         ft.IconButton(
-                            ft.Icons.DELETE,
+                            ft.icons.DELETE,
                             icon_color=self.COLOR_ERROR,
                             tooltip="Eliminar backup",
                             on_click=lambda e: self._delete_backup(row['path'])
@@ -323,7 +323,7 @@ class BackupView:
                 ft.Row([
                     ft.ElevatedButton(
                         "Crear Backup",
-                        icon=ft.Icons.ADD_ROUNDED,
+                        icon=ft.icons.ADD_ROUNDED,
                         bgcolor=self.COLOR_PRIMARY,
                         color=ft.Colors.WHITE,
                         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -334,9 +334,9 @@ class BackupView:
 
             # Métricas
             ft.Row([
-                self._metric_card("Total Backups", self.total_backups_text, ft.Icons.FOLDER_SPECIAL_ROUNDED, self.COLOR_PRIMARY),
-                self._metric_card("Último Backup", self.last_backup_text, ft.Icons.ACCESS_TIME_ROUNDED, self.COLOR_SUCCESS),
-                self._metric_card("Próximo Backup", self.next_backup_text, ft.Icons.SCHEDULE_ROUNDED, self.COLOR_INFO),
+                self._metric_card("Total Backups", self.total_backups_text, ft.icons.FOLDER_SPECIAL_ROUNDED, self.COLOR_PRIMARY),
+                self._metric_card("Último Backup", self.last_backup_text, ft.icons.ACCESS_TIME_ROUNDED, self.COLOR_SUCCESS),
+                self._metric_card("Próximo Backup", self.next_backup_text, ft.icons.SCHEDULE_ROUNDED, self.COLOR_INFO),
             ], spacing=12),
 
             # Acciones rápidas
@@ -344,9 +344,9 @@ class BackupView:
                 content=ft.Column([
                     ft.Text("Ejecutar Backup Ahora", size=16, weight=ft.FontWeight.BOLD),
                     ft.Row([
-                        self._action_button("FULL", ft.Icons.CALENDAR_MONTH_ROUNDED, self.COLOR_SUCCESS, lambda e: self._execute_backup('FULL')),
-                        self._action_button("DIFERENCIAL", ft.Icons.DATE_RANGE_ROUNDED, self.COLOR_INFO, lambda e: self._execute_backup('DIFERENCIAL')),
-                        self._action_button("INCREMENTAL", ft.Icons.TODAY_ROUNDED, self.COLOR_WARNING, lambda e: self._execute_backup('INCREMENTAL')),
+                        self._action_button("FULL", ft.icons.CALENDAR_MONTH_ROUNDED, self.COLOR_SUCCESS, lambda e: self._execute_backup('FULL')),
+                        self._action_button("DIFERENCIAL", ft.icons.DATE_RANGE_ROUNDED, self.COLOR_INFO, lambda e: self._execute_backup('DIFERENCIAL')),
+                        self._action_button("INCREMENTAL", ft.icons.TODAY_ROUNDED, self.COLOR_WARNING, lambda e: self._execute_backup('INCREMENTAL')),
                     ], spacing=8),
                 ], spacing=12),
                 padding=16,
@@ -359,7 +359,7 @@ class BackupView:
             ft.Container(
                 content=ft.Column([
                     ft.Row([
-                        ft.Icon(ft.Icons.EVENT_ROUNDED, color=self.COLOR_PRIMARY, size=20),
+                        ft.Icon(ft.icons.EVENT_ROUNDED, color=self.COLOR_PRIMARY, size=20),
                         ft.Text("Programación Automática", size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
                     ], spacing=8),
                     ft.Container(height=8),
@@ -466,14 +466,14 @@ class BackupView:
         for backup_type, info in next_times.items():
             color = self.TYPE_COLORS.get(backup_type, self.COLOR_PRIMARY)
             labels = {"FULL": "FULL", "DIFERENCIAL": "DIFERENCIAL", "INCREMENTAL": "INCREMENTAL"}
-            icons = {"FULL": ft.Icons.CALENDAR_MONTH_ROUNDED, "DIFERENCIAL": ft.Icons.DATE_RANGE_ROUNDED, "INCREMENTAL": ft.Icons.TODAY_ROUNDED}
+            icons = {"FULL": ft.icons.CALENDAR_MONTH_ROUNDED, "DIFERENCIAL": ft.icons.DATE_RANGE_ROUNDED, "INCREMENTAL": ft.icons.TODAY_ROUNDED}
 
             time_until = self._format_time_until(info["next_run"])
 
             card = ft.Container(
                 content=ft.Row([
                     ft.Container(
-                        content=ft.Icon(icons.get(backup_type, ft.Icons.BACKUP_ROUNDED), color=color, size=22),
+                        content=ft.Icon(icons.get(backup_type, ft.icons.BACKUP_ROUNDED), color=color, size=22),
                         bgcolor=f"{color}1A",
                         padding=10,
                         border_radius=10,
@@ -647,10 +647,10 @@ class BackupView:
                 content=ft.Column([
                     ft.Text("Seleccionar tipo de backup", size=16, weight=ft.FontWeight.BOLD),
                     ft.Divider(),
-                    create_backup_option("FULL", "Backup FULL (Completo)", ft.Icons.CALENDAR_MONTH_ROUNDED),
-                    create_backup_option("DIFERENCIAL", "Backup DIFERENCIAL (Semanal)", ft.Icons.DATE_RANGE_ROUNDED),
-                    create_backup_option("INCREMENTAL", "Backup INCREMENTAL (Diario)", ft.Icons.TODAY_ROUNDED),
-                    create_backup_option("MANUAL", "Backup Manual", ft.Icons.SAVE_ROUNDED),
+                    create_backup_option("FULL", "Backup FULL (Completo)", ft.icons.CALENDAR_MONTH_ROUNDED),
+                    create_backup_option("DIFERENCIAL", "Backup DIFERENCIAL (Semanal)", ft.icons.DATE_RANGE_ROUNDED),
+                    create_backup_option("INCREMENTAL", "Backup INCREMENTAL (Diario)", ft.icons.TODAY_ROUNDED),
+                    create_backup_option("MANUAL", "Backup Manual", ft.icons.SAVE_ROUNDED),
                 ], tight=True),
                 padding=20,
             ),

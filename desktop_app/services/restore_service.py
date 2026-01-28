@@ -148,26 +148,49 @@ class RestoreService:
             )
     
     def _apply_differential_backup(self, backup_file: Path, lsn_inicio: str) -> RestoreResult:
-        logger.info(f"Aplicando backup DIFERENCIAL: {backup_file}")
-        logger.info(f"LSN inicio: {lsn_inicio}")
+        logger.info(f"Aplicando backup DIFERENCIAL (Data Only): {backup_file}")
+        
+        config = self._get_db_config()
+        pg_restore = self._get_pg_restore_path()
+        pg_bin = self.pg_bin_path
+        
+        inicio = datetime.now()
+        env = os.environ.copy()
+        env["PGPASSWORD"] = config["password"]
         
         try:
-            fin = datetime.now()
-            tiempo = 0
+            # Differential/Incremental contains data only.
+            # We use --clean to TRUNCATE tables before inserting to avoid duplicates.
+            cmd = [
+                pg_restore,
+                "-h", config["host"], "-p", config["port"], "-U", config["user"],
+                "-d", config["name"],
+                "--data-only",
+                "--clean", # Truncates target tables
+                "--if-exists",
+                "-v",
+                str(backup_file)
+            ]
             
-            logger.info(f"Backup DIFERENCIAL aplicado (simulado)")
+            logger.info(f"Ejecutando pg_restore DIFERENCIAL...")
+            # Note: pg_restore might exit with 1 if there are minor warnings (like nothing to do), check exit code?
+            # subprocess.run checks return code 0 by default.
+            subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            
+            fin = datetime.now()
+            tiempo = (fin - inicio).total_seconds()
             
             return RestoreResult(
                 exitoso=True,
                 mensaje=f"Backup DIFERENCIAL aplicado exitosamente",
                 backups_aplicados=[str(backup_file.name)],
                 tiempo_segundos=tiempo,
-                lsn_final=lsn_inicio,
+                lsn_final=None,
                 checksum=None
             )
             
-        except Exception as e:
-            logger.error(f"Error aplicando backup DIFERENCIAL: {e}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error aplicando backup DIFERENCIAL: {e.stderr}")
             return RestoreResult(
                 exitoso=False,
                 mensaje=f"Error aplicando backup DIFERENCIAL: {str(e)}",
@@ -178,33 +201,9 @@ class RestoreService:
             )
     
     def _apply_incremental_backup(self, backup_file: Path) -> RestoreResult:
-        logger.info(f"Aplicando backup INCREMENTAL: {backup_file}")
-        
-        try:
-            fin = datetime.now()
-            tiempo = 0
-            
-            logger.info(f"Backup INCREMENTAL aplicado (simulado)")
-            
-            return RestoreResult(
-                exitoso=True,
-                mensaje=f"Backup INCREMENTAL aplicado exitosamente",
-                backups_aplicados=[str(backup_file.name)],
-                tiempo_segundos=tiempo,
-                lsn_final=None,
-                checksum=None
-            )
-            
-        except Exception as e:
-            logger.error(f"Error aplicando backup INCREMENTAL: {e}")
-            return RestoreResult(
-                exitoso=False,
-                mensaje=f"Error aplicando backup INCREMENTAL: {str(e)}",
-                backups_aplicados=[],
-                tiempo_segundos=0,
-                lsn_final=None,
-                checksum=None
-            )
+        logger.info(f"Aplicando backup INCREMENTAL (Data Only): {backup_file}")
+        # Logic is identical to Differential for Restore side (just applying a patch)
+        return self._apply_differential_backup(backup_file, "0/0")
     
     def restore_to_date(self, target_date: datetime, target_db: Optional[str] = None) -> RestoreResult:
         logger.info(f"Restaurando a fecha: {target_date}")

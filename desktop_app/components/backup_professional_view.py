@@ -1,5 +1,5 @@
 import flet as ft
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from datetime import datetime, timedelta
 
 try:
@@ -177,25 +177,25 @@ class BackupProfessionalView:
                     sortable=False,
                     renderer=lambda row: ft.Row([
                         ft.IconButton(
-                            ft.Icons.CHECK_CIRCLE,
+                            ft.icons.CHECK_CIRCLE,
                             icon_color=self.COLOR_SUCCESS,
                             tooltip="Validar backup",
                             on_click=lambda e: self._validate_backup(row)
                         ),
                         ft.IconButton(
-                            ft.Icons.CLOUD_UPLOAD,
+                            ft.icons.CLOUD_UPLOAD,
                             icon_color=self.COLOR_INFO,
                             tooltip="Subir a la nube",
                             on_click=lambda e: self._upload_to_cloud(row)
                         ),
                         ft.IconButton(
-                            ft.Icons.RESTORE,
+                            ft.icons.RESTORE,
                             icon_color=self.COLOR_WARNING,
                             tooltip="Restaurar backup",
                             on_click=lambda e: self._confirm_restore(row)
                         ),
                         ft.IconButton(
-                            ft.Icons.DELETE,
+                            ft.icons.DELETE,
                             icon_color=self.COLOR_ERROR,
                             tooltip="Eliminar backup",
                             on_click=lambda e: self._delete_backup(row)
@@ -428,7 +428,7 @@ class BackupProfessionalView:
                 self.page.update()
 
         tf.suffix = ft.IconButton(
-            ft.Icons.CALENDAR_MONTH_ROUNDED,
+            ft.icons.CALENDAR_MONTH_ROUNDED,
             on_click=open_picker,
             icon_size=18,
             tooltip="Seleccionar fecha"
@@ -804,7 +804,7 @@ class BackupProfessionalView:
             
             ft.Column([
                 ft.Row([
-                    ft.Icon(ft.Icons.FOLDER_SPECIAL_ROUNDED, size=20, color=self.COLOR_INFO),
+                    ft.Icon(ft.icons.FOLDER_SPECIAL_ROUNDED, size=20, color=self.COLOR_INFO),
                     ft.Column([
                         ft.Text("Backup Base", size=12, weight=ft.FontWeight.BOLD),
                         ft.Text(preview['backups'][0]['archivo'] if preview['backups'] else "N/A", size=11),
@@ -812,7 +812,7 @@ class BackupProfessionalView:
                 ], spacing=10),
                 
                 ft.Row([
-                    ft.Icon(ft.Icons.LAYERS_ROUNDED, size=20, color=self.COLOR_INFO),
+                    ft.Icon(ft.icons.LAYERS_ROUNDED, size=20, color=self.COLOR_INFO),
                     ft.Column([
                         ft.Text(f"Backups a aplicar: {preview['cantidad_backups']}", size=12, weight=ft.FontWeight.BOLD),
                         ft.Text(f"Tamaño total: {preview['tamano_total_mb']:.2f} MB", size=11),
@@ -843,7 +843,7 @@ class BackupProfessionalView:
         
         wizard_dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Icon(ft.Icons.RESTORE_ROUNDED, size=32, color=self.COLOR_WARNING),
+            title=ft.Icon(ft.icons.RESTORE_ROUNDED, size=32, color=self.COLOR_WARNING),
             content=content,
             actions=[
                 cancel_button("Cancelar", on_click=on_cancel),
@@ -852,7 +852,7 @@ class BackupProfessionalView:
                     on_click=on_confirm_restore,
                     bgcolor=self.COLOR_WARNING,
                     color=ft.Colors.WHITE,
-                    icon=ft.Icons.RESTORE_ROUNDED
+                    icon=ft.icons.RESTORE_ROUNDED
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -995,10 +995,10 @@ class BackupProfessionalView:
                 content=ft.Column([
                     ft.Text("Seleccionar tipo de backup", size=16, weight=ft.FontWeight.BOLD),
                     ft.Divider(),
-                    create_backup_option("FULL", "Backup FULL (Completo)", ft.Icons.CALENDAR_MONTH_ROUNDED),
-                    create_backup_option("DIFERENCIAL", "Backup DIFERENCIAL (Semanal)", ft.Icons.DATE_RANGE_ROUNDED),
-                    create_backup_option("INCREMENTAL", "Backup INCREMENTAL (Diario)", ft.Icons.TODAY_ROUNDED),
-                    create_backup_option("MANUAL", "Backup Manual", ft.Icons.SAVE_ROUNDED),
+                    create_backup_option("FULL", "Backup FULL (Completo)", ft.icons.CALENDAR_MONTH_ROUNDED),
+                    create_backup_option("DIFERENCIAL", "Backup DIFERENCIAL (Semanal)", ft.icons.DATE_RANGE_ROUNDED),
+                    create_backup_option("INCREMENTAL", "Backup INCREMENTAL (Diario)", ft.icons.TODAY_ROUNDED),
+                    create_backup_option("MANUAL", "Backup Manual", ft.icons.SAVE_ROUNDED),
                 ], tight=True),
                 padding=20,
             ),
@@ -1021,19 +1021,19 @@ class BackupProfessionalView:
                     self._metric_card(
                         "Total Backups",
                         self.total_backups_text,
-                        ft.Icons.FOLDER_SPECIAL_ROUNDED,
+                        ft.icons.FOLDER_SPECIAL_ROUNDED,
                         self.COLOR_PRIMARY
                     ),
                     self._metric_card(
                         "Último Backup",
                         self.last_backup_text,
-                        ft.Icons.ACCESS_TIME_ROUNDED,
+                        ft.icons.ACCESS_TIME_ROUNDED,
                         self.COLOR_SUCCESS
                     ),
                     self._metric_card(
                         "Próximo Backup",
                         self.next_backup_text,
-                        ft.Icons.SCHEDULE_ROUNDED,
+                        ft.icons.SCHEDULE_ROUNDED,
                         self.COLOR_INFO
                     ),
                 ], spacing=12),
@@ -1045,19 +1045,19 @@ class BackupProfessionalView:
                         ft.Row([
                             self._action_button(
                                 "FULL",
-                                ft.Icons.CALENDAR_MONTH_ROUNDED,
+                                ft.icons.CALENDAR_MONTH_ROUNDED,
                                 self.COLOR_SUCCESS,
                                 lambda e: self._execute_backup('FULL')
                             ),
                             self._action_button(
                                 "DIFERENCIAL",
-                                ft.Icons.DATE_RANGE_ROUNDED,
+                                ft.icons.DATE_RANGE_ROUNDED,
                                 self.COLOR_INFO,
                                 lambda e: self._execute_backup('DIFERENCIAL')
                             ),
                             self._action_button(
                                 "INCREMENTAL",
-                                ft.Icons.TODAY_ROUNDED,
+                                ft.icons.TODAY_ROUNDED,
                                 self.COLOR_WARNING,
                                 lambda e: self._execute_backup('INCREMENTAL')
                             ),
@@ -1075,7 +1075,7 @@ class BackupProfessionalView:
                 ft.Container(
                     content=ft.Column([
                         ft.Row([
-                            ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, color=self.COLOR_SUCCESS, size=24),
+                            ft.Icon(ft.icons.CALENDAR_MONTH_ROUNDED, color=self.COLOR_SUCCESS, size=24),
                             ft.Column([
                                 ft.Text("Backup FULL (Mensual)", size=14, weight=ft.FontWeight.BOLD),
                                 ft.Text("Backup completo mensual - base de todos los backups", size=12, color=self.COLOR_TEXT_MUTED),
@@ -1099,7 +1099,7 @@ class BackupProfessionalView:
                 ft.Container(
                     content=ft.Column([
                         ft.Row([
-                            ft.Icon(ft.Icons.DATE_RANGE_ROUNDED, color=self.COLOR_INFO, size=24),
+                            ft.Icon(ft.icons.DATE_RANGE_ROUNDED, color=self.COLOR_INFO, size=24),
                             ft.Column([
                                 ft.Text("Backup DIFERENCIAL (Semanal)", size=14, weight=ft.FontWeight.BOLD),
                                 ft.Text("Cambios desde el último backup FULL", size=12, color=self.COLOR_TEXT_MUTED),
@@ -1123,7 +1123,7 @@ class BackupProfessionalView:
                 ft.Container(
                     content=ft.Column([
                         ft.Row([
-                            ft.Icon(ft.Icons.TODAY_ROUNDED, color=self.COLOR_WARNING, size=24),
+                            ft.Icon(ft.icons.TODAY_ROUNDED, color=self.COLOR_WARNING, size=24),
                             ft.Column([
                                 ft.Text("Backup INCREMENTAL (Diario)", size=14, weight=ft.FontWeight.BOLD),
                                 ft.Text("Cambios desde el último backup", size=12, color=self.COLOR_TEXT_MUTED),
@@ -1144,7 +1144,7 @@ class BackupProfessionalView:
 
                 ft.ElevatedButton(
                     "Guardar Horarios",
-                    icon=ft.Icons.SAVE_ROUNDED,
+                    icon=ft.icons.SAVE_ROUNDED,
                     bgcolor=self.COLOR_PRIMARY,
                     color=ft.Colors.WHITE,
                     style=ft.ButtonStyle(
@@ -1187,7 +1187,7 @@ class BackupProfessionalView:
 
                 ft.ElevatedButton(
                     "Guardar Configuración de Nube",
-                    icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
+                    icon=ft.icons.CLOUD_UPLOAD_ROUNDED,
                     bgcolor=self.COLOR_INFO,
                     color=ft.Colors.WHITE,
                     style=ft.ButtonStyle(
