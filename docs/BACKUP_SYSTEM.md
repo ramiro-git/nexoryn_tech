@@ -41,67 +41,44 @@ backups_incrementales/
 
 ## Instalación
 
-### 1. Ejecutar migración de base de datos
+### 1. Inicializar base de datos
+Las tablas necesarias ya están incluidas en el esquema principal. Solo asegúrate de haber ejecutado:
 
 ```bash
 cd database
-psql -U postgres -d nexoryn_tech -f migrations/002_add_incremental_backup_system.sql
+python init_db.py
 ```
 
-### 2. Verificar instalación
-
-```bash
-python scripts/backup_scheduler.py status
-```
+### 2. Verificar integración en la App
+El sistema de backups se inicia automáticamente al abrir la aplicación de escritorio (`desktop_app/main.py`). Puedes ver los logs de actividad en la consola o en el panel de Backups Profesionales dentro de la App.
 
 ## Uso
 
-### Scheduler Automatizado
-
-Iniciar el scheduler que ejecutará backups automáticamente:
-
-```bash
-python scripts/backup_scheduler.py start
-```
+### Scheduler Integrado
+La aplicación cuenta con un scheduler interno (`BackgroundScheduler`) que se activa al iniciar.
 
 **Horarios por defecto:**
 - **FULL**: Día 1 de cada mes a las 00:00
 - **DIFERENCIAL**: Domingos a las 23:30
 - **INCREMENTAL**: Diariamente a las 23:00
 - **Validación**: Diariamente a las 01:00
-- **Limpieza**: Lunes a las 02:00
 
-### Ejecuciones Manuales
-
-```bash
-# Backup FULL inmediato
-python scripts/backup_scheduler.py full
-
-# Backup DIFERENCIAL inmediato
-python scripts/backup_scheduler.py diferencial
-
-# Backup INCREMENTAL inmediato
-python scripts/backup_scheduler.py incremental
-
-# Mostrar estado del sistema
-python scripts/backup_scheduler.py status
-
-# Validar todos los backups
-python scripts/backup_scheduler.py validate
-
-# Limpiar backups antiguos
-python scripts/backup_scheduler.py cleanup
-```
+### Ejecuciones Manuales (desde la UI)
+El panel de **Backups Profesionales** en la App permite:
+- Lanzar backups inmediatos de cualquier tipo.
+- Ver el historial de manifiestos.
+- Validar la integridad de los archivos.
+- Ver puntos de restauración disponibles.
 
 ## Restauración
 
 ### API Programática
 
 ```python
-from database.db_conn import Database
-from config import load_config
-from services.backup_incremental_service import BackupIncrementalService
-from services.restore_service import RestoreService
+from desktop_app.database import Database
+from desktop_app.config import load_config
+from desktop_app.services.backup_incremental_service import BackupIncrementalService
+from desktop_app.services.restore_service import RestoreService
 
 config = load_config()
 db = Database(config.database_url)
@@ -126,14 +103,14 @@ print(f"Tamaño total: {preview['tamano_total_mb']} MB")
 print(f"Backups a aplicar: {[b['archivo'] for b in preview['backups']]}")
 ```
 
-### Línea de Comandos
+### Línea de Comandos (Bootstrap rápido)
 
 ```bash
 # Restaurar desde backup ID específico
 python -c "
-from database.db_conn import Database
-from config import load_config
-from services.backup_manager import BackupManager
+from desktop_app.database import Database
+from desktop_app.config import load_config
+from desktop_app.services.backup_manager import BackupManager
 
 db = Database(load_config().database_url)
 manager = BackupManager(db)
@@ -147,7 +124,7 @@ print(result)
 ### Estadísticas del Sistema
 
 ```python
-from services.backup_manager import BackupManager
+from desktop_app.services.backup_manager import BackupManager
 
 manager = BackupManager(db)
 status = manager.get_status_summary()
@@ -207,21 +184,13 @@ LIMIT 20;
 ### Configurar Sync con Carpeta Local
 
 ```python
-from services.cloud_storage_service import CloudStorageService
+from desktop_app.services.cloud_storage_service import CloudStorageService
 
 cloud_config = {
     'sync_dir': r'C:\Users\TuUsuario\Google Drive\Nexoryn Backups'
 }
 
 cloud_service = CloudStorageService(db, provider='LOCAL', config=cloud_config)
-
-# Subir backup a nube
-from pathlib import Path
-backup_file = Path('backups_incrementales/full/full_20250106_000000.backup')
-result = cloud_service.upload_backup(backup_file, backup_id=1, backup_type='FULL')
-
-if result.exitoso:
-    print(f"Backup subido: {result.url}")
 ```
 
 ### Configurar Google Drive
@@ -270,9 +239,10 @@ VALUES ('PERSONALIZADA', 'Política personalizada',
 ### Verificar Integridad de Backups
 
 ```python
-from services.restore_service import RestoreService
+from desktop_app.services.restore_service import RestoreService
 
 restore_service = RestoreService(db, backup_service)
+```
 
 # Validar backup específico
 result = restore_service.validate_backup_chain(backup_id=123)
@@ -321,9 +291,10 @@ export BACKUP_DIR="C:\backups"
 ### Modificar Horarios
 
 ```python
-from services.backup_manager import BackupManager
+from desktop_app.services.backup_manager import BackupManager
 
 manager = BackupManager(db)
+```
 
 # Modificar horario de backup FULL (día 1 del mes)
 manager.set_schedule('FULL', day=1, hour=0, minute=0)
@@ -344,9 +315,10 @@ manager.set_schedule('INCREMENTAL', hour=23, minute=0)
 pip install APScheduler
 ```
 
-2. Verificar logs:
+2. Verificar logs de la App y de la DB.
 ```bash
-tail -f backup_scheduler.log
+# Buscar errores en la tabla de auditoría de la DB
+psql -U postgres -d nexoryn_tech -c "SELECT * FROM seguridad.backup_event WHERE nivel_log = 'ERROR' ORDER BY fecha_hora DESC LIMIT 10;"
 ```
 
 ### Backup falla con "pg_dump not found"
@@ -358,18 +330,13 @@ tail -f backup_scheduler.log
 ### Error de permisos
 
 ```bash
-# En Linux/Unix
-chmod +x scripts/backup_scheduler.py
-
 # En Windows, ejecutar como administrador
 ```
 
-### Backups no se suben a la nube
-
-1. Verificar configuración de nube
-2. Verificar credenciales (Google Drive/S3)
-3. Verificar conectividad de red
-4. Revisar logs del scheduler
+1. Verificar configuración de nube en `CloudStorageService`.
+2. Verificar credenciales (Google Drive/S3).
+3. Verificar conectividad de red.
+4. Revisar eventos de backup en la base de datos (`seguridad.backup_event`).
 
 ## Rendimiento
 
@@ -438,19 +405,11 @@ El sistema mantiene logs detallados en:
 
 ### Logs
 
+El sistema registra eventos en la tabla `seguridad.backup_event`. Puedes consultarlos desde la App o vía SQL:
+
 ```bash
-# Ver logs en tiempo real
-tail -f backup_scheduler.log
-
-# Ver logs de errores
-grep ERROR backup_scheduler.log
-
 # Ver últimos 50 eventos en DB
-psql -U postgres -d nexoryn_tech -c "
-SELECT * FROM seguridad.backup_event 
-ORDER BY fecha_hora DESC 
-LIMIT 50;
-"
+psql -U postgres -d nexoryn_tech -c "SELECT * FROM seguridad.backup_event ORDER BY fecha_hora DESC LIMIT 50;"
 ```
 
 ### Consultas de Diagnóstico
@@ -488,15 +447,7 @@ WHERE bm.backup_base_id IS NOT NULL AND bm_base.id IS NULL;
 
 ## Resumen de Comandos
 
-| Comando | Descripción |
-|---------|-------------|
-| `python scripts/backup_scheduler.py start` | Iniciar scheduler |
-| `python scripts/backup_scheduler.py full` | Backup FULL inmediato |
-| `python scripts/backup_scheduler.py diferencial` | Backup DIFERENCIAL inmediato |
-| `python scripts/backup_scheduler.py incremental` | Backup INCREMENTAL inmediato |
-| `python scripts/backup_scheduler.py status` | Mostrar estado |
-| `python scripts/backup_scheduler.py validate` | Validar backups |
-| `python scripts/backup_scheduler.py cleanup` | Limpiar backups antiguos |
+El uso principal es a través de la **Interfaz Gráfica (Flet)**. Para tareas automáticas, el scheduler se inicia junto con la App.
 
 ---
 

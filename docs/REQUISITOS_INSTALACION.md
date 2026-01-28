@@ -6,8 +6,8 @@ Este sistema utiliza archivos y configuraciones que, por seguridad o peso, **no 
 
 ## 1. Entorno de Software
 Antes de empezar, la máquina debe tener:
-*   **Python 3.14.2** o superior: Instalado y agregado al PATH.
-*   **PostgreSQL 18.1** o superior: Instalado y corriendo.
+*   **Python 3.12** o superior: Instalado y agregado al PATH.
+*   **PostgreSQL 16** o superior: Instalado y corriendo.
 *   **OpenSSL**: Necesario para la generación de pedidos de certificados (CSR).
 
 ### Instalación de dependencias:
@@ -24,21 +24,23 @@ El archivo `.env` **no se sube a GitHub**. Debes crearlo manualmente en la raíz
 **Plantilla de `.env`:**
 ```ini
 # Base de Datos
-DATABASE_URL=postgresql://usuario:password@localhost:5432/nombre_db
-# O usa componentes individuales:
+# Puedes usar la URL completa:
+DATABASE_URL=postgresql://postgres:password@localhost:5432/nexoryn_tech
+
+# O componentes individuales (la aplicación prioriza DATABASE_URL si existe):
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=nexoryn_db
+DB_NAME=nexoryn_tech
 DB_USER=postgres
 DB_PASSWORD=tu_password
 
 # Rutas de PostgreSQL (Necesario para backups/restauración)
-PG_BIN_PATH="C:\Program Files\PostgresQL\16\bin"
+PG_BIN_PATH="C:\Program Files\PostgreSQL\16\bin"
 
-# AFIP (Obtenidos de la GUIA_AFIP_PORTAL.md)
+# AFIP
 AFIP_CUIT=20XXXXXXXX9
-AFIP_CERT_PATH="C:/Ruta/A/Tu/certificado.crt"
-AFIP_KEY_PATH="C:/Ruta/A/Tu/clave_privada.key"
+AFIP_CERT_PATH="C:/Nexoryn/Certs/empresa.crt"
+AFIP_KEY_PATH="C:/Nexoryn/Certs/empresa.key"
 AFIP_PRODUCTION=False
 ```
 
@@ -51,7 +53,7 @@ Para que la facturación electrónica funcione, necesitas:
 3.  **Punto de Venta**: El número de punto de venta configurado en AFIP (ej: `0002`).
 
 > [!IMPORTANT]
-> Consulta la [Guía de AFIP](file:///c:/Users/PC/Desktop/Todo/Lan%C3%BAs/Nexoryn_Tech/GUIA_AFIP_PORTAL.md) para saber cómo obtener estos archivos.
+> Consulta la [Guía de AFIP](GUIA_AFIP_PORTAL.md) para saber cómo obtener estos archivos.
 
 ---
 

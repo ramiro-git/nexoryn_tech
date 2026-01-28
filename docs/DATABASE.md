@@ -7,7 +7,7 @@ Este directorio contiene herramientas críticas para la inicialización, manteni
 ### 1. `init_db.py` (Inicializador)
 Este es el script principal para configurar la base de datos desde cero.
 - **Acciones**: Crea el esquema (`database.sql`), importa datos desde la carpeta `csvs/` y puede resetear la base de datos.
-- **Dependencias**: `pandas`, `psycopg2-binary`.
+- **Dependencias**: `pandas`, `psycopg[binary]`.
 - **Ejecución**:
   ```bash
   # Inicialización normal (Esquema + Importación)
