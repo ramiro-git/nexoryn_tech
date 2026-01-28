@@ -1,31 +1,86 @@
 import flet as ft
 import datetime
+import logging
 import threading
 import time
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from desktop_app.database import Database
 
+logger = logging.getLogger(__name__)
+
 class DashboardView(ft.Container):
+    # -------------------------------------------------------------------------
+    # Theme Configuration (reusable color palette)
+    # -------------------------------------------------------------------------
+    THEME = {
+        "bg": "#F1F5F9",
+        "card": "#FFFFFF",
+        "primary": "#4F46E5",      # Indigo
+        "success": "#10B981",      # Green
+        "warning": "#F59E0B",      # Amber
+        "error": "#EF4444",        # Red
+        "info": "#3B82F6",         # Blue
+        "text": "#1E293B",         # Slate 800
+        "text_muted": "#64748B",   # Slate 500
+        "border": "#E2E8F0",       # Slate 200
+    }
+    
+    # Empty state messages by section
+    EMPTY_STATES = {
+        "ventas": ("Sin ventas registradas", ft.icons.POINT_OF_SALE_ROUNDED, "No hay ventas en el período seleccionado"),
+        "stock": ("Inventario vacío", ft.icons.INVENTORY_2_ROUNDED, "No hay artículos registrados"),
+        "entidades": ("Sin clientes/proveedores", ft.icons.PEOPLE_ROUNDED, "Aún no hay entidades comerciales"),
+        "operativas": ("Sin actividad", ft.icons.PENDING_ACTIONS_ROUNDED, "No hay operaciones registradas hoy"),
+        "finanzas": ("Sin movimientos financieros", ft.icons.ACCOUNT_BALANCE_WALLET_ROUNDED, "No hay pagos ni cobros"),
+        "sistema": ("Sin datos del sistema", ft.icons.SETTINGS_ROUNDED, "Información del sistema no disponible"),
+        "charts": ("Sin datos para graficar", ft.icons.BAR_CHART_ROUNDED, "No hay suficientes datos"),
+    }
+    
+    # Refresh interval options (label -> seconds, 0 = disabled)
+    REFRESH_INTERVALS = {
+        "30 seg": 30,
+        "1 min": 60,
+        "5 min": 300,
+        "10 min": 600,
+        "Desactivado": 0,
+    }
+    
+    # Period filter options (for future filtering - currently visual only)
+    PERIOD_FILTERS = ["Hoy", "Semana", "Mes", "Año"]
+    
+    VALID_ROLES = {"ADMIN", "GERENTE", "EMPLEADO"}
+    
     def __init__(self, database: Database, user_role: str = "EMPLEADO"):
         super().__init__()
         self.db = database
-        self.role = user_role.upper()
-        self.role = user_role.upper()
+        self.role = self._normalize_role(user_role)
         self.stats: Dict[str, Any] = {}
         self.on_navigate = None
         self.is_loading = True
+        self._refresh_retries = 0
+        self._max_refresh_retries = 3
         
-        # Colors & Theme
-        self.COLOR_BG = "#F1F5F9"
-        self.COLOR_CARD = "#FFFFFF"
-        self.COLOR_PRIMARY = "#4F46E5"  # Indigo
-        self.COLOR_SUCCESS = "#10B981"  # Green
-        self.COLOR_WARNING = "#F59E0B"  # Amber
-        self.COLOR_ERROR = "#EF4444"    # Red
-        self.COLOR_INFO = "#3B82F6"     # Blue
-        self.COLOR_TEXT = "#1E293B"     # Slate 800
-        self.COLOR_TEXT_MUTED = "#64748B" # Slate 500
-        self.COLOR_BORDER = "#E2E8F0"   # Slate 200
+        # Concurrency control
+        self._current_request_id = 0
+        self._request_lock = threading.Lock()
+        
+        # Refresh interval (default 60s)
+        self.current_interval = 60
+        
+        # Period filter (default "Mes" - currently visual, backend filtering TODO)
+        self.current_period = "Mes"
+        
+        # Colors & Theme (derived from class THEME for easy customization)
+        self.COLOR_BG = self.THEME["bg"]
+        self.COLOR_CARD = self.THEME["card"]
+        self.COLOR_PRIMARY = self.THEME["primary"]
+        self.COLOR_SUCCESS = self.THEME["success"]
+        self.COLOR_WARNING = self.THEME["warning"]
+        self.COLOR_ERROR = self.THEME["error"]
+        self.COLOR_INFO = self.THEME["info"]
+        self.COLOR_TEXT = self.THEME["text"]
+        self.COLOR_TEXT_MUTED = self.THEME["text_muted"]
+        self.COLOR_BORDER = self.THEME["border"]
         
         # UI Elements
         self.kpi_row = ft.Row(spacing=20, wrap=True)
@@ -35,6 +90,19 @@ class DashboardView(ft.Container):
             ft.icons.REFRESH_ROUNDED, 
             tooltip="Actualizar ahora",
             on_click=lambda _: self.load_data()
+        )
+        
+        # Interval selector dropdown
+        self.interval_dropdown = ft.Dropdown(
+            width=130,
+            height=35,
+            content_padding=ft.padding.symmetric(horizontal=10, vertical=5),
+            text_size=12,
+            options=[ft.dropdown.Option(k) for k in self.REFRESH_INTERVALS.keys()],
+            value="1 min",
+            on_change=self._on_interval_change,
+            border_color=self.COLOR_BORDER,
+            focused_border_color=self.COLOR_PRIMARY,
         )
         
         # Container properties
@@ -49,6 +117,42 @@ class DashboardView(ft.Container):
         # Set lifecycle hooks
         self.on_mount = self._handle_mount
         self.on_unmount = self._handle_unmount
+    
+    def _normalize_role(self, role: str) -> str:
+        """Normalize and validate user role."""
+        normalized = (role or "EMPLEADO").upper().strip()
+        return normalized if normalized in self.VALID_ROLES else "EMPLEADO"
+    
+    def _safe_update(self):
+        """Safely call update, handling cases where page is not visible."""
+        try:
+            if self.page:
+                self.update()
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
+                logger.debug(f"Dashboard update skipped: {e}")
+    
+    def _on_period_change(self, period: str):
+        """Handle period filter change."""
+        self.current_period = period
+        logger.debug(f"Dashboard period changed to {period}")
+        # In a real implementation, we would pass this period to the load_data method
+        # For now, we just reload to simulate the interaction
+        self.load_data()
+
+    def _on_interval_change(self, e):
+        """Handle refresh interval change from dropdown."""
+        new_interval = self.REFRESH_INTERVALS.get(e.control.value, 60)
+        self.current_interval = new_interval
+        logger.debug(f"Dashboard refresh interval changed to {new_interval}s")
+        
+        # Restart refresh thread with new interval
+        self._stop_event.set()
+        if self._refresh_thread and self._refresh_thread.is_alive():
+            self._refresh_thread.join(timeout=1)
+        self._stop_event.clear()
+        self._start_refresh_thread()
 
     def _handle_mount(self, e):
         self.load_data()
@@ -58,53 +162,226 @@ class DashboardView(ft.Container):
         self._stop_event.set()
 
     def _start_refresh_thread(self):
+        """Start the auto-refresh thread with configurable interval."""
+        if self.current_interval <= 0:
+            logger.debug("Auto-refresh disabled")
+            return
+            
         def refresh_loop():
+            self._refresh_retries = 0
             while not self._stop_event.is_set():
-                time.sleep(300) # 5 minutes
+                # Use current_interval which can change dynamically
+                interval = self.current_interval
+                if interval <= 0:
+                    break
+                    
+                # Sleep in small increments to respond to stop_event quickly
+                for _ in range(interval):
+                    if self._stop_event.is_set():
+                        return
+                    time.sleep(1)
+                
                 if not self._stop_event.is_set():
                     try:
                         self.load_data(silent=True)
-                    except:
-                        pass
+                        self._refresh_retries = 0  # Reset on success
+                    except Exception as e:
+                        self._refresh_retries += 1
+                        logger.warning(f"Dashboard refresh failed (attempt {self._refresh_retries}): {e}")
+                        if self._refresh_retries >= self._max_refresh_retries:
+                            logger.error("Dashboard refresh max retries reached, stopping auto-refresh")
+                            break
         
+        # Reset retries on new start
+        self._refresh_retries = 0
         self._refresh_thread = threading.Thread(target=refresh_loop, daemon=True)
         self._refresh_thread.start()
 
     def load_data(self, silent: bool = False):
-        # 1. Show Loader only if not silent
-        self.is_loading = True
-        if not silent:
-            self.content = ft.Container(
-                content=ft.ProgressRing(),
-                alignment=ft.Alignment(0, 0),
-                expand=True
-            )
-            try:
-                if self.page: self.update()
-            except: pass
+        """Load dashboard data. Uses background thread to avoid blocking UI."""
         
-        # 2. Fetch Data (in main thread for simplicity, or bg thread if refactored)
-        try:
-            # Fetch 100+ stats in one batch filtered by role
-            self.stats = self.db.get_full_dashboard_stats(self.role)
-            self.last_updated_text.value = f"Última actualización: {datetime.datetime.now().strftime('%H:%M:%S')}"
-        except Exception as e:
-            err_msg = str(e).lower()
-            if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
-                print(f"Error loading dashboard stats: {e}")
-            self.stats = {} # Fallback
-            
-        # 3. Show Content
+        with self._request_lock:
+            self._current_request_id += 1
+            request_id = self._current_request_id
+        
+        self.is_loading = True
+        
+        # Show skeleton/loader only if not silent
+        if not silent:
+            self._show_skeleton()
+        
+        def fetch_in_background(req_id, period):
+            try:
+                # Pass current period to backend
+                stats = self.db.get_full_dashboard_stats(self.role, period=period)
+                
+                # Check if this request is still valid
+                with self._request_lock:
+                    if self._current_request_id != req_id:
+                        logger.debug(f"Ignoring stale dashboard data (Req {req_id} vs {self._current_request_id})")
+                        return
+
+                # Update UI in main thread context - verify active state
+                if not self._stop_event.is_set():
+                    self._on_data_loaded(stats, req_id)
+            except Exception as e:
+                if not self._stop_event.is_set():
+                    self._on_load_error(str(e), req_id)
+        
+        # Run fetch in background thread
+        threading.Thread(
+            target=fetch_in_background, 
+            args=(request_id, self.current_period), 
+            daemon=True
+        ).start()
+    
+    def _show_skeleton(self):
+        """Show skeleton placeholder while data is loading."""
+        skeleton_cards = ft.ResponsiveRow([
+            self._skeleton_card() for _ in range(4)
+        ], spacing=20)
+        
+        skeleton_sections = ft.Column([
+            self._skeleton_section() for _ in range(2)
+        ], spacing=15)
+        
+        self.content = ft.Column([
+            self._get_header(),
+            ft.Divider(height=10, color="transparent"),
+            skeleton_cards,
+            ft.Divider(height=15, color="transparent"),
+            skeleton_sections,
+        ], spacing=10, expand=True)
+        self._safe_update()
+    
+    def _skeleton_card(self) -> ft.Container:
+        """Create a skeleton placeholder card."""
+        return ft.Container(
+            content=ft.Column([
+                ft.Container(width=100, height=14, bgcolor=self.COLOR_BORDER, border_radius=4),
+                ft.Container(width=80, height=28, bgcolor=self.COLOR_BORDER, border_radius=4),
+                ft.Container(width=60, height=12, bgcolor=self.COLOR_BORDER, border_radius=4),
+            ], spacing=8),
+            col={"xs": 12, "sm": 6, "md": 3},
+            height=130,
+            padding=20,
+            bgcolor=self.COLOR_CARD,
+            border_radius=15,
+            border=ft.border.all(1, self.COLOR_BORDER),
+        )
+    
+    def _skeleton_section(self) -> ft.Container:
+        """Create a skeleton placeholder section."""
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Container(width=150, height=16, bgcolor=self.COLOR_BORDER, border_radius=4),
+                ]),
+                ft.Container(height=80, bgcolor=self.COLOR_BORDER, border_radius=8, expand=True),
+            ], spacing=10),
+            padding=20,
+            bgcolor=self.COLOR_CARD,
+            border_radius=15,
+            border=ft.border.all(1, self.COLOR_BORDER),
+            height=140,
+        )
+    
+    def _on_data_loaded(self, stats: Dict[str, Any], request_id: int):
+        """Handle successful data load with race condition check."""
+        # Race condition check (Step 1)
+        with self._request_lock:
+            if self._current_request_id != request_id:
+                logger.debug(f"Discarding stale data load (Req {request_id})")
+                return
+
+        # Thread Safety (Step 2): Delegate UI update to main thread if possible
+        if self.page and hasattr(self.page, "run_thread_safe"):
+            self.page.run_thread_safe(self._apply_data_to_ui, stats, request_id)
+        else:
+            # Fallback for older Flet versions or if not attached
+            self._apply_data_to_ui(stats, request_id)
+
+    def _apply_data_to_ui(self, stats: Dict[str, Any], request_id: int):
+        """Build and update UI elements (must run on main thread preferably)."""
+        # Final race condition check on main thread
+        with self._request_lock:
+             if self._current_request_id != request_id:
+                 return
+
+        self.stats = stats
+        self.last_updated_text.value = f"Última actualización: {datetime.datetime.now().strftime('%H:%M:%S')}"
         self.is_loading = False
         self._build_dashboard_content()
         self.content = self._get_main_content()
-        try:
-            if self.page: self.update()
-        except: pass
+        self._safe_update()
+    
+    def _on_load_error(self, error: str, request_id: int):
+        """Handle load error with race condition check."""
+        with self._request_lock:
+            if self._current_request_id != request_id:
+               return
 
-    def _get_main_content(self):
+        # Thread Safety (Step 2): Delegate UI update to main thread if possible
+        if self.page and hasattr(self.page, "run_thread_safe"):
+            self.page.run_thread_safe(self._apply_error_to_ui, error, request_id)
+        else:
+            self._apply_error_to_ui(error, request_id)
+
+    def _apply_error_to_ui(self, error: str, request_id: int):
+        """Update UI on error (must run on main thread preferably)."""
+        # Final race condition check on main thread
+        with self._request_lock:
+             if self._current_request_id != request_id:
+                 return
+
+        self.is_loading = False
+        self.stats = {}  # Fallback
+        
+        # Log the error
+        err_lower = error.lower()
+        if "content must be visible" not in err_lower and "page is not visible" not in err_lower:
+            logger.error(f"Dashboard load error: {error}")
+        
+        # Show snackbar to user
+        if self.page:
+            try:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Error al cargar dashboard: {error[:80]}"),
+                    bgcolor=self.COLOR_ERROR,
+                    action="Reintentar",
+                    on_action=lambda _: self.load_data(),
+                )
+                self.page.snack_bar.open = True
+            except Exception:
+                pass
+        
+        # Still show the dashboard with empty/fallback data
+        self._build_dashboard_content()
+        self.content = self._get_main_content()
+        self._safe_update()
+
+
+
+    def _get_header(self) -> ft.Control:
+        """Build the dashboard header with controls."""
+        
+        # Period filter chips
+        period_chips = ft.Row(
+            controls=[
+                ft.Container(
+                    content=ft.Text(p, size=12, color=self.COLOR_CARD if self.current_period == p else self.COLOR_TEXT_MUTED),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                    bgcolor=self.COLOR_PRIMARY if self.current_period == p else ft.Colors.TRANSPARENT,
+                    border=ft.border.all(1, self.COLOR_PRIMARY if self.current_period == p else self.COLOR_BORDER),
+                    border_radius=20,
+                    on_click=lambda e, p=p: self._on_period_change(p),
+                    animate=ft.animation.Animation(200, ft.AnimationCurve.EASE_OUT),
+                ) for p in self.PERIOD_FILTERS
+            ],
+            spacing=8
+        )
+
         return ft.Column([
-            # Header
             ft.Row([
                 ft.Column([
                     ft.Text("Tablero de Control", size=24, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
@@ -114,10 +391,25 @@ class DashboardView(ft.Container):
                     ], spacing=5),
                 ], spacing=2),
                 ft.Row([
+                    ft.Text("Auto:", size=11, color=self.COLOR_TEXT_MUTED),
+                    self.interval_dropdown,
+                    ft.Container(width=10),
                     self.last_updated_text,
                     self.refresh_button,
-                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+            
+            ft.Container(height=5),
+            
+            ft.Row([
+                period_chips,
+            ])
+        ], spacing=10)
+
+    def _get_main_content(self):
+        return ft.Column([
+            # Header
+            self._get_header(),
             
             ft.Divider(height=10, color="transparent"),
             
@@ -179,7 +471,6 @@ class DashboardView(ft.Container):
             self._section_container("STOCK e INVENTARIO", ft.icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
         )
         
-        # Analítica de Productos (ADMIN/GERENTE)
         # Analítica de Productos (ADMIN/GERENTE)
         if self.role in ("ADMIN", "GERENTE"):
             analitica_content = self._build_analitica_section()
@@ -244,7 +535,20 @@ class DashboardView(ft.Container):
         )
 
 
+    # Mapping of view_key to display labels for "Ver detalles" buttons
+    VIEW_LABELS = {
+        "documentos": ("Ir a Documentos", "Gestiona facturas, presupuestos y comprobantes"),
+        "movimientos": ("Ir a Movimientos", "Consulta ingresos, egresos y ajustes de stock"),
+        "articulos": ("Ir a Artículos", "Administra productos e inventario"),
+        "entidades": ("Ir a Entidades", "Gestiona clientes y proveedores"),
+        "pagos": ("Ir a Pagos", "Consulta cobros y gestión de caja"),
+        "config": ("Ir a Configuración", "Ajustes del sistema y usuarios"),
+    }
+
     def _section_container(self, title: str, icon: str, content: ft.Control, view_key: str = None) -> ft.Container:
+        # Get contextual button label and tooltip
+        btn_label, btn_tooltip = self.VIEW_LABELS.get(view_key, ("Ver detalles", ""))
+        
         return ft.Container(
             content=ft.Column([
                 ft.Row([
@@ -252,12 +556,13 @@ class DashboardView(ft.Container):
                     ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
                     ft.Container(expand=True),
                     ft.TextButton(
-                        "Ver detalles",
+                        btn_label,
                         icon=ft.icons.ARROW_FORWARD_ROUNDED,
                         icon_color=self.COLOR_PRIMARY,
                         style=ft.ButtonStyle(color=self.COLOR_PRIMARY),
-                        on_click=lambda e: self.on_navigate(view_key) if self.on_navigate and view_key else None
-                    )
+                        tooltip=btn_tooltip if btn_tooltip else None,
+                        on_click=lambda e, vk=view_key: self.on_navigate(vk) if self.on_navigate and vk else None
+                    ) if view_key else ft.Container()
                 ], alignment=ft.MainAxisAlignment.START, spacing=10),
                 ft.Divider(height=1, color=self.COLOR_BORDER),
                 ft.Container(content=content, padding=ft.padding.only(top=10))
@@ -325,8 +630,26 @@ class DashboardView(ft.Container):
             return f"{n/1_000:,.1f}K"
         return f"{n:,.0f}"
 
-    def _chart_panel(self, title: str, content: ft.Control, width: int = 360) -> ft.Container:
+    def _empty_state(self, section_key: str = "charts", custom_message: str = None) -> ft.Control:
+        """Create a visually rich empty state component."""
+        title, icon, subtitle = self.EMPTY_STATES.get(section_key, ("Sin datos", ft.icons.INFO_ROUNDED, ""))
+        
+        if custom_message:
+            subtitle = custom_message
+        
         return ft.Container(
+            content=ft.Column([
+                ft.Icon(icon, size=40, color=self.COLOR_TEXT_MUTED, opacity=0.5),
+                ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=self.COLOR_TEXT_MUTED),
+                ft.Text(subtitle, size=11, color=self.COLOR_TEXT_MUTED, opacity=0.7) if subtitle else ft.Container(),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+            alignment=ft.Alignment(0, 0),
+            padding=30,
+        )
+
+    def _chart_panel(self, title: str, content: ft.Control, width: int = None, col: Dict[str, int] = None) -> ft.Container:
+        """Create a chart panel container. Use col for responsive layouts."""
+        container = ft.Container(
             content=ft.Column([
                 ft.Text(title, size=12, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT_MUTED),
                 content,
@@ -335,8 +658,15 @@ class DashboardView(ft.Container):
             bgcolor="#F8FAFC",
             border_radius=12,
             border=ft.border.all(1, self.COLOR_BORDER),
-            width=width,
         )
+        # Apply responsive col if provided, otherwise use width for backwards compat
+        if col:
+            container.col = col
+        elif width:
+            container.width = width
+        else:
+            container.col = {"xs": 12, "md": 6}  # Default responsive
+        return container
 
     def _bar_chart(
         self,
@@ -344,10 +674,10 @@ class DashboardView(ft.Container):
         *,
         color: str,
         value_formatter: Callable[[Any], str],
-        empty_text: str = "Sin datos",
+        empty_text: str = None,
     ) -> ft.Control:
         if not items:
-            return ft.Text(empty_text, size=12, color=self.COLOR_TEXT_MUTED)
+            return self._empty_state("charts", empty_text)
 
         values = []
         max_val = 0.0
@@ -375,7 +705,7 @@ class DashboardView(ft.Container):
 
     def _pie_chart(self, data: Dict[str, float], colors: List[str] = None, value_formatter: Callable[[float], str] = str) -> ft.Control:
         if not data:
-            return ft.Text("Sin datos", size=12, color=self.COLOR_TEXT_MUTED)
+            return self._empty_state("charts")
         
         if not colors:
             colors = [self.COLOR_PRIMARY, self.COLOR_INFO, self.COLOR_SUCCESS, self.COLOR_WARNING, self.COLOR_ERROR, "#8B5CF6", "#EC4899"]
@@ -393,7 +723,7 @@ class DashboardView(ft.Container):
             )
         
         if not sections:
-            return ft.Text("Sin datos significativos", size=12, color=self.COLOR_TEXT_MUTED)
+            return self._empty_state("charts", "Valores insuficientes para graficar")
 
         return ft.Row([
             ft.PieChart(
@@ -413,10 +743,10 @@ class DashboardView(ft.Container):
 
     def _line_chart(self, history: List[Dict[str, Any]]) -> ft.Control:
         if not history:
-            return ft.Text("Sin historial disponible", size=12, color=self.COLOR_TEXT_MUTED)
+            return self._empty_state("ventas", "Sin historial de ventas para este periodo")
         
-        # Sort history by date ascending if it's descending
-        history = sorted(history, key=lambda x: x['mes'])
+        # Data is already sorted by date from the database query
+        # history = sorted(history, key=lambda x: x['mes']) 
         
         data_points = []
         max_val = 0
@@ -494,7 +824,7 @@ class DashboardView(ft.Container):
 
     def _real_bar_chart(self, items: List[Dict[str, Any]], color: str = None) -> ft.Control:
         if not items:
-            return ft.Text("Sin datos", size=12, color=self.COLOR_TEXT_MUTED)
+            return self._empty_state("charts")
         
         if not color: color = self.COLOR_PRIMARY
         
@@ -571,16 +901,22 @@ class DashboardView(ft.Container):
             items.insert(2, self._stat_item("Ventas Año", self._format_number(v.get('anio_total', 0), 2, "$"), icon=ft.icons.EQUALIZER_ROUNDED))
             items.append(self._stat_item("Anulados Mes", v.get("anulados_mes", 0), self.COLOR_ERROR, icon=ft.icons.BLOCK_ROUNDED))
 
-        chart_row = ft.Row(wrap=True, spacing=20)
+        chart_row = ft.ResponsiveRow(spacing=20)
         if self.role in ("ADMIN", "GERENTE"):
+            chart_title = "Tendencia de Ventas"
+            if self.current_period == "Hoy": chart_title = "Ventas de Hoy (Por Hora)"
+            elif self.current_period == "Semana": chart_title = "Tendencia Semanal (Diaria)"
+            elif self.current_period == "Mes": chart_title = "Tendencia Mensual (Diaria)"
+            elif self.current_period == "Año": chart_title = "Tendencia Anual (Mensual)"
+
             chart_row.controls.extend([
-                self._chart_panel("Tendencia de Ventas (Mensual)", self._line_chart(charts.get("ventas_mensuales", [])), width=650),
-                self._chart_panel("Mix de Documentos", self._pie_chart(v.get("por_tipo", {}), value_formatter=lambda x: f"{int(x)}"), width=300),
-                self._chart_panel("Participación Formas de Pago", self._pie_chart(v.get("por_forma_pago", {}), value_formatter=lambda x: self._format_number(x, 2, "$")), width=300),
+                self._chart_panel(chart_title, self._line_chart(charts.get("ventas_mensuales", [])), col={"xs": 12, "lg": 7}),
+                self._chart_panel("Mix de Documentos", self._pie_chart(v.get("por_tipo", {}), value_formatter=lambda x: f"{int(x)}"), col={"xs": 12, "sm": 6, "lg": 2.5}),
+                self._chart_panel("Participación Formas de Pago", self._pie_chart(v.get("por_forma_pago", {}), value_formatter=lambda x: self._format_number(x, 2, "$")), col={"xs": 12, "sm": 6, "lg": 2.5}),
             ])
         else:
             chart_row.controls.append(
-                self._chart_panel("Mix de Documentos", self._pie_chart(v.get("por_tipo", {}), value_formatter=lambda x: f"{int(x)}"), width=400)
+                self._chart_panel("Mix de Documentos", self._pie_chart(v.get("por_tipo", {}), value_formatter=lambda x: f"{int(x)}"), col={"xs": 12, "md": 6})
             )
 
         return ft.Column([
@@ -621,7 +957,7 @@ class DashboardView(ft.Container):
                 self._stat_item("Salidas Mes", s.get("salidas_mes", 0), icon=ft.icons.ARROW_UPWARD_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
-            ft.Row([
+            ft.ResponsiveRow([
                 self._chart_panel(
                     "Alertas de Reposición (Artículos con mayor faltante)",
                     ft.Column([
@@ -632,7 +968,7 @@ class DashboardView(ft.Container):
                         ft.Divider(height=10, color="transparent"),
                         critical_list
                     ], spacing=0),
-                    width=650
+                    col={"xs": 12, "lg": 7}
                 ),
                 self._chart_panel(
                     "Stock por Rubro",
@@ -640,9 +976,9 @@ class DashboardView(ft.Container):
                         {r["nombre"]: r["cantidad"] for r in charts.get("stock_por_rubro", [])},
                         value_formatter=lambda x: f"{int(x)} art."
                     ),
-                    width=400
+                    col={"xs": 12, "lg": 5}
                 )
-            ], wrap=True, spacing=20)
+            ], spacing=20)
         ])
 
 
@@ -652,18 +988,18 @@ class DashboardView(ft.Container):
             return None
 
         return ft.Column([
-            ft.Row([
+            ft.ResponsiveRow([
                 self._chart_panel(
                     "TOP 5: Lo que más sale (Facturación)",
                     self._real_bar_chart(charts.get("top_articulos", [])),
-                    width=630
+                    col={"xs": 12, "lg": 6}
                 ) if charts.get("top_articulos") else ft.Container(),
                 self._chart_panel(
                     "BOTTOM 5: Lo que menos sale (Ventas Mes)",
                     self._real_bar_chart(charts.get("bottom_articulos", []), color=self.COLOR_WARNING),
-                    width=630
+                    col={"xs": 12, "lg": 6}
                 ) if charts.get("bottom_articulos") else ft.Container(),
-            ], wrap=True, spacing=20),
+            ], spacing=20),
         ])
 
     def _build_entidades_section(self) -> ft.Control:
@@ -678,7 +1014,7 @@ class DashboardView(ft.Container):
                 self._stat_item("Cant. Deudores", e.get("deudores_cant", 0), icon=ft.icons.PERSON_SEARCH_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
-            ft.Row([
+            ft.ResponsiveRow([
                 self._chart_panel(
                     "Composición de Base",
                     self._pie_chart(
@@ -686,7 +1022,7 @@ class DashboardView(ft.Container):
                         colors=[self.COLOR_INFO, self.COLOR_PRIMARY, self.COLOR_WARNING],
                         value_formatter=lambda x: f"{int(x)}"
                     ),
-                    width=400
+                    col={"xs": 12, "md": 6}
                 ),
                 self._chart_panel(
                     "Estado de Deuda",
@@ -694,7 +1030,7 @@ class DashboardView(ft.Container):
                         "Deudores": e.get("deudores_cant", 0),
                         "Al día": (self._as_number(e.get("clientes_total", 0)) - self._as_number(e.get("deudores_cant", 0)))
                     }, colors=[self.COLOR_ERROR, self.COLOR_SUCCESS], value_formatter=lambda x: f"{int(x)}"),
-                    width=400
+                    col={"xs": 12, "md": 6}
                 )
             ], spacing=20)
         ])
@@ -726,7 +1062,7 @@ class DashboardView(ft.Container):
         return ft.Column([
             ft.ResponsiveRow(stat_items, spacing=10),
             ft.Container(height=10),
-            ft.Row([
+            ft.ResponsiveRow([
                 self._chart_panel(
                     "Movimientos de Stock (Hoy)",
                     self._bar_chart(
@@ -739,6 +1075,7 @@ class DashboardView(ft.Container):
                         value_formatter=lambda v: self._format_number(v),
                         empty_text="Sin movimientos hoy",
                     ),
+                    col={"xs": 12, "md": 6}
                 ),
                 self._chart_panel(
                     "Actividad Operativa (Hoy)",
@@ -748,8 +1085,9 @@ class DashboardView(ft.Container):
                         value_formatter=lambda v: self._format_number(v),
                         empty_text="Sin actividad hoy",
                     ),
+                    col={"xs": 12, "md": 6}
                 ),
-            ], wrap=True, spacing=20),
+            ], spacing=20),
         ])
 
     def _build_finanzas_section(self) -> ft.Control:
@@ -763,14 +1101,14 @@ class DashboardView(ft.Container):
                 self._stat_item("IVA Est. Mes", self._format_number(f.get('iva_estimado', 0), 2, "$"), self.COLOR_INFO, icon=ft.icons.ASSURED_WORKLOAD_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
-            ft.Row([
+            ft.ResponsiveRow([
                 self._chart_panel(
                     "Ingresos vs Egresos (Mes)",
                     self._pie_chart({
                         "Ingresos": f.get("ingresos_mes", 0),
                         "Egresos": f.get("egresos_mes", 0)
                     }, colors=[self.COLOR_SUCCESS, self.COLOR_ERROR], value_formatter=lambda x: self._format_number(x, 2, "$")),
-                    width=300
+                    col={"xs": 12, "md": 5}
                 ),
                 self._chart_panel(
                     "Distribución Financiera",
@@ -783,7 +1121,7 @@ class DashboardView(ft.Container):
                         colors=[self.COLOR_SUCCESS, self.COLOR_ERROR, self.COLOR_INFO],
                         value_formatter=lambda v: self._format_number(v, 2, "$")
                     ),
-                    width=400
+                    col={"xs": 12, "md": 7}
                 )
             ], spacing=20)
         ])

@@ -217,7 +217,7 @@ class Database:
     # =========================================================================
     _catalog_cache: Dict[str, Tuple[float, List[str]]] = {}  # {key: (timestamp, data)}
     _CACHE_TTL = 300  # 5 minutes
-    _DASHBOARD_STATS_CACHE_TTL = 30.0  # seconds
+    _DASHBOARD_STATS_CACHE_TTL = 60.0  # seconds - aligned with default refresh interval
 
     def _get_cached_catalog(self, cache_key: str, query: str) -> List[str]:
         """Get catalog from cache or fetch from DB if expired."""
@@ -270,51 +270,64 @@ class Database:
     # =========================================================================
     # Batch Dashboard Statistics (single connection, fewer round-trips)
     # =========================================================================
-    def get_full_dashboard_stats(self, role: str = "EMPLEADO", *, force_refresh: bool = False) -> Dict[str, Any]:
+    def get_full_dashboard_stats(self, role: str = "EMPLEADO", period: str = "Mes", *, force_refresh: bool = False) -> Dict[str, Any]:
         """
-        Fetch 100+ dashboard statistics filtered by user role.
+        Fetch 100+ dashboard statistics filtered by user role and time period.
         Roles: 'ADMIN', 'GERENTE', 'EMPLEADO'
+        Period: 'Hoy', 'Semana', 'Mes', 'Año'
         """
         role_key = (role or "EMPLEADO").upper()
+        period_key = (period or "Mes").capitalize()
+        cache_key = f"{role_key}_{period_key}"
         now = time.time()
 
         if not force_refresh:
             with self._dashboard_cache_lock:
-                cache_entry = self._dashboard_stats_cache.get(role_key)
+                cache_entry = self._dashboard_stats_cache.get(cache_key)
                 if cache_entry and now - cache_entry[0] < self._DASHBOARD_STATS_CACHE_TTL:
                     return cache_entry[1]
 
-        stats = self._fetch_full_dashboard_stats(role_key)
+        stats = self._fetch_full_dashboard_stats(role_key, period_key)
 
         with self._dashboard_cache_lock:
-            self._dashboard_stats_cache[role_key] = (now, stats)
+            self._dashboard_stats_cache[cache_key] = (now, stats)
 
         return stats
 
-    def _fetch_full_dashboard_stats(self, role: str) -> Dict[str, Any]:
+    def _fetch_full_dashboard_stats(self, role: str, period: str) -> Dict[str, Any]:
         role = (role or "EMPLEADO").upper()
         stats: Dict[str, Any] = {}
+        
+        # Calculate start date based on period
+        start_date_sql = "date_trunc('month', now())"  # Default
+        if period == "Hoy":
+            start_date_sql = "current_date"
+        elif period == "Semana":
+            start_date_sql = "date_trunc('week', now())"
+        elif period == "Año":
+            start_date_sql = "date_trunc('year', now())"
 
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 # 1. Basic Operating Stats (Accessible to all)
-                stats["operativas"] = self._get_stats_operativas(cur, role)
+                stats["operativas"] = self._get_stats_operativas(cur, role, start_date_sql)
 
-                # 2. Sales Stats
-                stats["ventas"] = self._get_stats_ventas_extended(cur, role)
+                # 2. Sales Stats (Always includes Hoy/Mes/Total columns, so keeping it generic but potentially could filter "metrics" if needed)
+                # For now, we keep the global "boxes" as fixed (Hoy/Mes/Año) but we could filter the breakdowns.
+                stats["ventas"] = self._get_stats_ventas_extended(cur, role, start_date_sql)
 
                 # 3. Stock Stats
-                stats["stock"] = self._get_stats_stock_extended(cur, role)
+                stats["stock"] = self._get_stats_stock_extended(cur, role, start_date_sql)
 
                 # 5. Entities (Clients/Providers)
-                stats["entidades"] = self._get_stats_entidades_extended(cur, role)
+                stats["entidades"] = self._get_stats_entidades_extended(cur, role, start_date_sql)
 
-                # 6. Movement Stats (Today summary)
+                # 6. Movement Stats (Today summary - maybe should also respect period? Kept as today for specific box)
                 stats["movimientos"] = self._get_stats_movimientos_extended(cur, role)
 
                 # 7. Financial Stats (Restricted)
                 if role in ("ADMIN", "GERENTE"):
-                    stats["finanzas"] = self._get_stats_finanzas_extended(cur, role)
+                    stats["finanzas"] = self._get_stats_finanzas_extended(cur, role, start_date_sql)
 
                 # 8. Technical/System Stats (Admin only)
                 if role == "ADMIN":
@@ -322,20 +335,21 @@ class Database:
 
                 # 9. Extended Chart Data
                 stats["charts"] = {
-                    "ventas_mensuales": self.get_reporte_ventas(limit=6) if role in ("ADMIN", "GERENTE") else [],
-                    "top_articulos": self.get_top_articulos(limit=5) if role in ("ADMIN", "GERENTE") else [],
-                    "bottom_articulos": self.get_bottom_articulos(limit=5) if role in ("ADMIN", "GERENTE") else [],
+                    "ventas_mensuales": self.get_reporte_ventas_dinamico(period, limit=12) if role in ("ADMIN", "GERENTE") else [],
+                    "top_articulos": self.get_top_articulos_dinamico(start_date_sql, limit=5) if role in ("ADMIN", "GERENTE") else [],
+                    "bottom_articulos": self.get_bottom_articulos_dinamico(start_date_sql, limit=5) if role in ("ADMIN", "GERENTE") else [],
                     "alertas_stock": self.get_alertas_stock(limit=5),
                     "stock_por_rubro": self.get_stock_by_rubro(limit=8),
                     "entidades_por_tipo": self.get_entidades_by_tipo()
                 }
         return stats
 
-    def _get_stats_ventas_extended(self, cur, role) -> Dict[str, Any]:
+    def _get_stats_ventas_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Sales statistics (25 metrics)"""
         # EMPLEADO has restricted access to some financial values
         show_money = role in ("ADMIN", "GERENTE")
         
+        # Main KPI query (Hoy, Mes, Sem) - keeps fixed logic for KPI cards
         cur.execute("""
             WITH base_ventas AS (
                 SELECT 
@@ -384,18 +398,20 @@ class Database:
         }
 
         
-        # Add more granular sales stats if Gerente/Admin
+        # Add filtered stats if Gerente/Admin
         if role in ("ADMIN", "GERENTE"):
-            cur.execute("""
+            # Using formatted query safely with literal SQL for the date function
+            query_tipo = f"""
                 SELECT 
                     tipo_documento, COUNT(*) 
                 FROM app.v_documento_resumen
-                WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())
+                WHERE clase = 'VENTA' AND fecha >= {start_date_sql}
                 GROUP BY tipo_documento
-            """)
+            """
+            cur.execute(query_tipo)
             res["por_tipo"] = {r[0]: r[1] for r in cur.fetchall()}
             
-            cur.execute("""
+            query_fp = f"""
                 SELECT 
                     COALESCE(fp.descripcion, 'Efectivo'), 
                     SUM(COALESCE(p.monto, d.total))
@@ -404,26 +420,29 @@ class Database:
                 LEFT JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
                 WHERE d.clase = 'VENTA' 
                   AND d.estado != 'ANULADO'
-                  AND d.fecha >= date_trunc('month', now())
+                  AND d.fecha >= {start_date_sql}
                 GROUP BY COALESCE(fp.descripcion, 'Efectivo')
-            """)
+            """
+            cur.execute(query_fp)
             res["por_forma_pago"] = {r[0]: float(r[1] or 0) for r in cur.fetchall()}
             
         return res
 
-    def _get_stats_stock_extended(self, cur, role) -> Dict[str, Any]:
+    def _get_stats_stock_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Stock statistics (18 metrics)"""
-        cur.execute("""
+        # Using format to inject start_date_sql safely as it is a trusted string from internal logic
+        query = f"""
             SELECT 
                 (SELECT COUNT(*) FROM app.articulo) as total,
                 (SELECT COUNT(*) FROM app.articulo WHERE activo = true) as activos,
                 (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= stock_minimo) as bajo_stock,
                 (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= 0) as sin_stock,
                 (SELECT COALESCE(SUM(costo * stock_actual), 0) FROM app.v_articulo_detallado) as valor_costo,
-                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad > 0) as entradas_mes,
-                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= date_trunc('month', now()) AND cantidad < 0) as salidas_mes,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= {start_date_sql} AND cantidad > 0) as entradas_mes,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= {start_date_sql} AND cantidad < 0) as salidas_mes,
                 (SELECT COALESCE(SUM(stock_actual), 0) FROM app.v_articulo_detallado) as stock_total_unidades
-        """)
+        """
+        cur.execute(query)
         row = cur.fetchone()
         
         show_values = role in ("ADMIN", "GERENTE")
@@ -457,16 +476,17 @@ class Database:
             "ajustes": row[2] or 0
         }
 
-    def _get_stats_entidades_extended(self, cur, role) -> Dict[str, Any]:
+    def _get_stats_entidades_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Clients and Providers stats (25 metrics)"""
-        cur.execute("""
+        query = f"""
             SELECT 
                 (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo IN ('CLIENTE', 'AMBOS')) as clientes_total,
                 (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo IN ('PROVEEDOR', 'AMBOS')) as prov_total,
-                (SELECT COUNT(*) FROM app.entidad_comercial WHERE fecha_creacion >= date_trunc('month', now())) as nuevos_mes,
+                (SELECT COUNT(*) FROM app.entidad_comercial WHERE fecha_creacion >= {start_date_sql}) as nuevos_mes,
                 (SELECT COALESCE(SUM(saldo_cuenta), 0) FROM app.lista_cliente WHERE saldo_cuenta > 0) as deuda_clientes_total,
                 (SELECT COUNT(*) FROM app.lista_cliente WHERE saldo_cuenta > 0) as deudores_cant
-        """)
+        """
+        cur.execute(query)
         row = cur.fetchone()
         
         show_money = role in ("ADMIN", "GERENTE")
@@ -479,16 +499,17 @@ class Database:
             "deudores_cant": row[4] or 0
         }
 
-    def _get_stats_finanzas_extended(self, cur, role) -> Dict[str, Any]:
+    def _get_stats_finanzas_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Financial stats (15 metrics) - Restricted to GERENTE/ADMIN"""
-        cur.execute("""
+        query = f"""
             SELECT 
                 (SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE fecha >= current_date) as ingresos_hoy,
-                (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= date_trunc('month', now())) as egresos_mes,
-                (SELECT COALESCE(SUM(p.monto), 0) FROM app.pago p JOIN app.v_documento_resumen d ON p.id_documento = d.id WHERE d.clase = 'VENTA' AND p.fecha >= date_trunc('month', now())) as ingresos_mes,
-                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())) as iva_estimado_mes,
+                (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= {start_date_sql}) as egresos_mes,
+                (SELECT COALESCE(SUM(p.monto), 0) FROM app.pago p JOIN app.v_documento_resumen d ON p.id_documento = d.id WHERE d.clase = 'VENTA' AND p.fecha >= {start_date_sql}) as ingresos_mes,
+                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= {start_date_sql}) as iva_estimado_mes,
                 (SELECT COUNT(*) FROM app.pago WHERE fecha >= now() - interval '7 days') as pagos_recientes
-        """)
+        """
+        cur.execute(query)
         row = cur.fetchone()
         
         return {
@@ -500,14 +521,17 @@ class Database:
             "pagos_recientes": int(row[4] or 0)
         }
 
-    def _get_stats_operativas(self, cur, role) -> Dict[str, Any]:
+    def _get_stats_operativas(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Operational and Productivity stats (20 metrics)"""
-        cur.execute("""
+        # Note: entregas_hoy are kept as current_date as the label implies.
+        # But logs are filtered by period.
+        query = f"""
             SELECT 
                 (SELECT COUNT(*) FROM app.remito WHERE estado = 'PENDIENTE') as remitos_pend,
                 (SELECT COUNT(*) FROM app.remito WHERE fecha >= current_date AND estado = 'ENTREGADO') as entregas_hoy,
-                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE fecha_hora >= current_date) as logs_hoy
-        """)
+                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE fecha_hora >= {start_date_sql}) as logs_hoy
+        """
+        cur.execute(query)
         row = cur.fetchone()
         
         res = {
@@ -552,6 +576,131 @@ class Database:
             "backups_mes": row[2] or 0,
             "ultimo_login": row[3].strftime("%Y-%m-%d %H:%M") if row[3] else "N/A"
         }
+
+
+    def get_reporte_ventas_dinamico(self, period: str, limit: int = 12) -> List[Dict[str, Any]]:
+        """
+        Dynamic sales report based on period.
+        - Hoy/Semana: Group by day
+        - Mes: Group by day
+        - Año: Group by month
+        """
+        trunc = 'month'
+        limit_clause = "LIMIT %s"
+        
+        # Construct query based on period
+        if period == "Hoy":
+            # Hourly grouping for today
+            query = """
+                SELECT 
+                    to_char(fecha, 'HH24:00') as label,
+                    SUM(total) as total_ventas,
+                    COUNT(*) as cantidad_ventas
+                FROM app.v_documento_resumen
+                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                  AND fecha >= current_date
+                GROUP BY 1
+                ORDER BY 1 ASC
+            """
+            limit_clause = ""
+        elif period == "Semana":
+            # Daily grouping for this week
+            query = """
+                SELECT 
+                    to_char(fecha, 'Dy DD') as label,
+                    SUM(total) as total_ventas,
+                    COUNT(*) as cantidad_ventas
+                FROM app.v_documento_resumen
+                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                  AND fecha >= date_trunc('week', now())
+                GROUP BY 1, date_trunc('day', fecha)
+                ORDER BY date_trunc('day', fecha) ASC
+            """
+            limit_clause = ""
+        elif period == "Mes":
+             # Daily grouping for this month
+            query = """
+                SELECT 
+                    to_char(fecha, 'DD/MM') as label,
+                    SUM(total) as total_ventas,
+                    COUNT(*) as cantidad_ventas
+                FROM app.v_documento_resumen
+                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                  AND fecha >= date_trunc('month', now())
+                GROUP BY 1, date_trunc('day', fecha)
+                ORDER BY date_trunc('day', fecha) ASC
+            """
+            limit_clause = ""
+        else: # Año or fallback
+            # Monthly grouping for this year
+            query = """
+                SELECT 
+                    to_char(fecha, 'Mon') as label,
+                    SUM(total) as total_ventas,
+                    COUNT(*) as cantidad_ventas
+                FROM app.v_documento_resumen
+                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                  AND fecha >= date_trunc('year', now())
+                GROUP BY 1, date_trunc('month', fecha)
+                ORDER BY date_trunc('month', fecha) ASC
+                LIMIT %s
+            """
+
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                if period not in ("Hoy", "Semana", "Mes"):
+                     cur.execute(query, (limit,))
+                else:
+                     cur.execute(query)
+                
+                rows = cur.fetchall()
+                # Map to list of dicts. Note: "mes" key used by dashboard_view for label
+                return [{"mes": r[0], "total_ventas": float(r[1] or 0), "cantidad_ventas": r[2]} for r in rows]
+
+    def get_top_articulos_dinamico(self, start_date_sql: str, limit: int = 10) -> List[Dict[str, Any]]:
+        # Usually internal helper doesn't need to be exposed, but we use it here.
+        # We need to construct the query with the safe start_date_sql string.
+        query = f"""
+            SELECT 
+                a.id, a.nombre,
+                COALESCE(SUM(dd.cantidad), 0) as cantidad_vendida,
+                COALESCE(SUM(dd.total_linea), 0) as total_facturado
+            FROM app.articulo a
+            JOIN app.documento_detalle dd ON a.id = dd.id_articulo
+            JOIN app.v_documento_resumen d ON dd.id_documento = d.id
+            WHERE a.activo = true
+              AND d.clase = 'VENTA'
+              AND d.estado IN ('CONFIRMADO', 'PAGADO')
+              AND d.fecha >= {start_date_sql}
+            GROUP BY a.id, a.nombre
+            ORDER BY total_facturado DESC
+            LIMIT %s
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
+
+    def get_bottom_articulos_dinamico(self, start_date_sql: str, limit: int = 10) -> List[Dict[str, Any]]:
+        query = f"""
+            SELECT 
+                a.id, a.nombre,
+                COALESCE(SUM(dd.cantidad), 0) as cantidad_vendida,
+                COALESCE(SUM(dd.total_linea), 0) as total_facturado
+            FROM app.articulo a
+            LEFT JOIN app.documento_detalle dd ON a.id = dd.id_articulo
+            LEFT JOIN app.v_documento_resumen d ON dd.id_documento = d.id
+            WHERE a.activo = true
+              AND (d.id IS NULL OR (d.fecha >= {start_date_sql} AND d.estado IN ('CONFIRMADO', 'PAGADO') AND d.clase = 'VENTA'))
+            GROUP BY a.id, a.nombre
+            HAVING COALESCE(SUM(dd.total_linea), 0) > 0
+            ORDER BY total_facturado ASC, cantidad_vendida ASC
+            LIMIT %s
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (limit,))
+                return _rows_to_dicts(cur)
 
     # Dashboard Statistics (individual methods kept for backwards compatibility)
     def get_stats_entidades(self) -> Dict[str, Any]:
