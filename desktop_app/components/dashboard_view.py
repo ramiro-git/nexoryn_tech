@@ -63,24 +63,25 @@ class DashboardView(ft.Container):
                 time.sleep(300) # 5 minutes
                 if not self._stop_event.is_set():
                     try:
-                        self.load_data()
+                        self.load_data(silent=True)
                     except:
                         pass
         
         self._refresh_thread = threading.Thread(target=refresh_loop, daemon=True)
         self._refresh_thread.start()
 
-    def load_data(self):
-        # 1. Show Loader immediately
+    def load_data(self, silent: bool = False):
+        # 1. Show Loader only if not silent
         self.is_loading = True
-        self.content = ft.Container(
-            content=ft.ProgressRing(),
-            alignment=ft.Alignment(0, 0),
-            expand=True
-        )
-        try:
-            if self.page: self.update()
-        except: pass
+        if not silent:
+            self.content = ft.Container(
+                content=ft.ProgressRing(),
+                alignment=ft.Alignment(0, 0),
+                expand=True
+            )
+            try:
+                if self.page: self.update()
+            except: pass
         
         # 2. Fetch Data (in main thread for simplicity, or bg thread if refactored)
         try:
@@ -267,7 +268,7 @@ class DashboardView(ft.Container):
             border=ft.border.all(1, self.COLOR_BORDER)
         )
 
-    def _stat_item(self, label: str, value: Any, color: str = None, trend: float = None) -> ft.Control:
+    def _stat_item(self, label: str, value: Any, color: str = None, trend: float = None, icon: str = None) -> ft.Control:
         if color is None: color = self.COLOR_TEXT
         # Auto-format number if it's a float/int and not already formatted
         display_val = str(value)
@@ -291,9 +292,10 @@ class DashboardView(ft.Container):
         return ft.Container(
             content=ft.Column([
                 ft.Row([
+                    ft.Icon(icon, color=self.COLOR_TEXT_MUTED, size=14) if icon else ft.Container(),
                     ft.Text(label, size=12, color=self.COLOR_TEXT_MUTED),
                     trend_badge
-                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Text(display_val, size=16, weight=ft.FontWeight.BOLD, color=color),
             ], spacing=2),
             col={"xs": 6, "sm": 4, "md": 2},
@@ -559,15 +561,15 @@ class DashboardView(ft.Container):
         trend = v.get("tendencia_mes_pct", 0)
         
         items = [
-            self._stat_item("Presup. Pénd.", v.get("presupuestos_pend", 0)),
-            self._stat_item("Comprobantes Hoy", v.get("hoy_cant", 0), self.COLOR_INFO),
+            self._stat_item("Presup. Pénd.", v.get("presupuestos_pend", 0), icon=ft.icons.FORMAT_LIST_BULLETED_ROUNDED),
+            self._stat_item("Comprobantes Hoy", v.get("hoy_cant", 0), self.COLOR_INFO, icon=ft.icons.RECEIPT_LONG_ROUNDED),
         ]
         
         if self.role in ("ADMIN", "GERENTE"):
-            items.insert(0, self._stat_item("Ventas Semana", self._format_number(v.get('semana_total', 0), 2, "$")))
-            items.insert(1, self._stat_item("Ventas Mes", self._format_number(v.get('mes_total', 0), 2, "$"), self.COLOR_PRIMARY, trend=trend))
-            items.insert(2, self._stat_item("Ventas Año", self._format_number(v.get('anio_total', 0), 2, "$")))
-            items.append(self._stat_item("Anulados Mes", v.get("anulados_mes", 0), self.COLOR_ERROR))
+            items.insert(0, self._stat_item("Ventas Semana", self._format_number(v.get('semana_total', 0), 2, "$"), icon=ft.icons.CALENDAR_VIEW_WEEK_ROUNDED))
+            items.insert(1, self._stat_item("Ventas Mes", self._format_number(v.get('mes_total', 0), 2, "$"), self.COLOR_PRIMARY, trend=trend, icon=ft.icons.CALENDAR_MONTH_ROUNDED))
+            items.insert(2, self._stat_item("Ventas Año", self._format_number(v.get('anio_total', 0), 2, "$"), icon=ft.icons.EQUALIZER_ROUNDED))
+            items.append(self._stat_item("Anulados Mes", v.get("anulados_mes", 0), self.COLOR_ERROR, icon=ft.icons.BLOCK_ROUNDED))
 
         chart_row = ft.Row(wrap=True, spacing=20)
         if self.role in ("ADMIN", "GERENTE"):
@@ -610,13 +612,13 @@ class DashboardView(ft.Container):
 
         return ft.Column([
             ft.ResponsiveRow([
-                self._stat_item("Total Artículos", s.get("total", 0)),
-                self._stat_item("Activos", s.get("activos", 0), self.COLOR_SUCCESS),
-                self._stat_item("Stock Crítico", s.get("bajo_stock", 0), self.COLOR_WARNING),
-                self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR),
-                self._stat_item("Valor Inventario", self._format_number(s.get('valor_inventario', 0), 2, "$"), self.COLOR_INFO),
-                self._stat_item("Ingresos Mes", s.get("entradas_mes", 0)),
-                self._stat_item("Salidas Mes", s.get("salidas_mes", 0)),
+                self._stat_item("Total Artículos", s.get("total", 0), icon=ft.icons.INVENTORY_ROUNDED),
+                self._stat_item("Activos", s.get("activos", 0), self.COLOR_SUCCESS, icon=ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED),
+                self._stat_item("Stock Crítico", s.get("bajo_stock", 0), self.COLOR_WARNING, icon=ft.icons.WARNING_AMBER_ROUNDED),
+                self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR, icon=ft.icons.DND_FORWARDSLASH_ROUNDED),
+                self._stat_item("Valor Inventario", self._format_number(s.get('valor_inventario', 0), 2, "$"), self.COLOR_INFO, icon=ft.icons.MONETIZATION_ON_ROUNDED),
+                self._stat_item("Ingresos Mes", s.get("entradas_mes", 0), icon=ft.icons.ARROW_DOWNWARD_ROUNDED),
+                self._stat_item("Salidas Mes", s.get("salidas_mes", 0), icon=ft.icons.ARROW_UPWARD_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
             ft.Row([
@@ -669,11 +671,11 @@ class DashboardView(ft.Container):
         charts = self.stats.get("charts", {})
         return ft.Column([
             ft.ResponsiveRow([
-                self._stat_item("Clientes Totales", e.get("clientes_total", 0)),
-                self._stat_item("Proveedores", e.get("proveedores_total", 0)),
-                self._stat_item("Nuevos (Mes)", e.get("nuevos_mes", 0), self.COLOR_SUCCESS),
-                self._stat_item("Deuda Clientes", self._format_number(e.get('deuda_clientes', 0), 2, "$"), self.COLOR_ERROR),
-                self._stat_item("Cant. Deudores", e.get("deudores_cant", 0)),
+                self._stat_item("Clientes Totales", e.get("clientes_total", 0), icon=ft.icons.PEOPLE_ROUNDED),
+                self._stat_item("Proveedores", e.get("proveedores_total", 0), icon=ft.icons.BUSINESS_CENTER_ROUNDED),
+                self._stat_item("Nuevos (Mes)", e.get("nuevos_mes", 0), self.COLOR_SUCCESS, icon=ft.icons.PERSON_ADD_ROUNDED),
+                self._stat_item("Deuda Clientes", self._format_number(e.get('deuda_clientes', 0), 2, "$"), self.COLOR_ERROR, icon=ft.icons.ACCOUNT_BALANCE_WALLET_ROUNDED),
+                self._stat_item("Cant. Deudores", e.get("deudores_cant", 0), icon=ft.icons.PERSON_SEARCH_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
             ft.Row([
@@ -702,15 +704,15 @@ class DashboardView(ft.Container):
         m = self.stats.get("movimientos", {})
         
         stat_items = [
-            self._stat_item("Entregas Hoy", o.get("entregas_hoy", 0), self.COLOR_SUCCESS),
+            self._stat_item("Entregas Hoy", o.get("entregas_hoy", 0), self.COLOR_SUCCESS, icon=ft.icons.LOCAL_SHIPPING_ROUNDED),
         ]
         if self.role == "ADMIN":
-             stat_items.append(self._stat_item("Actividad Sistema", o.get("actividad_sistema", 0), self.COLOR_INFO))
+             stat_items.append(self._stat_item("Actividad Sistema", o.get("actividad_sistema", 0), self.COLOR_INFO, icon=ft.icons.HISTORY_ROUNDED))
              
         stat_items.extend([
-            self._stat_item("Mov. Ingresos", m.get("ingresos", 0), self.COLOR_SUCCESS),
-            self._stat_item("Mov. Salidas", m.get("salidas", 0), self.COLOR_WARNING),
-            self._stat_item("Ajustes", m.get("ajustes", 0), self.COLOR_ERROR),
+            self._stat_item("Mov. Ingresos", m.get("ingresos", 0), self.COLOR_SUCCESS, icon=ft.icons.ADD_BOX_ROUNDED),
+            self._stat_item("Mov. Salidas", m.get("salidas", 0), self.COLOR_WARNING, icon=ft.icons.INDETERMINATE_CHECK_BOX_ROUNDED),
+            self._stat_item("Ajustes", m.get("ajustes", 0), self.COLOR_ERROR, icon=ft.icons.EDIT_NOTE_ROUNDED),
         ])
 
         chart_items = [
@@ -754,11 +756,11 @@ class DashboardView(ft.Container):
         f = self.stats.get("finanzas", {})
         return ft.Column([
             ft.ResponsiveRow([
-                self._stat_item("Ingresos Hoy", self._format_number(f.get('ingresos_hoy', 0), 2, "$"), self.COLOR_SUCCESS),
-                self._stat_item("Ingresos Mes", self._format_number(f.get('ingresos_mes', 0), 2, "$")),
-                self._stat_item("Egresos Mes", self._format_number(f.get('egresos_mes', 0), 2, "$"), self.COLOR_ERROR),
-                self._stat_item("Balance Mes", self._format_number(f.get('balance_mes', 0), 2, "$"), self.COLOR_PRIMARY),
-                self._stat_item("IVA Est. Mes", self._format_number(f.get('iva_estimado', 0), 2, "$"), self.COLOR_INFO),
+                self._stat_item("Ingresos Hoy", self._format_number(f.get('ingresos_hoy', 0), 2, "$"), self.COLOR_SUCCESS, icon=ft.icons.ACCOUNT_BALANCE_ROUNDED),
+                self._stat_item("Ingresos Mes", self._format_number(f.get('ingresos_mes', 0), 2, "$"), icon=ft.icons.TRENDING_UP_ROUNDED),
+                self._stat_item("Egresos Mes", self._format_number(f.get('egresos_mes', 0), 2, "$"), self.COLOR_ERROR, icon=ft.icons.TRENDING_DOWN_ROUNDED),
+                self._stat_item("Balance Mes", self._format_number(f.get('balance_mes', 0), 2, "$"), self.COLOR_PRIMARY, icon=ft.icons.CURRENCY_EXCHANGE_ROUNDED),
+                self._stat_item("IVA Est. Mes", self._format_number(f.get('iva_estimado', 0), 2, "$"), self.COLOR_INFO, icon=ft.icons.ASSURED_WORKLOAD_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
             ft.Row([
@@ -789,10 +791,10 @@ class DashboardView(ft.Container):
     def _build_sistema_section(self) -> ft.Control:
         sis = self.stats.get("sistema", {})
         return ft.ResponsiveRow([
-            self._stat_item("Usuarios Activos", sis.get("usuarios_activos", 0)),
-            self._stat_item("Errores Mes", sis.get("errores_mes", 0), self.COLOR_ERROR),
-            self._stat_item("Backups Ok", sis.get("backups_mes", 0), self.COLOR_SUCCESS),
-            self._stat_item("Última Actividad", self.stats.get("operativas", {}).get("actividad_sistema", 0), self.COLOR_INFO),
+            self._stat_item("Usuarios Activos", sis.get("usuarios_activos", 0), icon=ft.icons.PEOPLE_OUTLINE_ROUNDED),
+            self._stat_item("Errores Mes", sis.get("errores_mes", 0), self.COLOR_ERROR, icon=ft.icons.BUG_REPORT_ROUNDED),
+            self._stat_item("Backups Ok", sis.get("backups_mes", 0), self.COLOR_SUCCESS, icon=ft.icons.BACKUP_ROUNDED),
+            self._stat_item("Última Actividad", self.stats.get("operativas", {}).get("actividad_sistema", 0), self.COLOR_INFO, icon=ft.icons.MONITOR_HEART_ROUNDED),
         ], spacing=10)
 
     def _badge(self, label: str, value: str) -> ft.Container:
