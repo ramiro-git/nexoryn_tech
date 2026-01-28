@@ -10,6 +10,7 @@ import os
 import sys
 import io
 import csv
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -511,8 +512,19 @@ def import_cliprov(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
     # 3. Map Data
     iva_cache = cache._get_cache("ref", "condicion_iva")
     def get_iva_id(val):
-        if not val: return None
-        return iva_cache.get(iva_map_code.get(val.upper(), val).lower())
+        if val is None or pd.isna(val):
+            return pd.NA
+
+        s = str(val).strip()
+        if not s or s.lower() in {"nan", "none", "null"}:
+            return pd.NA
+
+        # 21.0 -> "21"
+        if re.fullmatch(r"\d+(\.0+)?", s):
+            s = str(int(float(s)))
+
+        key = iva_map_code.get(s.upper(), s).lower()
+        return iva_cache.get(key, pd.NA)
     
     df['id_iva'] = df['iva'].map(get_iva_id).astype('Int64')
     
