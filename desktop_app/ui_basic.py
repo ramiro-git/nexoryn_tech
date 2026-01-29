@@ -182,7 +182,10 @@ def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
     if value is None:
         return "—"
     try:
-        return f"${float(value):,.2f}"
+        val = float(value)
+        # Format as 1,234.56 then swap chars to 1.234,56
+        formatted = f"{val:,.2f}"
+        return f"${formatted.replace(',', 'X').replace('.', ',').replace('X', '.')}"
     except Exception:
         return str(value)
 
@@ -239,6 +242,55 @@ def _remito_status_pill(value: Any) -> ft.Control:
         bgcolor=bg,
         content=ft.Text(status, size=11, weight=ft.FontWeight.W_600, color=fg),
     )
+
+
+def _format_datetime(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
+    if not value:
+        return "—"
+    try:
+        # If it's already a datetime object
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            # Parse from ISO string
+            # Handle potentially different formats or 'T' separator
+            s = str(value).replace("T", " ")
+            # Truncate timezone if present (simplistic approach for display)
+            if "+" in s:
+                s = s.split("+")[0]
+            elif "-" in s and s.count("-") > 2: # 2023-01-01-03:00
+                 s = s.rsplit("-", 1)[0]
+            
+            # Try parsing with split seconds
+            if "." in s:
+                dt = datetime.strptime(s.split(".")[0], "%Y-%m-%d %H:%M:%S")
+            else:
+                try:
+                    dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    dt = datetime.strptime(s, "%Y-%m-%d")
+
+        # Format: DD/MM/YYYY HH:MM
+        # If time is 00:00:00, maybe just show date? User asked for "fecha completa + la hora pero mejor"
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(value)
+
+
+def _format_quantity(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
+    if value is None:
+        return "0"
+    try:
+        val = float(value)
+        # Display as integer
+        return f"{int(val):,}".replace(",", ".") # European/Arg style dots for thousands? Or just clean int?
+        # User said "son enteros no flotantes". Let's just use standard int string.
+        # But thousands separator is nice.
+        # Let's stick to simple int() for now, or f"{int(val)}"
+        return str(int(val))
+    except Exception:
+        return str(value)
+
 
 
 def _icon_button_or_spacer(visible: bool, **kwargs: Any) -> ft.Control:
@@ -1455,7 +1507,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="fecha_creacion", 
                 label="Fecha Alta", 
-                formatter=lambda v, _: v.strftime("%d/%m/%Y") if isinstance(v, datetime) else (datetime.fromisoformat(str(v).split(".")[0].replace(" ", "T")).strftime("%d/%m/%Y") if v else "—"),
+                formatter=_format_datetime,
                 width=110
             ),
             ColumnConfig(key="saldo_cuenta", label="Saldo", formatter=_format_money, width=100),
@@ -1746,14 +1798,14 @@ def main(page: ft.Page) -> None:
                 key="stock_minimo",
                 label="Mínimo (stock)",
                 editable=True,
-                formatter=lambda v, _: "—" if v is None else f"{float(v):.2f}",
+                formatter=_format_quantity,
                 width=90,
             ),
             ColumnConfig(
                 key="stock_actual",
                 label="Stock",
                 editable=True,
-                formatter=lambda v, _: "—" if v is None else f"{float(v):.2f}",
+                formatter=_format_quantity,
                 width=90,
             ),
             ColumnConfig(
@@ -3729,7 +3781,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="email", label="Email", editable=True, width=200),
             ColumnConfig(key="rol", label="Rol", editable=False, width=100),
             ColumnConfig(key="activo", label="Estado", width=110, renderer=lambda row: _bool_pill(row.get("activo"))),
-            ColumnConfig(key="ultimo_login", label="Últ. Acceso", width=160),
+            ColumnConfig(key="ultimo_login", label="Últ. Acceso", width=160, formatter=_format_datetime),
             ColumnConfig(
                 key="_toggle", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
@@ -3751,7 +3803,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="nombre", label="Nombre", width=180),
             ColumnConfig(key="email", label="Email", width=200),
             ColumnConfig(key="rol", label="Rol", width=100),
-            ColumnConfig(key="desde", label="Desde", width=160),
+            ColumnConfig(key="desde", label="Desde", width=160, formatter=_format_datetime),
             ColumnConfig(key="ip", label="Dirección IP", width=140),
         ],
         data_provider=create_catalog_provider(db.fetch_active_sessions, db.count_active_sessions),
@@ -4294,7 +4346,7 @@ def main(page: ft.Page) -> None:
                             ),
                             ft.Column([
                                 ft.Text("FECHA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.RIGHT),
-                                ft.Text(str(doc_row.get("fecha", "—"))[:10] if doc_row.get("fecha") else "—", size=14, text_align=ft.TextAlign.RIGHT),
+                                ft.Text(_format_datetime(doc_row.get("fecha")), size=14, text_align=ft.TextAlign.RIGHT),
                             ], spacing=2, width=100),
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         padding=ft.padding.only(bottom=15),
@@ -4359,7 +4411,7 @@ def main(page: ft.Page) -> None:
                                             )),
                                             ft.DataCell(ft.Container(
                                                 width=col_widths["cant"],
-                                                content=ft.Text(str(d["cantidad"]), size=13, text_align=ft.TextAlign.RIGHT),
+                                                content=ft.Text(_format_quantity(d["cantidad"]), size=13, text_align=ft.TextAlign.RIGHT),
                                             )),
                                             ft.DataCell(ft.Container(
                                                 width=col_widths["unitario"],
@@ -4496,7 +4548,7 @@ def main(page: ft.Page) -> None:
                 ], spacing=2),
                 ft.Column([
                     ft.Text("FECHA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
-                    ft.Text(str(rem_row.get("fecha") or "")[:10] or "—", size=13),
+                    ft.Text(_format_datetime(rem_row.get("fecha")), size=13),
                 ], spacing=2),
                 ft.Column([
                     ft.Text("ESTADO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
@@ -4504,7 +4556,7 @@ def main(page: ft.Page) -> None:
                 ], spacing=2),
                 ft.Column([
                     ft.Text("ENTREGA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
-                    ft.Text(str(rem_row.get("fecha_entrega") or "")[:10] or "—", size=13),
+                    ft.Text(_format_datetime(rem_row.get("fecha_entrega")), size=13),
                 ], spacing=2),
             ], spacing=20, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
@@ -4522,7 +4574,7 @@ def main(page: ft.Page) -> None:
                     rows=[
                         ft.DataRow(cells=[
                             ft.DataCell(ft.Text(d.get("articulo") or "—", size=13)),
-                            ft.DataCell(ft.Text(str(d.get("cantidad") or 0), size=13)),
+                            ft.DataCell(ft.Text(_format_quantity(d.get("cantidad") or 0), size=13)),
                         ]) for d in details
                     ],
                 )
@@ -4789,7 +4841,7 @@ def main(page: ft.Page) -> None:
 
     documentos_summary_table = GenericTable(
         columns=[
-            ColumnConfig(key="fecha", label="Fecha", width=120),
+            ColumnConfig(key="fecha", label="Fecha", width=120, formatter=_format_datetime),
             ColumnConfig(key="letra", label="Letra", width=60),
             ColumnConfig(key="tipo_documento", label="Tipo", width=120),
             ColumnConfig(key="numero_serie", label="Número", width=100),
@@ -5051,12 +5103,12 @@ def main(page: ft.Page) -> None:
     remitos_table = GenericTable(
         columns=[
             ColumnConfig(key="numero", label="Remito", width=120),
-            ColumnConfig(key="fecha", label="Fecha", width=120),
+            ColumnConfig(key="fecha", label="Fecha", width=120, formatter=_format_datetime),
             ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _remito_status_pill(row.get("estado"))),
             ColumnConfig(key="entidad", label="Entidad", width=220),
             ColumnConfig(key="deposito", label="Depósito", width=160),
             ColumnConfig(key="documento_numero", label="Documento", width=160),
-            ColumnConfig(key="total_unidades", label="Unidades", width=90),
+            ColumnConfig(key="total_unidades", label="Unidades", width=90, formatter=_format_quantity),
             ColumnConfig(
                 key="_detail",
                 label="",
@@ -5082,8 +5134,8 @@ def main(page: ft.Page) -> None:
                     on_click=lambda e, r=row: _open_remito_estado_dialog(r),
                 )
             ),
-            ColumnConfig(key="fecha_despacho", label="Despacho", width=120),
-            ColumnConfig(key="fecha_entrega", label="Entrega", width=120),
+            ColumnConfig(key="fecha_despacho", label="Despacho", width=120, formatter=_format_datetime),
+            ColumnConfig(key="fecha_entrega", label="Entrega", width=120, formatter=_format_datetime),
             ColumnConfig(key="direccion_entrega", label="Dirección", width=220),
         ],
         data_provider=create_catalog_provider(db.fetch_remitos, db.count_remitos),
@@ -5148,10 +5200,10 @@ def main(page: ft.Page) -> None:
 
     movimientos_table = GenericTable(
         columns=[
-            ColumnConfig(key="fecha", label="Fecha", width=120),
+            ColumnConfig(key="fecha", label="Fecha", width=120, formatter=_format_datetime),
             ColumnConfig(key="articulo", label="Artículo", width=200),
             ColumnConfig(key="tipo_movimiento", label="Tipo", width=120),
-            ColumnConfig(key="cantidad", label="Cant.", width=80),
+            ColumnConfig(key="cantidad", label="Cant.", width=80, formatter=_format_quantity),
             ColumnConfig(
                 key="comprobante", label="Comprobante", width=180,
                 renderer=lambda row: ft.Text(f"{row.get('tipo_documento') or ''} {row.get('nro_comprobante') or ''}".strip() or "---", size=13)
@@ -5269,7 +5321,7 @@ def main(page: ft.Page) -> None:
 
     pagos_table = GenericTable(
         columns=[
-            ColumnConfig(key="fecha", label="Fecha", width=120),
+            ColumnConfig(key="fecha", label="Fecha", width=120, formatter=_format_datetime),
             ColumnConfig(key="monto", label="Monto", width=100, formatter=_format_money),
             ColumnConfig(key="forma", label="Forma Pago", width=120),
             ColumnConfig(key="documento", label="Comprobante", width=120),
@@ -5691,7 +5743,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="cuit", label="CUIT", width=120),
             ColumnConfig(key="saldo_actual", label="Saldo", width=150, renderer=lambda row: _saldo_pill(row.get("saldo_actual"))),
             ColumnConfig(key="limite_credito", label="Límite Créd.", width=120, formatter=_format_money),
-            ColumnConfig(key="ultimo_movimiento", label="Últ. Movimiento", width=150),
+            ColumnConfig(key="ultimo_movimiento", label="Últ. Movimiento", width=150, formatter=_format_datetime),
             ColumnConfig(key="total_movimientos", label="Movs.", width=80),
             ColumnConfig(key="acciones", label="", width=80, renderer=lambda row: ft.IconButton(
                 ft.icons.HISTORY_ROUNDED, 
@@ -5817,7 +5869,7 @@ def main(page: ft.Page) -> None:
 
     logs_table = GenericTable(
         columns=[
-            ColumnConfig(key="fecha", label="Fecha", width=160),
+            ColumnConfig(key="fecha", label="Fecha", width=160, formatter=_format_datetime),
             ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(key="entidad", label="Entidad", width=120),
             ColumnConfig(key="id_entidad", label="Id. Reg.", width=70),
