@@ -24,7 +24,7 @@ def _style_input(control: Any) -> None:
     _maybe_set(control, "border_radius", 4)
     _maybe_set(control, "text_size", 14)
     _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD))
-    _maybe_set(control, "content_padding", ft.padding.all(12))
+    _maybe_set(control, "content_padding", ft.padding.symmetric(horizontal=12))
 
     name = getattr(control, "__class__", type("x", (), {})).__name__.lower()
     if "dropdown" in name:
@@ -32,6 +32,7 @@ def _style_input(control: Any) -> None:
         _maybe_set(control, "filled", True)
         _maybe_set(control, "border_width", 2)
         _maybe_set(control, "enable_search", True)
+        _maybe_set(control, "height", 50)
     else:
         _maybe_set(control, "filled", True)
         _maybe_set(control, "bgcolor", "#F8FAFC")
@@ -451,7 +452,7 @@ class MassUpdateView(ft.Container):
                                     on_change=lambda e, rid=rid: self._toggle_one(rid, e.control.value),
                                 )
                             ),
-                            ft.DataCell(ft.Text(str(rid))),
+                            ft.DataCell(ft.Text(str(rid) if rid is not None else "—")),
                             ft.DataCell(ft.Text(r.get("nombre", ""))),
                             ft.DataCell(ft.Text(f"${float(r.get('current', 0.0)):,.2f}")),
                             ft.DataCell(

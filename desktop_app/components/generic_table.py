@@ -109,13 +109,14 @@ def _style_input(control: Any) -> None:
     _maybe_set(control, "border_radius", 12)
     _maybe_set(control, "text_size", 14)
     _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD))
-    _maybe_set(control, "content_padding", ft.padding.all(12))
+    _maybe_set(control, "content_padding", ft.padding.symmetric(horizontal=12))
 
     if is_dropdown:
         _maybe_set(control, "bgcolor", "#F8FAFC")
         _maybe_set(control, "filled", True)
         _maybe_set(control, "border_width", 2)
         _maybe_set(control, "enable_search", True)
+        _maybe_set(control, "height", 50)
         return
 
     _maybe_set(control, "filled", True)
@@ -1881,7 +1882,7 @@ class GenericTable:
 
         self._edit_dialog.title = ft.Text(f"Editar {col.label}")
         self._edit_dialog.content = ft.Column([
-            ft.Text(f"Valor actual: {current_val}"),
+            ft.Text(f"Valor actual: {current_val if current_val is not None else '—'}"),
             input_control
         ], tight=True, width=350)
         

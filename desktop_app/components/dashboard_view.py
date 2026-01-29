@@ -584,7 +584,7 @@ class DashboardView(ft.Container):
     def _stat_item(self, label: str, value: Any, color: str = None, trend: float = None, icon: str = None) -> ft.Control:
         if color is None: color = self.COLOR_TEXT
         # Auto-format number if it's a float/int and not already formatted
-        display_val = str(value)
+        display_val = str(value) if value is not None else "—"
         if isinstance(value, (int, float)):
              display_val = self._format_number(value, 2 if isinstance(value, float) else 0)
         
@@ -803,7 +803,7 @@ class DashboardView(ft.Container):
                 return month_map.get(m.month, str(m.month))
             
             # Si es string, intentar parsear
-            m_str = str(m).strip()
+            m_str = str(m).strip() if m is not None else ""
             
             # Si tiene ":" probablemente es hora (formato 00:, 12:, etc)
             if ":" in m_str:

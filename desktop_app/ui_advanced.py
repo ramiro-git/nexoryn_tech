@@ -317,11 +317,13 @@ def main(page: ft.Page) -> None:
             _maybe_set(control, "border_radius", 12) # More rounded
             _maybe_set(control, "text_size", 14)
             _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD)) # Darker label
+            _maybe_set(control, "content_padding", ft.padding.symmetric(horizontal=12))
             
             if is_dropdown:
                 _maybe_set(control, "bgcolor", "#F8FAFC") # Slight grey background
                 _maybe_set(control, "filled", True)
                 _maybe_set(control, "border_width", 2) # Thicker border
+                _maybe_set(control, "height", 50)
                 return
 
             _maybe_set(control, "filled", True)

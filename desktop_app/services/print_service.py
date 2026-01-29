@@ -56,7 +56,7 @@ def _wrap_text_to_width(pdf: FPDF, text: str, max_width: float) -> str:
         return str(text)
 
     lines: List[str] = []
-    for paragraph in str(text).splitlines() or [""]:
+    for paragraph in str(text or "").splitlines() or [""]:
         line = ""
         for ch in paragraph:
             if ch == "\r":
@@ -76,7 +76,7 @@ def _truncate_text_to_width(pdf: FPDF, text: str, max_width: float, suffix: str 
         return ""
     if max_width <= 0:
         return str(text)
-    text = str(text)
+    text = str(text or "")
     if pdf.get_string_width(text) <= max_width:
         return text
     ellipsis_width = pdf.get_string_width(suffix)

@@ -364,12 +364,13 @@ def _style_input(control: Any) -> None:
     _maybe_set(control, "border_radius", 12)
     _maybe_set(control, "text_size", 14)
     _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD))
-    _maybe_set(control, "content_padding", ft.padding.all(12))
+    _maybe_set(control, "content_padding", ft.padding.symmetric(horizontal=12))
 
     if is_dropdown:
         _maybe_set(control, "bgcolor", "#F8FAFC")
         _maybe_set(control, "filled", True)
         _maybe_set(control, "border_width", 2)
+        _maybe_set(control, "height", 50)
         return
 
     _maybe_set(control, "filled", True)
@@ -899,7 +900,7 @@ def main(page: ft.Page) -> None:
 
     # reload_catalogs() will be called at the end of main after all controls are defined
 
-    def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "—") -> Any:
+    def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "Seleccionar...") -> Any:
         def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
             values = list(values_provider() or [])
             options: List[ft.dropdown.Option] = [ft.dropdown.Option(name, name) for name in values]
@@ -946,7 +947,7 @@ def main(page: ft.Page) -> None:
             dd = ft.Dropdown(
                 options=options,
                 value=selected_key if selected_key in option_keys else None,
-                hint_text="(Sin unidad)",
+                hint_text="Seleccionar...",
                 width=width,
                 on_change=lambda e: setter(e.control.value),
             )
@@ -1545,7 +1546,7 @@ def main(page: ft.Page) -> None:
                     icon_color=COLOR_INFO if row.get("notas") else ft.Colors.GREY_400,
                     on_click=lambda _: open_form(
                         "Notas de Entidad",
-                        ft.Column([ft.Text(row.get("notas"), selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300),
+                        ft.Column([ft.Text(row.get("notas") or "", selectable=True)], scroll=ft.ScrollMode.ADAPTIVE, height=300),
                         [],
                     ) if row.get("notas") else None,
                 ),
@@ -1868,7 +1869,7 @@ def main(page: ft.Page) -> None:
                 label="Proveedor",
                 editable=True,
                 formatter=lambda v, row: next((p["nombre"] for p in proveedores_values if str(p["id"]) == str(v or row.get("id_proveedor"))), "—"),
-                inline_editor=async_select_editor(supplier_loader, label="Seleccionar Proveedor", width=300),
+                inline_editor=async_select_editor(supplier_loader, label="Seleccionar...", width=300),
                 width=180,
             ),
             ColumnConfig(
@@ -1876,7 +1877,7 @@ def main(page: ft.Page) -> None:
                 label="Ubicación",
                 width=120,
                 editable=True,
-                inline_editor=dropdown_editor(lambda: [d["nombre"] for d in (db.fetch_depositos() if db else [])], width=200, empty_label="Seleccionar ubicación..."),
+                inline_editor=dropdown_editor(lambda: [d["nombre"] for d in (db.fetch_depositos() if db else [])], width=200, empty_label="Seleccionar..."),
             ),
             ColumnConfig(
                 key="activo",
@@ -3019,7 +3020,7 @@ def main(page: ft.Page) -> None:
                 
                 row_cont = ft.Container(
                     content=ft.Row([
-                        ft.Text(p['lista_nombre'], size=13, width=120),
+                        ft.Text(p['lista_nombre'] or "—", size=13, width=120),
                         tf_p,
                         tf_per,
                         dd_tp

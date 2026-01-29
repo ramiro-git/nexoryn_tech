@@ -62,7 +62,9 @@ class AsyncSelect(ft.Column):
         placeholder_clean = (placeholder or "").strip().lower()
         if not show_label and label:
             if not placeholder_clean or placeholder_clean.startswith("seleccionar"):
-                placeholder = label
+                # Use label as placeholder only if it's very specific, 
+                # but user wants "Seleccionar..." for inline selects.
+                pass
         self.placeholder = placeholder
         self._on_change_callback = on_change
         self.debounce_ms = debounce_ms
@@ -132,7 +134,6 @@ class AsyncSelect(ft.Column):
                 [
                     ft.Text(
                         self._selected_label or self.placeholder,
-                        expand=True,
                         color=text_color,
                         size=14,
                         weight=text_weight,
@@ -144,10 +145,10 @@ class AsyncSelect(ft.Column):
                         size=24,
                     ),
                 ],
-                spacing=8,
-                tight=True,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            padding=ft.padding.only(left=12, right=4),
+            padding=ft.padding.only(left=12, right=8),
             border=ft.border.all(self.border_width, self.border_color),
             border_radius=self.border_radius,
             bgcolor=self.bgcolor,
