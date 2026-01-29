@@ -522,7 +522,17 @@ class GenericTable:
             ),
         )
         self._table_viewport = ft.Column(
-            [ft.Row([self.table], scroll=ft.ScrollMode.ADAPTIVE)],
+            [
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=self.table,
+                            padding=ft.padding.only(bottom=15)  # Evita que el scrollbar horizontal tape la última fila
+                        )
+                    ],
+                    scroll=ft.ScrollMode.ADAPTIVE
+                )
+            ],
             expand=True,
             scroll=_scroll_auto(),
         )
