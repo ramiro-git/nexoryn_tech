@@ -1603,7 +1603,31 @@ class Database:
             "ubicacion": "ubicacion",
             "activo": "activo",
         }
-        order_by = self._build_order_by(sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC")
+        if sorts:
+            # Custom sort handling for precio_lista to ensure NULLS LAST
+            clauses = []
+            for key, direction in sorts:
+                column = sort_columns.get((key or "").strip())
+                if not column:
+                    continue
+                
+                dir_sql = "DESC" if (direction or "").lower() == "desc" else "ASC"
+                
+                # Special case: Price list sorting needs NULLS LAST to keep '---' at bottom
+                if column == "precio_lista":
+                    clauses.append(f"{column} {dir_sql} NULLS LAST")
+                else:
+                    clauses.append(f"{column} {dir_sql}")
+            
+            if clauses:
+                order_by = ", ".join(clauses)
+                # Append tiebreaker if not already present
+                if "id ASC" not in order_by:
+                    order_by += ", id ASC"
+            else:
+                order_by = "nombre ASC, id ASC"
+        else:
+            order_by = "nombre ASC, id ASC"
 
         lp_id = _to_id((advanced or {}).get("id_lista_precio"))
         if lp_id is not None:
