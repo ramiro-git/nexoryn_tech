@@ -391,7 +391,7 @@ class DashboardView(ft.Container):
                     ], spacing=5),
                 ], spacing=2),
                 ft.Row([
-                    ft.Text("Auto:", size=11, color=self.COLOR_TEXT_MUTED),
+                    ft.Text("Actualización cada:", size=11, color=self.COLOR_TEXT_MUTED),
                     self.interval_dropdown,
                     ft.Container(width=10),
                     self.last_updated_text,
