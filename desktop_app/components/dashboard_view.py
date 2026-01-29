@@ -623,7 +623,10 @@ class DashboardView(ft.Container):
             number = float(value)
         except (TypeError, ValueError):
             return str(value)
-        return f"{prefix}{number:,.{decimals}f}"
+        # Formato argentino/español: punto para miles, coma para decimales
+        formatted = f"{number:,.{decimals}f}"
+        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{prefix}{formatted}"
 
     def _as_number(self, value: Any) -> float:
         try:
@@ -632,11 +635,14 @@ class DashboardView(ft.Container):
             return 0.0
 
     def _format_compact(self, n: float) -> str:
+        # Formato compacto con coma decimal (estilo argentino/español)
         if n >= 1_000_000:
-            return f"{n/1_000_000:,.1f}M"
-        if n >= 1_000:
-            return f"{n/1_000:,.1f}K"
-        return f"{n:,.0f}"
+            val = f"{n/1_000_000:,.1f}M"
+        elif n >= 1_000:
+            val = f"{n/1_000:,.1f}K"
+        else:
+            val = f"{n:,.0f}"
+        return val.replace(",", "X").replace(".", ",").replace("X", ".")
 
     def _empty_state(self, section_key: str = "charts", custom_message: str = None) -> ft.Control:
         """Create a visually rich empty state component."""
@@ -753,82 +759,159 @@ class DashboardView(ft.Container):
         if not history:
             return self._empty_state("ventas", "Sin historial de ventas para este periodo")
         
-        # Data is already sorted by date from the database query
-        # history = sorted(history, key=lambda x: x['mes']) 
-        
-        data_points = []
+        # Preparar datos
+        values = []
         max_val = 0
-        for i, h in enumerate(history):
+        for h in history:
             val = float(h.get('total_ventas') or 0)
             if val > max_val: max_val = val
-            data_points.append(ft.LineChartDataPoint(i, val))
+            values.append((h.get('mes'), val))
         
         if max_val == 0: max_val = 1000
-
+        
         month_map = {
              1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
              7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
         }
+        
+        weekday_map = {
+            0: "Lun", 1: "Mar", 2: "Mié", 3: "Jue", 4: "Vie", 5: "Sáb", 6: "Dom"
+        }
+        
+        # Mapeo de días en inglés a español
+        weekday_en_map = {
+            "mon": "Lun", "tue": "Mar", "wed": "Mié", "thu": "Jue", 
+            "fri": "Vie", "sat": "Sáb", "sun": "Dom"
+        }
+        
+        # Mapeo de meses en inglés a español
+        month_en_map = {
+            "jan": "Ene", "feb": "Feb", "mar": "Mar", "apr": "Abr", "may": "May", "jun": "Jun",
+            "jul": "Jul", "aug": "Ago", "sep": "Sep", "oct": "Oct", "nov": "Nov", "dec": "Dic"
+        }
 
-        def _get_month_label(m):
-            if hasattr(m, 'month'):
+        def _get_date_label(m):
+            # Si es un objeto date/datetime
+            if hasattr(m, 'day') and hasattr(m, 'month'):
+                # Para período Hoy: mostrar hora si tiene atributo hour
+                if self.current_period == "Hoy" and hasattr(m, 'hour'):
+                    return f"{m.hour}h"
+                # Para período semanal/mensual: mostrar día del mes
+                if self.current_period in ("Semana", "Mes"):
+                    return str(m.day)
+                # Para período anual: mostrar mes
                 return month_map.get(m.month, str(m.month))
+            
+            # Si es string, intentar parsear
+            m_str = str(m).strip()
+            
+            # Si tiene ":" probablemente es hora (formato 00:, 12:, etc)
+            if ":" in m_str:
+                hour_part = m_str.split(":")[0]
+                try:
+                    hour = int(hour_part)
+                    return f"{hour}h"
+                except:
+                    pass
+            
+            # Detectar si es día de semana en inglés (Wed, Thu, etc)
+            m_lower = m_str.lower()[:3]
+            if m_lower in weekday_en_map:
+                return weekday_en_map[m_lower]
+            
+            # Detectar si es mes en inglés (Jan, Feb, etc)
+            if m_lower in month_en_map:
+                return month_en_map[m_lower]
+            
+            # Intentar parsear como fecha ISO
             try:
-                 # Check if string date YYYY-MM...
-                 dt = datetime.datetime.fromisoformat(str(m))
-                 return month_map.get(dt.month, str(m))
+                dt = datetime.datetime.fromisoformat(m_str.replace("/", "-"))
+                if self.current_period == "Hoy" and hasattr(dt, 'hour'):
+                    return f"{dt.hour}h"
+                if self.current_period in ("Semana", "Mes"):
+                    return str(dt.day)
+                return month_map.get(dt.month, str(dt.month))
             except:
-                 return str(m)[:3]
-
-        # Calculate dynamic width and explicit labels for Y-axis
-        y_labels = []
-        steps = 5
-        for i in range(steps + 1):
-            val = (max_val / steps) * i
-            y_labels.append(
-                ft.ChartAxisLabel(
-                    value=val,
-                    label=ft.Text(self._format_compact(val), size=9, color=self.COLOR_TEXT_MUTED)
+                pass
+            
+            # Si tiene "/" es probablemente un formato de fecha
+            if "/" in m_str:
+                parts = m_str.split("/")
+                # Tomar solo la primera parte (día)
+                return parts[0]
+            
+            # Devolver los primeros 3 caracteres limpios
+            return m_str[:3].replace("/", "").replace(":", "")
+        
+        chart_height = 250
+        bar_width = max(30, min(80, 600 // len(values)))  # Ancho dinámico
+        
+        # Crear barras con gradiente que simulan un área chart
+        bars = []
+        for i, (mes, val) in enumerate(values):
+            ratio = val / max_val if max_val > 0 else 0
+            bar_height = max(5, chart_height * ratio)
+            tooltip_text = f"{_get_date_label(mes)}: {self._format_number(val, 2, '$')}"
+            
+            bars.append(
+                ft.Container(
+                    width=bar_width,
+                    height=bar_height,
+                    bgcolor=self.COLOR_PRIMARY,
+                    border_radius=ft.border_radius.only(top_left=4, top_right=4),
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_center,
+                        end=ft.alignment.bottom_center,
+                        colors=[self.COLOR_PRIMARY, ft.Colors.with_opacity(0.3, self.COLOR_PRIMARY)]
+                    ),
+                    tooltip=tooltip_text,
+                    animate=ft.animation.Animation(300, ft.AnimationCurve.EASE_OUT),
                 )
             )
         
-        y_axis_width = 50 # Compact notation needs less horizontal space but more padding
-
-        return ft.LineChart(
-            data_series=[
-                ft.LineChartData(
-                    data_points=data_points,
-                    stroke_width=3,
-                    color=self.COLOR_PRIMARY,
-                    curved=True,
-                    below_line_bgcolor=ft.Colors.with_opacity(0.1, self.COLOR_PRIMARY),
-                    below_line_gradient=ft.LinearGradient(
-                        begin=ft.alignment.top_center,
-                        end=ft.alignment.bottom_center,
-                        colors=[ft.Colors.with_opacity(0.2, self.COLOR_PRIMARY), ft.Colors.with_opacity(0, self.COLOR_PRIMARY)]
-                    )
-                )
+        # Etiquetas del eje X
+        x_labels = ft.Row(
+            controls=[
+                ft.Container(
+                    width=bar_width,
+                    content=ft.Text(_get_date_label(mes), size=9, color=self.COLOR_TEXT_MUTED, text_align=ft.TextAlign.CENTER),
+                ) for mes, _ in values
             ],
-            bottom_axis=ft.ChartAxis(
-                labels=[
-                    ft.ChartAxisLabel(
-                        value=i,
-                        label=ft.Text(_get_month_label(h['mes']), size=10, color=self.COLOR_TEXT_MUTED)
-                    ) for i, h in enumerate(history)
-                ],
-                labels_size=25,
-            ),
-            left_axis=ft.ChartAxis(
-                labels=y_labels,
-                labels_size=y_axis_width,
-            ),
-            max_y=max_val * 1.15,
-            tooltip_bgcolor=ft.Colors.TRANSPARENT,
-            border=ft.Border(bottom=ft.BorderSide(1, self.COLOR_BORDER)),
-            horizontal_grid_lines=ft.ChartGridLines(interval=max_val/steps, color=self.COLOR_BORDER, width=0.5),
-            expand=True,
-            height=300,
+            spacing=2,
+            alignment=ft.MainAxisAlignment.CENTER,
         )
+        
+        # Etiquetas del eje Y
+        y_labels = []
+        steps = 4
+        for i in range(steps + 1):
+            val = (max_val / steps) * (steps - i)
+            y_labels.append(
+                ft.Text(self._format_compact(val), size=9, color=self.COLOR_TEXT_MUTED)
+            )
+        
+        return ft.Row([
+            # Eje Y
+            ft.Column(
+                controls=y_labels,
+                spacing=(chart_height - 40) // steps,
+                alignment=ft.MainAxisAlignment.START,
+            ),
+            # Gráfico
+            ft.Column([
+                ft.Container(
+                    height=chart_height,
+                    content=ft.Row(
+                        controls=bars,
+                        spacing=2,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    ),
+                    border=ft.Border(bottom=ft.BorderSide(1, self.COLOR_BORDER)),
+                ),
+                x_labels,
+            ], spacing=5, expand=True),
+        ], spacing=10, expand=True)
 
     def _real_bar_chart(self, items: List[Dict[str, Any]], color: str = None) -> ft.Control:
         if not items:
@@ -851,6 +934,7 @@ class DashboardView(ft.Container):
                             width=15,
                             color=color,
                             border_radius=3,
+                            tooltip=self._format_number(val, 2, "$"),
                         )
                     ]
                 )
