@@ -889,8 +889,8 @@ def main(page: ft.Page) -> None:
         articulos_view = ft.Column(
             [
                 header(
-                    "Artículos",
-                    "Inventario con edición inline y estado.",
+                    "Inventario",
+                    "Administración de artículos con edición inline y estado.",
                     refresh_articles,
                     actions=[
                         ft.OutlinedButton(
@@ -951,7 +951,7 @@ def main(page: ft.Page) -> None:
                 refresh_entities()
             elif key == "articulos":
                 content_holder.content = articulos_view
-                current_title.value = "Artículos"
+                current_title.value = "Inventario"
                 page.update()
                 refresh_articles()
             elif key == "stock":
@@ -976,7 +976,7 @@ def main(page: ft.Page) -> None:
             label_type=ft.NavigationRailLabelType.SELECTED,
             destinations=[
                 ft.NavigationRailDestination(icon=ICON_ENTIDADES, label="Entidades"),
-                ft.NavigationRailDestination(icon=ICON_ARTICULOS, label="Artículos"),
+                ft.NavigationRailDestination(icon=ICON_ARTICULOS, label="Inventario"),
                 ft.NavigationRailDestination(icon=ICON_STOCK, label="Stock"),
                 ft.NavigationRailDestination(icon=ICON_BACKUP, label="Backups"),
             ],

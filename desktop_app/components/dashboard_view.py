@@ -442,9 +442,9 @@ class DashboardView(ft.Container):
             )
         
         self.kpi_row.controls.extend([
-            self._kpi_card("Stock Crítico", str(s_bajo), ft.icons.INVENTORY_2_ROUNDED, self.COLOR_WARNING if s_bajo > 0 else self.COLOR_INFO, "Requiere acción" if s_bajo > 0 else "Al día"),
+            self._kpi_card("Alerta Inventario", str(s_bajo), ft.icons.INVENTORY_2_ROUNDED, self.COLOR_WARNING if s_bajo > 0 else self.COLOR_INFO, "Requiere acción" if s_bajo > 0 else "Al día"),
             self._kpi_card("Remitos Pend.", str(r_pend), ft.icons.LOCAL_SHIPPING_ROUNDED, self.COLOR_PRIMARY, "Por entregar"),
-            self._kpi_card("Docs Hoy", str(self.stats.get("operativas", {}).get("mis_operaciones_hoy", 0)), ft.icons.DESCRIPTION_ROUNDED, self.COLOR_INFO, "Mis registros")
+            self._kpi_card("Comprobantes Hoy", str(self.stats.get("operativas", {}).get("mis_operaciones_hoy", 0)), ft.icons.DESCRIPTION_ROUNDED, self.COLOR_INFO, "Mis registros")
         ])
 
 
@@ -453,7 +453,7 @@ class DashboardView(ft.Container):
         
         # Ventas Section
         self.sections_column.controls.append(
-            self._section_container("VENTAS", ft.icons.SHOPPING_CART_ROUNDED, self._build_ventas_section(), "documentos")
+            self._section_container("VENTAS Y COMPROBANTES", ft.icons.SHOPPING_CART_ROUNDED, self._build_ventas_section(), "documentos")
         )
 
         # Operativa Section
@@ -468,7 +468,7 @@ class DashboardView(ft.Container):
         
         # Stock Section
         self.sections_column.controls.append(
-            self._section_container("STOCK e INVENTARIO", ft.icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
+            self._section_container("INVENTARIO Y STOCK", ft.icons.INVENTORY_ROUNDED, self._build_stock_section(), "articulos")
         )
         
         # Analítica de Productos (ADMIN/GERENTE)
@@ -476,7 +476,7 @@ class DashboardView(ft.Container):
             analitica_content = self._build_analitica_section()
             if analitica_content:
                 self.sections_column.controls.append(
-                    self._section_container("ANALÍTICA DE PRODUCTOS", ft.icons.ANALYTICS_ROUNDED, analitica_content, "articulos")
+                    self._section_container("ANALÍTICA DE INVENTARIO", ft.icons.ANALYTICS_ROUNDED, analitica_content, "articulos")
                 )
         
         # Entidades Section
@@ -537,12 +537,12 @@ class DashboardView(ft.Container):
 
     # Mapping of view_key to display labels for "Ver detalles" buttons
     VIEW_LABELS = {
-        "documentos": ("Ir a Documentos", "Gestiona facturas, presupuestos y comprobantes"),
-        "movimientos": ("Ir a Movimientos", "Consulta ingresos, egresos y ajustes de stock"),
-        "articulos": ("Ir a Artículos", "Administra productos e inventario"),
-        "entidades": ("Ir a Entidades", "Gestiona clientes y proveedores"),
-        "pagos": ("Ir a Pagos", "Consulta cobros y gestión de caja"),
-        "config": ("Ir a Configuración", "Ajustes del sistema y usuarios"),
+        "documentos": ("Ver Comprobantes", "Gestiona facturas, presupuestos y comprobantes"),
+        "movimientos": ("Ver Movimientos", "Consulta ingresos, egresos y ajustes de stock"),
+        "articulos": ("Ver Inventario", "Administra productos e inventario"),
+        "entidades": ("Ver Entidades", "Gestiona clientes y proveedores"),
+        "pagos": ("Ver Caja", "Consulta cobros y gestión de caja"),
+        "config": ("Configuración", "Ajustes del sistema y usuarios"),
     }
 
     def _section_container(self, title: str, icon: str, content: ft.Control, view_key: str = None) -> ft.Container:
@@ -555,22 +555,30 @@ class DashboardView(ft.Container):
                     ft.Icon(icon, color=self.COLOR_PRIMARY, size=20),
                     ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT),
                     ft.Container(expand=True),
-                    ft.TextButton(
-                        btn_label,
-                        icon=ft.icons.ARROW_FORWARD_ROUNDED,
-                        icon_color=self.COLOR_PRIMARY,
-                        style=ft.ButtonStyle(color=self.COLOR_PRIMARY),
+                    ft.ElevatedButton(
+                        content=ft.Row([
+                            ft.Text(btn_label, size=12, weight=ft.FontWeight.W_600),
+                            ft.Icon(ft.icons.CHEVRON_RIGHT_ROUNDED, size=16),
+                        ], spacing=4),
+                        style=ft.ButtonStyle(
+                            color=ft.colors.WHITE,
+                            bgcolor=self.COLOR_PRIMARY,
+                            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                            elevation={"hovered": 2, "": 0},
+                        ),
                         tooltip=btn_tooltip if btn_tooltip else None,
                         on_click=lambda e, vk=view_key: self.on_navigate(vk) if self.on_navigate and vk else None
                     ) if view_key else ft.Container()
-                ], alignment=ft.MainAxisAlignment.START, spacing=10),
+                ], alignment=ft.MainAxisAlignment.START, spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Divider(height=1, color=self.COLOR_BORDER),
                 ft.Container(content=content, padding=ft.padding.only(top=10))
             ], spacing=5),
             padding=20,
             bgcolor=self.COLOR_CARD,
             border_radius=15,
-            border=ft.border.all(1, self.COLOR_BORDER)
+            border=ft.border.all(1, self.COLOR_BORDER),
+            shadow=ft.BoxShadow(blur_radius=5, color="#00000005", offset=ft.Offset(0, 2))
         )
 
     def _stat_item(self, label: str, value: Any, color: str = None, trend: float = None, icon: str = None) -> ft.Control:
