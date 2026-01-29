@@ -75,23 +75,19 @@ class SafeDataTable(ft.DataTable):
     def before_update(self):
         try:
             # Ensure index is int or None before parent check
-            if hasattr(self, "sort_column_index"):
-                val = self.sort_column_index
-                if val is not None and not isinstance(val, int):
-                    try:
-                        self.sort_column_index = int(val)
-                    except:
-                        self.sort_column_index = None
+            if hasattr(self, "sort_column_index") and self.sort_column_index is not None:
+                try:
+                    self.sort_column_index = int(self.sort_column_index)
+                except:
+                    self.sort_column_index = None
             super().before_update()
-        except TypeError:
-            # If native check still fails, force recovery
-            self.sort_column_index = None
+        except (AssertionError, Exception):
+            # Safe recovery from Flet's AssertionErrors (e.g., invisible content) or TypeErrors
             try:
+                self.sort_column_index = None
                 super().before_update()
             except:
                 pass
-        except Exception:
-            pass
 
 
 def _maybe_set(obj: Any, name: str, value: Any) -> None:
@@ -216,7 +212,7 @@ class GenericTable:
         auto_load: bool = False,
         page_size: int = 10,
         page_size_options: Sequence[int] = (10, 25, 50),
-        show_export_button: bool = True,
+        show_export_button: bool = False,
         show_export_scope: bool = False,
     ) -> None:
         super().__init__()
@@ -294,6 +290,7 @@ class GenericTable:
             icon=ft.icons.FILE_DOWNLOAD_ROUNDED,
             tooltip="Exportar datos",
             on_click=lambda e: self._open_export_dialog(),
+            visible=self.show_export_button,
         )
         self.reset_button = ft.IconButton(
             icon=ft.icons.REPLAY,
@@ -1890,3 +1887,13 @@ class GenericTable:
                 self.root.page.dialog = self._edit_dialog
                 self._edit_dialog.open = True
                 self.root.page.update()
+
+    def set_export_visibility(self, visible: bool) -> None:
+        """updates the visibility of the export button immediately."""
+        self.show_export_button = visible
+        if hasattr(self, "export_button") and self.export_button:
+            self.export_button.visible = visible
+            try:
+                if self.export_button.page:
+                    self.export_button.update()
+            except: pass

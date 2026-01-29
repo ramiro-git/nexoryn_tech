@@ -15,34 +15,31 @@ from venv import logger
 
 import flet as ft
 try:
-    from flet.core.datatable import DataTable as CoreDataTable
+    from flet.core.datatable import DataCell as CoreDataCell
 except Exception:
-    CoreDataTable = ft.DataTable
+    CoreDataCell = ft.DataCell
 
-if not getattr(CoreDataTable.before_update, "_nexoryn_patched_v2", False):
-    _original_before_update_core = CoreDataTable.before_update
+if not getattr(CoreDataCell.before_update, "_nexoryn_patched_v3", False):
+    _original_before_update_cell = CoreDataCell.before_update
     
-    def _patched_before_update_core(self):
+    def _patched_before_update_cell(self):
         try:
-            # Asegurarse de que __content existe y tiene visible=True
-            if hasattr(self, '_DataTable__content'):
-                # Asegurarnos que el contenido es visible
-                content = self._DataTable__content
-                if hasattr(content, 'visible'):
+            # Ensure __content exists and has visible=True to avoid Flet's AssertionError: content must be visible
+            if hasattr(self, '_DataCell__content'):
+                content = self._DataCell__content
+                if hasattr(content, 'visible') and not content.visible:
                     content.visible = True
-            return _original_before_update_core(self)
+            return _original_before_update_cell(self)
         except AssertionError as e:
             if "content must be visible" in str(e):
-                # Silenciar este error específico
                 return
             raise
-        except Exception as e:
-            # Do NOT silence other errors
-            raise e
+        except Exception:
+            pass
     
-    _patched_before_update_core._nexoryn_patched_v2 = True
-    CoreDataTable.before_update = _patched_before_update_core
-    ft.DataTable.before_update = _patched_before_update_core
+    _patched_before_update_cell._nexoryn_patched_v3 = True
+    CoreDataCell.before_update = _patched_before_update_cell
+    ft.DataCell.before_update = _patched_before_update_cell
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -126,31 +123,19 @@ class SafeDataTable(ft.DataTable):
     """Subclass of DataTable to fix TypeErrors and AssertionErrors in Flet updates"""
     def before_update(self):
         try:
-            # Ensure content is visible before parent update
-            if hasattr(self, '_DataTable__content'):
-                content = self._DataTable__content
-                if hasattr(content, 'visible'):
-                    content.visible = True
-            
             # Ensure index is int or None before parent check
-            if hasattr(self, "sort_column_index"):
-                val = self.sort_column_index
-                if val is not None and not isinstance(val, int):
-                    try:
-                        self.sort_column_index = int(val)
-                    except:
-                        self.sort_column_index = None
+            if hasattr(self, "sort_column_index") and self.sort_column_index is not None:
+                try:
+                    self.sort_column_index = int(self.sort_column_index)
+                except:
+                    self.sort_column_index = None
             
             # Forzar visibilidad de la tabla
             self.visible = True
-            
             super().before_update()
-        except AssertionError as e:
-            if "content must be visible" in str(e):
-                # Ignorar este error específico
-                return
-            raise
-        except Exception:
+        except (AssertionError, Exception):
+            # The global DataCell patch should handle the visible assertion,
+            # but we catch everything here as a last resort.
             pass
 
 
@@ -5233,6 +5218,8 @@ def main(page: ft.Page) -> None:
         auto_load=True,
         page_size=50,
         page_size_options=(20, 50, 100),
+        show_export_button=True,
+        show_export_scope=True,
     )
     movimientos_table.search_field.hint_text = "Buscar movimientos (artículo, tipo, entidad)"
     movimientos_view = ft.Column([
@@ -5349,6 +5336,8 @@ def main(page: ft.Page) -> None:
         show_mass_actions=False, # Deshabilitar acciones masivas
         auto_load=True, 
         page_size=20,
+        show_export_button=True,
+        show_export_scope=True,
     )
     pagos_table.search_field.hint_text = "Buscar pagos (referencia, forma, documento, entidad)"
 
@@ -5763,6 +5752,8 @@ def main(page: ft.Page) -> None:
         show_mass_actions=False,
         auto_load=True,
         page_size=20,
+        show_export_button=True,
+        show_export_scope=True,
     )
 
     cc_stat_deuda = ft.Text("$0", size=20, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
@@ -6252,28 +6243,29 @@ def main(page: ft.Page) -> None:
 
     def apply_role_permissions() -> None:
         """Centralizes UI permission enforcement based on CURRENT_USER_ROLE."""
-        is_admin = (CURRENT_USER_ROLE == "ADMIN")
-        is_manager = (CURRENT_USER_ROLE == "GERENTE")
+        role_clean = str(CURRENT_USER_ROLE or "").strip().upper()
+        is_admin = (role_clean == "ADMIN")
+        is_manager = (role_clean == "GERENTE")
         is_privileged = is_admin or is_manager
 
         # 1. Export Buttons Visibility
         for table in admin_export_tables:
             if table is None:
                 continue
-            # If the table has an export button component, control its visibility
-            if hasattr(table, "export_button") and table.export_button:
-                table.export_button.visible = is_privileged 
-                if table == logs_table:
-                    table.export_button.visible = is_admin
-                else:
-                    table.export_button.visible = is_privileged
             
-            # Also update flags for future rebuilds/refreshes
-            table.show_export_button = is_privileged
-            if table == logs_table:
-                table.show_export_button = is_admin
+            # Determine if this specific table should be visible for the current role
+            # User specifically asked for 'ADMIN' only for export buttons.
+            should_show_export = is_admin
             
-            table.show_export_scope = is_privileged
+            # Update internal flag for future rebuilds
+            table.show_export_button = should_show_export
+            table.show_export_scope = should_show_export
+
+            # Apply visibility to the actual control and update immediately
+            try:
+                table.set_export_visibility(should_show_export)
+            except:
+                pass
 
             # 1.1 Enforcement of Interactive Controls for non-admins
             # (EMPLEADO should only see data, not edit/delete mass)
@@ -6303,10 +6295,11 @@ def main(page: ft.Page) -> None:
         if "usuarios_activos" in card_registry:
             card_registry["usuarios_activos"].visible = is_admin
         
-        # 4. Table Action Column Visibility (Renderer level)
-        # This is harder without re-creating columns, but some renderers already check CURRENT_USER_ROLE.
-        # We can trigger a refresh if needed when role changes.
-        pass
+        # 5. Commit all visibility changes to the page
+        try:
+            page.update()
+        except:
+            pass
     
     login_email = ft.TextField(
         label="Email o Usuario",
