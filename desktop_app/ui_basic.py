@@ -4062,7 +4062,7 @@ def main(page: ft.Page) -> None:
                     cuit_emisor=cuit_emisor or None,
                     qr_data=qr_data,
                 )
-                show_toast(f"Autorizado! CAE: {res['CAE']}", kind="success")
+                show_toast("Facturado exitosamente", kind="success")
                 if close_after:
                     close_form()
                 if hasattr(documentos_summary_table, "refresh"):
@@ -4257,7 +4257,7 @@ def main(page: ft.Page) -> None:
                     cuit_emisor=cuit_emisor or None,
                     qr_data=qr_data,
                 )
-                show_toast(f"Autorizado! CAE: {res['CAE']}", kind="success")
+                show_toast("Facturado exitosamente", kind="success")
                 if close_after:
                     close_form()
                 if hasattr(documentos_summary_table, "refresh"):
