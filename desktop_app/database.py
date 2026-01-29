@@ -80,6 +80,21 @@ class Database:
         self._dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._dashboard_cache_lock = threading.RLock()
 
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """Fetch a configuration value from seguridad.config_sistema."""
+        query = "SELECT valor FROM seguridad.config_sistema WHERE clave = %s"
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (key,))
+                    row = cur.fetchone()
+                    if row:
+                        return row.get("valor") if isinstance(row, dict) else row[0]
+                    return default
+        except Exception as e:
+            logger.error(f"Error fetching config for key {key}: {e}")
+            return default
+
     def close_pool(self) -> None:
         """Close the connection pool temporarily."""
         if self.pool:
@@ -993,10 +1008,16 @@ class Database:
         self.is_closing = True
         if hasattr(self, 'pool') and self.pool:
             try:
-                # Explicitly close the pool to join worker threads and avoid PythonFinalizationError
+                # Explicitly close the pool to join worker threads.
+                # We catch RuntimeError in case this is called from a thread that cannot be joined.
                 self.pool.close()
-            except Exception:
-                pass
+            except RuntimeError as e:
+                if "cannot join current thread" in str(e):
+                    logger.debug("Database.close() called from a thread that cannot be joined (likely a pool thread).")
+                else:
+                    logger.warning(f"RuntimeError closing database pool: {e}")
+            except Exception as e:
+                logger.error(f"Error closing database pool: {e}")
             finally:
                 self.pool = None
 

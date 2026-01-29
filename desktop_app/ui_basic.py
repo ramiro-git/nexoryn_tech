@@ -498,7 +498,71 @@ def _date_field(*args, **kwargs) -> ft.TextField:
 
 
 def main(page: ft.Page) -> None:
-    page.title = "Nexoryn Tech"
+    config = load_config()
+    db = Database(
+        config.database_url,
+        pool_min_size=config.db_pool_min,
+        pool_max_size=config.db_pool_max,
+    )
+
+    # Load system configuration from DB
+    system_name = db.get_config("nombre_sistema", "Nexoryn Tech")
+    system_slogan = db.get_config("slogan", "TECH SOLUTION")
+    logo_path = db.get_config("logo_path", "")
+
+    # Branding controls for live updates
+    sidebar_brand_name = ft.Text(system_name, size=18, weight=ft.FontWeight.W_900, color="#FFFFFF")
+    sidebar_brand_slogan = ft.Text(system_slogan, size=10, weight=ft.FontWeight.W_600, color=COLOR_SIDEBAR_TEXT, visible=bool(system_slogan))
+    sidebar_brand_logo = ft.Container(
+        width=42, height=42,
+        bgcolor=COLOR_ACCENT,
+        border_radius=12,
+        alignment=ft.alignment.center,
+        content=(
+            ft.Image(src=logo_path, width=30, height=30, fit=ft.ImageFit.CONTAIN)
+            if logo_path and Path(logo_path).exists()
+            else ft.Icon(ft.icons.BOLT_ROUNDED, color="#FFFFFF", size=24)
+        ),
+    )
+
+    login_brand_name = ft.Text(system_name, size=28, weight=ft.FontWeight.W_900, color=COLOR_TEXT)
+    login_brand_logo = ft.Container(
+        content=(
+            ft.Image(src=logo_path, width=80, height=80, fit=ft.ImageFit.CONTAIN)
+            if logo_path and Path(logo_path).exists()
+            else ft.Icon(ft.icons.STOREFRONT_ROUNDED, size=56, color=COLOR_ACCENT)
+        ),
+        bgcolor=f"{COLOR_ACCENT}15",
+        padding=20,
+        border_radius=20,
+    )
+
+    def update_branding(name, slogan, logo):
+        """Update branding elements in the sidebar and login immediately."""
+        sidebar_brand_name.value = name
+        sidebar_brand_slogan.value = slogan
+        sidebar_brand_slogan.visible = bool(slogan)
+        
+        login_brand_name.value = name
+        
+        if logo and logo.strip() and Path(logo).exists():
+            sidebar_brand_logo.content = ft.Image(src=logo, width=30, height=30, fit=ft.ImageFit.CONTAIN)
+            login_brand_logo.content = ft.Image(src=logo, width=80, height=80, fit=ft.ImageFit.CONTAIN)
+            login_brand_logo.padding = 0
+        else:
+            sidebar_brand_logo.content = ft.Icon(ft.icons.BOLT_ROUNDED, color="#FFFFFF", size=24)
+            login_brand_logo.content = ft.Icon(ft.icons.STOREFRONT_ROUNDED, size=56, color=COLOR_ACCENT)
+            login_brand_logo.padding = 20
+        
+        try:
+            sidebar_brand_name.update()
+            sidebar_brand_slogan.update()
+            sidebar_brand_logo.update()
+            login_brand_name.update()
+            login_brand_logo.update()
+        except: pass
+
+    page.title = system_name
     page.window_width = 1280
     page.window_height = 860
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -603,17 +667,9 @@ def main(page: ft.Page) -> None:
     # Session state
     current_user: Dict[str, Any] = {}
     
-    db: Optional[Database] = None
     db_error: Optional[str] = None
     local_ip = "127.0.0.1"
     try:
-        config = load_config()
-        db = Database(
-            config.database_url,
-            pool_min_size=config.db_pool_min,
-            pool_max_size=config.db_pool_max,
-        )
-
         # DB compatibility checks are handled by schema sync on login
     
         # Initialize Backup Service & Scheduler
@@ -3006,9 +3062,28 @@ def main(page: ft.Page) -> None:
     for ctrl in [sys_nombre, sys_razon_social, sys_cuit, sys_domicilio, sys_telefono, sys_email, sys_slogan]:
         _style_input(ctrl)
 
-    # Logo preview image
+    # Logo preview components
     sys_logo_preview = ft.Image(src="", width=120, height=120, fit=ft.ImageFit.CONTAIN, visible=False)
     sys_logo_label = ft.Text("", size=12, color=COLOR_TEXT_MUTED)
+    
+    def clear_logo(_: Any = None):
+        nonlocal sys_logo_path
+        sys_logo_path = ""
+        sys_logo_preview.src = ""
+        sys_logo_preview.visible = False
+        sys_logo_label.value = ""
+        btn_clear_logo.visible = False
+        # Optional: update branding immediately for preview
+        update_branding(sys_nombre.value, sys_slogan.value, "")
+        page.update()
+
+    btn_clear_logo = ft.TextButton(
+        "Quitar logo", 
+        icon=ft.icons.DELETE_OUTLINE, 
+        on_click=clear_logo, 
+        visible=False,
+        style=ft.ButtonStyle(color=COLOR_ERROR)
+    )
 
     def load_sistema_config():
         """Load system configuration from database into fields."""
@@ -3031,9 +3106,11 @@ def main(page: ft.Page) -> None:
                 sys_logo_preview.src = sys_logo_path
                 sys_logo_preview.visible = True
                 sys_logo_label.value = sys_logo_path.split("\\")[-1].split("/")[-1]  # Just filename
+                btn_clear_logo.visible = True
             else:
                 sys_logo_preview.visible = False
                 sys_logo_label.value = ""
+                btn_clear_logo.visible = False
             
             # Update page title if a name is configured
             nombre = sys_nombre.value
@@ -3062,6 +3139,9 @@ def main(page: ft.Page) -> None:
             }
             db.update_config_sistema_bulk(updates)
             
+            # Update branding immediately
+            update_branding(updates["nombre_sistema"], updates["slogan"], updates["logo_path"])
+            
             # Update page title immediately
             if updates["nombre_sistema"]:
                 page.title = updates["nombre_sistema"]
@@ -3080,6 +3160,8 @@ def main(page: ft.Page) -> None:
             sys_logo_preview.src = e.data
             sys_logo_preview.visible = True
             sys_logo_label.value = e.data.split("\\")[-1].split("/")[-1]  # Just filename
+            btn_clear_logo.visible = True
+            update_branding(sys_nombre.value, sys_slogan.value, e.data)
             page.update()
 
     def on_logo_picked(e: ft.FilePickerResultEvent):
@@ -3090,6 +3172,8 @@ def main(page: ft.Page) -> None:
             sys_logo_preview.src = selected
             sys_logo_preview.visible = True
             sys_logo_label.value = selected.split("\\")[-1].split("/")[-1]
+            btn_clear_logo.visible = True
+            update_branding(sys_nombre.value, sys_slogan.value, selected)
             page.update()
     
     logo_picker = ft.FilePicker(on_result=on_logo_picked)
@@ -3101,14 +3185,6 @@ def main(page: ft.Page) -> None:
             allowed_extensions=["png", "jpg", "jpeg", "gif", "svg", "webp"],
             allow_multiple=False
         )
-
-    def clear_logo(_: Any = None):
-        nonlocal sys_logo_path
-        sys_logo_path = ""
-        sys_logo_preview.src = ""
-        sys_logo_preview.visible = False
-        sys_logo_label.value = ""
-        page.update()
 
     # Drop zone for logo
     logo_drop_zone = ft.Container(
@@ -3132,7 +3208,7 @@ def main(page: ft.Page) -> None:
         ft.Column([
             sys_logo_preview,
             sys_logo_label,
-            ft.TextButton("Quitar logo", icon=ft.icons.DELETE_OUTLINE, on_click=clear_logo, visible=True),
+            btn_clear_logo,
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
     ], spacing=20, vertical_alignment=ft.CrossAxisAlignment.START)
 
@@ -6718,14 +6794,9 @@ def main(page: ft.Page) -> None:
                     ),
                     content=ft.Column(
                         [
-                            ft.Container(
-                                content=ft.Icon(ft.icons.STOREFRONT_ROUNDED, size=56, color=COLOR_ACCENT),
-                                bgcolor=f"{COLOR_ACCENT}15",
-                                padding=20,
-                                border_radius=20,
-                            ),
+                            login_brand_logo,
                             ft.Container(height=16),
-                            ft.Text("Nexoryn Tech", size=28, weight=ft.FontWeight.W_900, color=COLOR_TEXT),
+                            login_brand_name,
                             ft.Text("Sistema de Gestión Comercial", size=14, color=COLOR_TEXT_MUTED),
                             ft.Container(height=24),
                             login_email,
@@ -6976,16 +7047,10 @@ def main(page: ft.Page) -> None:
             [
                 ft.Container(
                     content=ft.Row([
-                        ft.Container(
-                            width=42, height=42,
-                            bgcolor=COLOR_ACCENT,
-                            border_radius=12,
-                            alignment=ft.alignment.center,
-                            content=ft.Icon(ft.icons.BOLT_ROUNDED, color="#FFFFFF", size=24),
-                        ),
+                        sidebar_brand_logo,
                         ft.Column([
-                            ft.Text("Nexoryn", size=18, weight=ft.FontWeight.W_900, color="#FFFFFF"),
-                            ft.Text("TECH SOLUTION", size=10, weight=ft.FontWeight.W_600, color=COLOR_SIDEBAR_TEXT),
+                            sidebar_brand_name,
+                            sidebar_brand_slogan,
                         ], spacing=-2),
                     ], spacing=12),
                     padding=ft.padding.only(bottom=20, top=10, left=16)

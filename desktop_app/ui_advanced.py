@@ -82,6 +82,32 @@ def _build_stock_alert_tile(alert: Dict[str, Any]) -> ft.Control:
     )
 
 
+# Branding controls for live updates
+# These will be initialized inside main
+appbar_title_text: ft.Text = None # type: ignore
+sidebar_brand_name: ft.Text = None # type: ignore
+sidebar_brand_logo: ft.Container = None # type: ignore
+
+def update_branding(name, logo, page=None):
+    """Update branding elements immediately."""
+    if appbar_title_text: appbar_title_text.value = name
+    if sidebar_brand_name: sidebar_brand_name.value = name
+    
+    if sidebar_brand_logo:
+        if logo and logo.strip() and Path(logo).exists():
+            sidebar_brand_logo.content = ft.Image(src=logo, width=40, height=40, fit=ft.ImageFit.CONTAIN)
+        else:
+            sidebar_brand_logo.content = ft.Icon(ft.icons.SHIELD_ROUNDED, color="#4F46E5", size=32)
+    
+    try:
+        if appbar_title_text: appbar_title_text.update()
+        if sidebar_brand_name: sidebar_brand_name.update()
+        if sidebar_brand_logo: sidebar_brand_logo.update()
+        if page:
+            page.title = name
+            page.update()
+    except: pass
+
 def main(page: ft.Page) -> None:
     config = load_config()
     db = Database(
@@ -89,6 +115,11 @@ def main(page: ft.Page) -> None:
         pool_min_size=config.db_pool_min,
         pool_max_size=config.db_pool_max,
     )
+    
+    # Load system configuration from DB
+    system_name = db.get_config("nombre_sistema", "Nexoryn Tech")
+    logo_path = db.get_config("logo_path", "")
+    
     is_closing = False
     
     # Old standard backup system disabled
@@ -133,7 +164,7 @@ def main(page: ft.Page) -> None:
 
     atexit.register(lambda: _shutdown("atexit"))
 
-    page.title = "Nexoryn Tech - Control de operaciones"
+    page.title = f"{system_name} - Control de operaciones"
     page.window_width = 1200
     page.window_height = 820
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -173,6 +204,18 @@ def main(page: ft.Page) -> None:
         COLOR_INFO = "#3B82F6"
 
         page.bgcolor = COLOR_BG
+
+        # Initialize global branding controls
+        global appbar_title_text, sidebar_brand_name, sidebar_brand_logo
+        appbar_title_text = ft.Text(system_name, weight=ft.FontWeight.BOLD, color=COLOR_TEXT)
+        sidebar_brand_name = ft.Text(system_name, size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT, text_align=ft.TextAlign.CENTER, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+        sidebar_brand_logo = ft.Container(
+            content=(
+                ft.Image(src=logo_path, width=40, height=40, fit=ft.ImageFit.CONTAIN)
+                if logo_path and Path(logo_path).exists()
+                else ft.Icon(ft.icons.SHIELD_ROUNDED, color=COLOR_PRIMARY, size=32)
+            ),
+        )
 
         # ---------- Global message bar ----------
         message_text = ft.Text("", size=12, color=COLOR_TEXT)
@@ -996,7 +1039,7 @@ def main(page: ft.Page) -> None:
         page.appbar = ft.AppBar(
             title=ft.Row(
                 [
-                    ft.Text("Nexoryn Tech", weight=ft.FontWeight.BOLD, color=COLOR_TEXT),
+                    appbar_title_text,
                     ft.Container(width=12),
                     current_title,
                 ],
@@ -1010,9 +1053,24 @@ def main(page: ft.Page) -> None:
             ],
         )
 
+        sidebar_logo_container = ft.Container(
+            content=ft.Column(
+                [
+                    sidebar_brand_logo,
+                    sidebar_brand_name,
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
+            ),
+            alignment=ft.alignment.center,
+            padding=ft.padding.only(bottom=16),
+        )
+
         sidebar = ft.Container(
             content=ft.Column(
                 [
+                    ft.Container(height=10),
+                    sidebar_logo_container,
                     ft.Container(
                         content=navigation,
                         expand=1,
