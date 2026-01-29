@@ -197,9 +197,15 @@ def _bool_pill(value: Any) -> ft.Control:
 
 def _status_pill(value: Any, row: Optional[Dict[str, Any]] = None) -> ft.Control:
     status = str(value or "").upper()
+    
+    # Check if 'CONFIRMADO' should be 'FACTURADO'
+    if status == "CONFIRMADO" and row and row.get("cae"):
+        status = "FACTURADO"
+
     colors = {
         "PAGADO": ("#DCFCE7", "#166534"),
         "CONFIRMADO": ("#E0F2FE", "#075985"),
+        "FACTURADO": ("#CCFBF1", "#0F766E"), # Teal colors for FACTURADO
         "BORRADOR": ("#F1F5F9", "#475569"),
         "ANULADO": ("#FEE2E2", "#991B1B"),
     }
@@ -4833,7 +4839,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="entidad", label="Entidad", width=200),
             ColumnConfig(key="total", label="Total", width=120, formatter=_format_money),
             ColumnConfig(key="forma_pago", label="Forma de Pago", width=130),
-            ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"))),
+            ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"), row)),
             ColumnConfig(key="usuario", label="Usuario", width=120),
             ColumnConfig(
                 key="_confirm", label="", sortable=False, width=40,
