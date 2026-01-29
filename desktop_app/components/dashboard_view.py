@@ -961,8 +961,8 @@ class DashboardView(ft.Container):
                 self._stat_item("Stock Crítico", s.get("bajo_stock", 0), self.COLOR_WARNING, icon=ft.icons.WARNING_AMBER_ROUNDED),
                 self._stat_item("Sin Stock", s.get("sin_stock", 0), self.COLOR_ERROR, icon=ft.icons.DND_FORWARDSLASH_ROUNDED),
                 self._stat_item("Valor Inventario", self._format_number(s.get('valor_inventario', 0), 2, "$"), self.COLOR_INFO, icon=ft.icons.MONETIZATION_ON_ROUNDED),
-                self._stat_item("Ingresos Mes", s.get("entradas_mes", 0), icon=ft.icons.ARROW_DOWNWARD_ROUNDED),
-                self._stat_item("Salidas Mes", s.get("salidas_mes", 0), icon=ft.icons.ARROW_UPWARD_ROUNDED),
+                self._stat_item("Artículos Ingresados", s.get("entradas_mes", 0), icon=ft.icons.ARROW_DOWNWARD_ROUNDED),
+                self._stat_item("Artículos Egresados", s.get("salidas_mes", 0), icon=ft.icons.ARROW_UPWARD_ROUNDED),
             ], spacing=10),
             ft.Divider(height=20, color="transparent"),
             ft.ResponsiveRow([
