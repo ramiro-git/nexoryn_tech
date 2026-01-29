@@ -446,7 +446,11 @@ class AfipService:
                 code = err.get("Code") or err.get("code")
                 msg = err.get("Msg") or err.get("msg")
                 if code and msg:
-                    messages.append(f"{code}: {msg}")
+                    # Mejorar mensajes técnicos para el usuario final
+                    msg_str = str(msg)
+                    if "FEParamGetCondicionIvaReceptor" in msg_str:
+                        msg_str = "La condición de IVA del cliente no es válida o no está configurada correctamente para este comprobante."
+                    messages.append(f"{code}: {msg_str}")
                 else:
                     messages.append(str(err))
             else:
