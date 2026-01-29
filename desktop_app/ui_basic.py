@@ -2481,20 +2481,28 @@ def main(page: ft.Page) -> None:
                 try:
                     # Try to find a suitable movement type or create one
                     mtypes = db_conn.fetch_tipos_movimiento_articulo()
-                    adj_type = next((t["id"] for t in mtypes if "inicial" in t["nombre"].lower()), None)
+                    
+                    # Look for explicit "Saldo Inicial" or "Inicial" with positive sign
+                    adj_type = next((t["id"] for t in mtypes if "inicial" in t["nombre"].lower() and t["signo_stock"] == 1), None)
+                    
+                    # Fallback: Look for "Ajuste" with positive sign
                     if not adj_type:
-                        adj_type = next((t["id"] for t in mtypes if "ajuste" in t["nombre"].lower()), None)
-                    if not adj_type and mtypes:
-                        adj_type = mtypes[0]["id"] # Fallback to first available
+                        adj_type = next((t["id"] for t in mtypes if "ajuste" in t["nombre"].lower() and t["signo_stock"] == 1), None)
+                    
+                    # Fallback: Any positive type
+                    if not adj_type:
+                        adj_type = next((t["id"] for t in mtypes if t["signo_stock"] == 1), None)
 
                     if adj_type:
                         db_conn.create_stock_movement(
                             id_articulo=art_id,
                             id_tipo_movimiento=adj_type,
                             cantidad=stock_ini,
-                            id_deposito=1, # Default deposito ?? Need to fetch or assume 1.
+                            id_deposito=1, # Default deposito
                             observacion="Saldo inicial al crear artículo"
                         )
+                    else:
+                        print("Warning: No positive stock movement type found for initial stock.")
                 except Exception as e:
                     print(f"Error creating initial stock: {e}")
 
