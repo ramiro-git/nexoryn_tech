@@ -5525,6 +5525,8 @@ def main(page: ft.Page) -> None:
             initial_items=[{"value": e["id"], "label": e["nombre_completo"]} for e in entidades]
         )
         
+        doc_totals: Dict[str, float] = {}
+        
         def pending_doc_loader(query, offset, limit):
             eid = pago_entidad.value
             if not eid:
@@ -5536,23 +5538,36 @@ def main(page: ft.Page) -> None:
                     limit=limit,
                     offset=offset,
                 )
-                items = [
-                    {
+                items = []
+                for r in rows:
+                    val = str(r["id"])
+                    total = float(r.get("total") or 0)
+                    doc_totals[val] = total
+                    items.append({
                         "value": r["id"],
-                        "label": f"{r.get('numero_serie', 'N/A')} - {_format_money(r.get('total'))} ({_format_datetime(r.get('fecha'))})",
-                    }
-                    for r in rows
-                ]
+                        "label": f"{r.get('numero_serie', 'N/A')} - {_format_money(total)} ({_format_datetime(r.get('fecha'))})",
+                    })
                 return items, len(rows) >= limit
             except Exception:
                 return [], False
 
-        pago_documento = AsyncSelect(label="Comprobante Pendiente *", loader=pending_doc_loader, width=400, disabled=True)
+        pago_monto = _number_field("Monto *", width=200)
+
+        def on_doc_change(val):
+            # val is the document ID as a string or int
+            if val and str(val) in doc_totals:
+                pago_monto.value = str(doc_totals[str(val)]).replace(".", ",")
+            else:
+                pago_monto.value = ""
+            try: pago_monto.update()
+            except: pass
+
+        pago_documento = AsyncSelect(label="Comprobante Pendiente *", loader=pending_doc_loader, width=400, disabled=True, on_change=on_doc_change)
         
         pago_forma = ft.Dropdown(label="Forma de Pago *", options=[ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas], width=250)
         _style_input(pago_forma)
         
-        pago_monto = _number_field("Monto *", width=200)
+        # pago_monto already defined above to be used in on_doc_change
         pago_fecha = _date_field("Fecha *", width=200)
         pago_ref = ft.TextField(label="Referencia", width=250); _style_input(pago_ref)
         pago_obs = ft.TextField(label="Observaciones", multiline=True, width=500); _style_input(pago_obs)
@@ -5560,14 +5575,19 @@ def main(page: ft.Page) -> None:
         def on_entidad_change(val):
             pago_documento.value = ""
             pago_documento.clear_cache()
+            pago_monto.value = ""
             if val:
                 pago_documento.set_busy(True)
-                pago_documento.prefetch(on_done=lambda: pago_documento.set_busy(False))
+                pago_documento.prefetch(on_done=lambda: (pago_documento.set_busy(False), pago_documento.update()))
                 pago_documento.disabled = False
             else:
                 pago_documento.set_busy(False)
                 pago_documento.disabled = True
-            pago_documento.update()
+            
+            try:
+                pago_documento.update()
+                pago_monto.update()
+            except: pass
 
         pago_entidad.on_change = on_entidad_change
         
