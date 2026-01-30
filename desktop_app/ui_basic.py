@@ -445,7 +445,19 @@ def _date_field(*args, **kwargs) -> ft.TextField:
     
     def on_date_change(e):
         if e.control.value:
-            tf.value = e.control.value.strftime("%Y-%m-%d")
+            new_date = e.control.value.strftime("%Y-%m-%d")
+            # Preserve time if already exists in the field
+            current_val = str(tf.value or "").strip()
+            if " " in current_val:
+                # Assuming format "YYYY-MM-DD HH:MM:SS" or similar
+                try:
+                    time_part = current_val.split(" ", 1)[1]
+                    tf.value = f"{new_date} {time_part}"
+                except IndexError:
+                    tf.value = new_date
+            else:
+                tf.value = new_date
+            
             tf.update()
             if hasattr(tf, "on_submit") and tf.on_submit:
                 try:
@@ -5580,6 +5592,7 @@ def main(page: ft.Page) -> None:
         
         # pago_monto already defined above to be used in on_doc_change
         pago_fecha = _date_field("Fecha *", width=200)
+        pago_fecha.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         pago_ref = ft.TextField(label="Referencia", width=250); _style_input(pago_ref)
         pago_obs = ft.TextField(label="Observaciones", multiline=True, width=500); _style_input(pago_obs)
 
@@ -7679,7 +7692,10 @@ def main(page: ft.Page) -> None:
         
         # Form Fields
         field_fecha = _date_field(page, "Fecha *", width=160)
+        field_fecha.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         field_vto = _date_field(page, "Vencimiento *", width=160)
+        field_vto.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
         lista_initial_items = [{"value": l["id"], "label": l["nombre"]} for l in listas]
