@@ -7054,35 +7054,123 @@ def main(page: ft.Page) -> None:
         e.control.update()
 
     def update_nav() -> None:
-        for key, item in nav_items.items():
-            # Show/hide admin-only items based on current role
-            if key in admin_only_keys:
-                item.visible = (CURRENT_USER_ROLE == "ADMIN")
-            elif key == "config":
-                item.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
-            elif key == "masivos":
-                item.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
-            
-            # Header visibility
-            try:
-                header_sistema.visible = (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"])
-                header_principal.visible = True # Always visible for now
-                header_sistema.update()
-                header_principal.update()
-            except: pass
-            
-            selected = key == current_view["key"]
-            item.bgcolor = "#312E81" if selected else None  # Indigo 900 for active state
-            try:
-                row = item.content
-                icon = row.controls[0]
-                text = row.controls[1]
-                icon.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
-                text.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
-                text.weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
-            except: pass
-            item.update()
+        if 'sidebar_list_view' not in locals() and 'sidebar_list_view' not in globals():
+            return
+
+        # Define item order
+        common_keys = [
+            "dashboard", "articulos", "entidades", "documentos", 
+            "remitos", "movimientos", "pagos", "cuentas", "precios"
+        ]
         
+        new_controls = []
+        
+        # 1. Header Principal
+        if 'header_principal' in locals() or 'header_principal' in globals():
+            header_principal.visible = True
+            new_controls.append(header_principal)
+            
+        # 2. Common Items
+        for key in common_keys:
+            if key in nav_items:
+                item = nav_items[key]
+                item.visible = True
+                item.height = None
+                
+                # Update selection style
+                selected = key == current_view["key"]
+                item.bgcolor = "#312E81" if selected else None
+                try:
+                    row = item.content
+                    icon = row.controls[0]
+                    text = row.controls[1]
+                    icon.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                    text.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                    text.weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
+                except: pass
+                
+                new_controls.append(item)
+                
+        # 3. Masivos (Special case)
+        if "masivos" in nav_items:
+            # Only for ADMIN/GERENTE
+            if CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]:
+                item = nav_items["masivos"]
+                item.visible = True
+                item.height = None
+                
+                selected = "masivos" == current_view["key"]
+                item.bgcolor = "#312E81" if selected else None
+                try:
+                    row = item.content
+                    icon = row.controls[0]
+                    text = row.controls[1]
+                    icon.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                    text.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                    text.weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
+                except: pass
+                
+                new_controls.append(item)
+
+        # 4. Sistema Section
+        # Determine strict visibility for system items
+        show_config = CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]
+        show_admin_items = CURRENT_USER_ROLE == "ADMIN"
+        
+        has_system_items = show_config or show_admin_items
+        
+        if has_system_items:
+            # Separator
+            if 'sistema_separator' in locals() or 'sistema_separator' in globals():
+                sistema_separator.visible = True
+                sistema_separator.height = 15
+                new_controls.append(sistema_separator)
+                
+            # Header System
+            if 'header_sistema' in locals() or 'header_sistema' in globals():
+                header_sistema.visible = True
+                header_sistema.height = None
+                new_controls.append(header_sistema)
+            
+            # Config
+            if show_config and "config" in nav_items:
+                item = nav_items["config"]
+                item.visible = True
+                item.height = None
+                selected = "config" == current_view["key"]
+                item.bgcolor = "#312E81" if selected else None
+                # Style update for config...
+                try:
+                    row = item.content
+                    row.controls[0].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                    row.controls[1].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                    row.controls[1].weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
+                except: pass
+                new_controls.append(item)
+            
+            # Admin Only Items
+            admin_keys = ["usuarios", "logs", "backups"]
+            if show_admin_items:
+                for key in admin_keys:
+                    if key in nav_items:
+                        item = nav_items[key]
+                        item.visible = True
+                        item.height = None
+                        selected = key == current_view["key"]
+                        item.bgcolor = "#312E81" if selected else None
+                        try:
+                            row = item.content
+                            row.controls[0].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                            row.controls[1].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
+                            row.controls[1].weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
+                        except: pass
+                        new_controls.append(item)
+
+        # Apply new controls to ListView
+        sidebar_list_view.controls = new_controls
+        sidebar_list_view.update()
+        
+        # Also update sidebar container just in case
         try:
             sidebar.update()
         except: pass
@@ -7090,6 +7178,38 @@ def main(page: ft.Page) -> None:
     # User info display (updated after login)
     sidebar_user_name = ft.Text("Usuario", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
     sidebar_user_role = ft.Text("Sesión activa", size=10, color=COLOR_SIDEBAR_TEXT)
+
+    sidebar_list_view = ft.ListView(
+        controls=[
+            header_principal := ft.Container(
+                content=ft.Text("NAVEGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                padding=ft.padding.only(left=16, bottom=5)
+            ),
+            nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
+            nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
+            nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
+            nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
+            nav_item("remitos", "Remitos", "LOCAL_SHIPPING_ROUNDED"),
+            nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
+            nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
+            nav_item("cuentas", "Cuentas Corrientes", "ACCOUNT_BALANCE_ROUNDED"),
+            nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
+            nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
+            
+            sistema_separator := ft.Container(height=15),
+            header_sistema := ft.Container(
+                content=ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
+                padding=ft.padding.only(left=16, bottom=5)
+            ),
+            nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
+            nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
+            nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
+            nav_item("backups", "Respaldos", "CLOUD_SYNC_ROUNDED"),
+        ],
+        spacing=6,
+        padding=ft.padding.only(right=10),
+        auto_scroll=False,
+    )
 
     sidebar = ft.Container(
         width=270,
@@ -7108,39 +7228,10 @@ def main(page: ft.Page) -> None:
                     padding=ft.padding.only(bottom=20, top=10, left=16)
                 ),
                 ft.Container(
-                    content=ft.ListView(
-                        controls=[
-                            header_principal := ft.Container(
-                                content=ft.Text("NAVEGACIÓN PRINCIPAL", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
-                                padding=ft.padding.only(left=16, bottom=5)
-                            ),
-                            nav_item("dashboard", "Tablero de Control", "DASHBOARD_ROUNDED"),
-                            nav_item("articulos", "Inventario", "INVENTORY_2_ROUNDED"),
-                            nav_item("entidades", "Entidades", "PEOPLE_ALT_ROUNDED"),
-                            nav_item("documentos", "Comprobantes", "RECEIPT_LONG_ROUNDED"),
-                            nav_item("remitos", "Remitos", "LOCAL_SHIPPING_ROUNDED"),
-                            nav_item("movimientos", "Movimientos", "SWAP_HORIZ_ROUNDED"),
-                            nav_item("pagos", "Caja y Pagos", "ACCOUNT_BALANCE_WALLET_ROUNDED"),
-                            nav_item("cuentas", "Cuentas Corrientes", "ACCOUNT_BALANCE_ROUNDED"),
-                            nav_item("precios", "Lista de Precios", "LOCAL_OFFER_ROUNDED"),
-                            nav_item("masivos", "Actualización Masiva", "PRICE_CHANGE_ROUNDED"),
-                            
-                            ft.Container(height=15),
-                            header_sistema := ft.Container(
-                                content=ft.Text("SISTEMA", size=11, weight=ft.FontWeight.W_700, color=COLOR_SIDEBAR_TEXT),
-                                padding=ft.padding.only(left=16, bottom=5)
-                            ),
-                            nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
-                            nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
-                            nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
-                            nav_item("backups", "Respaldos", "CLOUD_SYNC_ROUNDED"),
-                        ],
-                        spacing=6,
-                        padding=ft.padding.only(right=10), # Internal padding for scrollbar separation
-                    ),
-                    padding=0, # Remove external padding
+                    content=sidebar_list_view,
+                    padding=0,
                     expand=True,
-                    bgcolor=ft.Colors.TRANSPARENT,
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
                 ),
                 # Logout section at bottom
                 ft.Container(
