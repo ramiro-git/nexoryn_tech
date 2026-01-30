@@ -485,6 +485,9 @@ class RemitoPDF(BaseDocumentPDF):
         self.cell(0, 5, f"Fecha: {fecha}", ln=1)
         self.cell(0, 5, f"Estado: {estado}", ln=1)
         self.cell(0, 5, f"Entrega estimada: {entrega}", ln=1)
+        valor_decl = self.remito.get("valor_declarado") or 0
+        if valor_decl > 0:
+            self.cell(0, 5, f"Valor declarado: ${valor_decl:,.2f}", ln=1)
         if documento:
             self.cell(0, 5, f"Documento asociado: {documento}", ln=1)
 

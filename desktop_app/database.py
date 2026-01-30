@@ -3448,7 +3448,7 @@ class Database:
             SELECT
                 id, numero, fecha, estado, entidad, id_entidad_comercial,
                 deposito, id_deposito, id_documento, documento_numero, documento_estado,
-                direccion_entrega, observacion, fecha_despacho, fecha_entrega,
+                direccion_entrega, valor_declarado, observacion, fecha_despacho, fecha_entrega,
                 usuario, total_unidades
             FROM app.v_remito_resumen
             WHERE {where_clause}
@@ -3528,6 +3528,29 @@ class Database:
             with conn.cursor() as cur:
                 cur.execute(query, (remito_id,))
                 return _rows_to_dicts(cur)
+
+    def update_remito_fields(self, remito_id: int, valor_declarado: float = None, observacion: str = None) -> bool:
+        """Update specific fields of a remito."""
+        updates = []
+        params = []
+        if valor_declarado is not None:
+            updates.append("valor_declarado = %s")
+            params.append(valor_declarado)
+        if observacion is not None:
+            updates.append("observacion = %s")
+            params.append(observacion)
+            
+        if not updates:
+            return False
+            
+        query = f"UPDATE app.remito SET {', '.join(updates)} WHERE id = %s"
+        params.append(remito_id)
+        
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                conn.commit()
+                return True
 
     def create_tipo_porcentaje(self, tipo: str) -> int:
         query = "INSERT INTO ref.tipo_porcentaje (tipo) VALUES (%s) RETURNING id"
@@ -4631,6 +4654,7 @@ class Database:
                         id_lista_precio: Optional[int] = None,
                         direccion_entrega: Optional[str] = None,
                         sena: float = 0,
+                        valor_declarado: float = 0,
                         manual_values: Optional[Dict[str, float]] = None) -> int:
         """
         items: list of {id_articulo, cantidad, precio_unitario, porcentaje_iva}
@@ -4639,8 +4663,8 @@ class Database:
             INSERT INTO app.documento (
                 id_tipo_documento, id_entidad_comercial, id_deposito, 
                 observacion, numero_serie, descuento_porcentaje, descuento_importe, id_usuario,
-                neto, subtotal, iva_total, total, sena, fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                neto, subtotal, iva_total, total, sena, valor_declarado, fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
 
@@ -4708,7 +4732,7 @@ class Database:
             cur.execute(header_query, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_para_insertar, descuento_porcentaje, descuento_importe, self.current_user_id,
-                neto_total, subtotal, iva_total, total, sena,
+                neto_total, subtotal, iva_total, total, sena, valor_declarado,
                 final_fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
             ))
             res = cur.fetchone()
@@ -5236,7 +5260,8 @@ class Database:
                            d.observacion, d.numero_serie, d.descuento_porcentaje, d.descuento_importe,
                            d.fecha::text, d.fecha_vencimiento::text, d.id_lista_precio,
                            d.neto, d.subtotal, d.iva_total, d.total, d.sena, d.estado, d.cae,
-                           d.cae_vencimiento, d.cuit_emisor, d.qr_data, d.direccion_entrega, td.nombre, td.letra
+                           d.cae_vencimiento, d.cuit_emisor, d.qr_data, d.direccion_entrega, td.nombre, td.letra,
+                           d.valor_declarado
                     FROM app.documento d
                     JOIN ref.tipo_documento td ON td.id = d.id_tipo_documento
                     WHERE d.id = %s
@@ -5253,7 +5278,8 @@ class Database:
                     "iva_total": float(head[13]), "total": float(head[14]), "sena": float(head[15]),
                     "estado": head[16], "cae": head[17], "cae_vencimiento": head[18],
                     "cuit_emisor": head[19], "qr_data": head[20], "direccion_entrega": head[21],
-                    "tipo_documento": head[22], "letra": head[23]
+                    "tipo_documento": head[22], "letra": head[23],
+                    "valor_declarado": float(head[24])
                 }
                 
                 cur.execute("""
@@ -5278,6 +5304,7 @@ class Database:
                         id_lista_precio: Optional[int] = None,
                         direccion_entrega: Optional[str] = None,
                         sena: float = 0,
+                        valor_declarado: float = 0,
                         manual_values: Optional[Dict[str, float]] = None) -> bool:
         
         neto_bruto = 0
@@ -5313,14 +5340,14 @@ class Database:
                 UPDATE app.documento
                 SET id_tipo_documento=%s, id_entidad_comercial=%s, id_deposito=%s,
                     observacion=%s, numero_serie=%s, descuento_porcentaje=%s, descuento_importe=%s,
-                    neto=%s, subtotal=%s, iva_total=%s, total=%s, sena=%s,
+                    neto=%s, subtotal=%s, iva_total=%s, total=%s, sena=%s, valor_declarado=%s,
                     fecha=%s, fecha_vencimiento=%s, id_lista_precio=%s,
                     direccion_entrega=%s, id_usuario=%s
                 WHERE id=%s
             """, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_serie, descuento_porcentaje, descuento_importe,
-                neto_total, subtotal, iva_total, total, sena,
+                neto_total, subtotal, iva_total, total, sena, valor_declarado,
                 final_fecha, fecha_vencimiento, id_lista_precio,
                 direccion_entrega, self.current_user_id,
                 doc_id

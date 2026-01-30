@@ -615,7 +615,7 @@ def main(page: ft.Page) -> None:
             content=ft.Container(
                 padding=24,
                 width=850, # Default wide
-                height=650, # Max height to enable scrolling
+                height=850, # Increased from 650 to handle larger forms
                 content=ft.Column([
                     _form_header,
                     _form_content_area,
@@ -4597,6 +4597,48 @@ def main(page: ft.Page) -> None:
         if not rem_row:
             return
         remito_id = int(rem_row["id"])
+        
+        # UI element for live update
+        text_valor_declarado = ft.Text(_format_money(rem_row.get("valor_declarado") or 0), size=13)
+
+        def _edit_remito_valor(e):
+            val_field = ft.TextField(label="Valor Declarado $", value=str(rem_row.get("valor_declarado", 0)), width=200)
+            _style_input(val_field)
+            
+            def _confirm_edit(_):
+                try:
+                    new_val = float(val_field.value or 0)
+                    if db and db.update_remito_fields(remito_id, valor_declarado=new_val):
+                        show_toast("Valor declarado actualizado", kind="success")
+                        rem_row["valor_declarado"] = new_val
+                        remitos_table.refresh()
+                        
+                        # Update the UI element in the main modal directly
+                        text_valor_declarado.value = _format_money(new_val)
+                        try:
+                            text_valor_declarado.update()
+                        except:
+                            pass 
+                    page.close(edit_dialog)
+                except Exception as ex:
+                    show_toast(f"Error: {ex}", kind="error")
+
+            edit_dialog = ft.AlertDialog(
+                title=ft.Text("Editar Valor Declarado"),
+                content=ft.Column([
+                    ft.Text("Ingrese el nuevo valor declarado para este remito."),
+                    val_field
+                ], height=100, spacing=10),
+                actions=[
+                    _cancel_button("Cancelar", on_click=lambda _: page.close(edit_dialog)),
+                    ft.ElevatedButton("Guardar", on_click=_confirm_edit, bgcolor=COLOR_ACCENT, color="white", 
+                                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
+                ]
+            )
+            page.overlay.append(edit_dialog)
+            edit_dialog.open = True
+            page.update()
+
         try:
             if db:
                 db.log_activity("app.remito", "VIEW_DETAIL", id_entidad=remito_id)
@@ -4629,6 +4671,13 @@ def main(page: ft.Page) -> None:
                 ft.Column([
                     ft.Text("ESTADO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
                     _remito_status_pill(rem_row.get("estado")),
+                ], spacing=2),
+                ft.Column([
+                    ft.Text("V. DECLARADO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                    ft.Row([
+                        text_valor_declarado,
+                        ft.IconButton(ft.icons.EDIT_OUTLINED, icon_size=16, on_click=_edit_remito_valor, tooltip="Editar valor", icon_color=COLOR_ACCENT)
+                    ], spacing=2)
                 ], spacing=2),
                 ft.Column([
                     ft.Text("ENTREGA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
@@ -4923,6 +4972,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="numero_serie", label="Número", width=100),
             ColumnConfig(key="entidad", label="Entidad", width=200),
             ColumnConfig(key="total", label="Total", width=120, formatter=_format_money),
+            ColumnConfig(key="valor_declarado", label="V. Declarado", width=110, formatter=_format_money),
             ColumnConfig(key="forma_pago", label="Forma de Pago", width=130),
             ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"), row)),
             ColumnConfig(key="usuario", label="Usuario", width=120),
@@ -5184,6 +5234,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="entidad", label="Entidad", width=220),
             ColumnConfig(key="deposito", label="Depósito", width=160),
             ColumnConfig(key="documento_numero", label="Documento", width=160),
+            ColumnConfig(key="valor_declarado", label="V. Declarado", width=110, formatter=_format_money),
             ColumnConfig(key="total_unidades", label="Unidades", width=90, formatter=_format_quantity),
             ColumnConfig(
                 key="_detail",
@@ -7277,7 +7328,21 @@ def main(page: ft.Page) -> None:
         _style_input(field_numero)
         field_descuento = ft.TextField(label="Desc. %", width=100, value="0"); _style_input(field_descuento)
         field_sena = ft.TextField(label="Seña $", width=120, value="0", on_change=lambda _: _recalc_total()); _style_input(field_sena)
+        field_valor_declarado = ft.TextField(label="Valor Declarado $", width=140, value="0"); _style_input(field_valor_declarado)
         
+        # Automatic sync for declared value
+        auto_valor_sync = ft.Switch(label="Auto", value=False, tooltip="Sincronizar con el Total")
+        
+        def _on_auto_sync_change(e):
+            if auto_valor_sync.value:
+                field_valor_declarado.value = sum_total.value
+                field_valor_declarado.read_only = True
+            else:
+                field_valor_declarado.read_only = False
+            page.update()
+        
+        auto_valor_sync.on_change = _on_auto_sync_change
+
         # Filter tipos: NC/ND only allowed if it's a copy of an already "facturado" (with CAE) doc
         # AND the source document was a Factura (not Presupuesto, Remito, etc)
         is_facturado = doc_data and doc_data.get("cae") is not None
@@ -7348,6 +7413,7 @@ def main(page: ft.Page) -> None:
                 dropdown_lista_global.value = str(doc_data["id_lista_precio"])
             
             field_sena.value = str(doc_data.get("sena", 0))
+            field_valor_declarado.value = str(doc_data.get("valor_declarado", 0))
             
             _update_entidad_info(None)
         else:
@@ -7409,6 +7475,10 @@ def main(page: ft.Page) -> None:
             sum_iva.value = str(round(iva_tot, 2))
             sum_total.value = str(round(total, 2))
             sum_saldo.value = str(round(max(0, total - sena_val), 2))
+            
+            if auto_valor_sync.value:
+                field_valor_declarado.value = sum_total.value
+                
             page.update()
 
         def toggle_manual(e):
@@ -7679,6 +7749,7 @@ def main(page: ft.Page) -> None:
                         direccion_entrega=field_direccion.value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
+                        valor_declarado=_parse_float(field_valor_declarado.value, "Valor Declarado"),
                         manual_values={
                             "subtotal": _parse_float(sum_subtotal.value, "Neto Manual"),
                             "iva_total": _parse_float(sum_iva.value, "IVA Manual"),
@@ -7701,6 +7772,7 @@ def main(page: ft.Page) -> None:
                         direccion_entrega=field_direccion.value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
+                        valor_declarado=_parse_float(field_valor_declarado.value, "Valor Declarado"),
                         manual_values={
                             "subtotal": _parse_float(sum_subtotal.value, "Neto Manual"),
                             "iva_total": _parse_float(sum_iva.value, "IVA Manual"),
@@ -7746,7 +7818,7 @@ def main(page: ft.Page) -> None:
 
         # Custom Dialog Content (replacing generic open_form to control layout fully)
         dialog_content = ft.Container(
-            content=ft.ListView(
+            content=ft.Column(
                 controls=[
                     ft.Container(height=20), # Header Spacer
                     ft.Row([
@@ -7754,7 +7826,7 @@ def main(page: ft.Page) -> None:
                         ft.IconButton(ft.icons.CLOSE, on_click=close_form)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Row([field_fecha, field_vto, dropdown_tipo], spacing=10),
-                    ft.Row([ft.Column([dropdown_entidad, field_saldo], spacing=2)], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([dropdown_entidad, field_saldo], spacing=10),
                     ft.Row([dropdown_lista_global], spacing=10),
                     ft.Row([dropdown_deposito, field_numero, field_descuento, field_sena], spacing=10),
                     ft.Row([ft.Container(expand=True, content=field_obs)], spacing=10),
@@ -7763,11 +7835,9 @@ def main(page: ft.Page) -> None:
                     ft.Text("Ítems", weight=ft.FontWeight.BOLD),
                     ft.Container(
                         content=lines_container,
-                        height=200, # Scrollable area
+                        height=400, # Height for the items list specifically
                         border=ft.border.all(1, "#E2E8F0"),
                         border_radius=8,
-                        # Padding removed here as it's now handled inside ListView
-                        # padding=ft.padding.only(left=10, right=20, top=30, bottom=10), 
                     ),
                     ft.Row([
                          ft.ElevatedButton(
@@ -7783,7 +7853,7 @@ def main(page: ft.Page) -> None:
                     ], alignment=ft.MainAxisAlignment.START),
                     ft.Divider(),
                     # Financial Footer
-
+                    ft.Row([ft.Container(expand=True), auto_valor_sync, field_valor_declarado], alignment=ft.MainAxisAlignment.END, spacing=10),
                     ft.Row([
                         manual_mode,
                         ft.Column([sum_subtotal], spacing=0),
@@ -7809,12 +7879,10 @@ def main(page: ft.Page) -> None:
                         alignment=ft.MainAxisAlignment.END,
                     ),
                 ],
-                padding=ft.padding.all(25), # Internal padding handles scrollbar spacing
-                spacing=15, # Restore vertical spacing
+                spacing=15,
             ),
-            padding=0, # Remove outer padding to allow scrollbar to hit edge
+            padding=ft.padding.all(25),
             width=900,
-            height=800,
             bgcolor="white",
             border_radius=12,
         )

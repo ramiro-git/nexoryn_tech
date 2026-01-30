@@ -263,6 +263,7 @@ CREATE TABLE IF NOT EXISTS app.documento (
   iva_total               NUMERIC(14,4) NOT NULL DEFAULT 0,
   total                   NUMERIC(14,4) NOT NULL DEFAULT 0,
   sena                    NUMERIC(14,4) NOT NULL DEFAULT 0,
+  valor_declarado       NUMERIC(14,4) NOT NULL DEFAULT 0,
   id_usuario              BIGINT REFERENCES seguridad.usuario(id) ON UPDATE CASCADE ON DELETE SET NULL,
   -- ARCA/AFIP Fields for Electronic Invoicing
   punto_venta             INTEGER,
@@ -335,6 +336,7 @@ CREATE TABLE IF NOT EXISTS app.remito (
   estado                VARCHAR(12) NOT NULL DEFAULT 'PENDIENTE',
   fecha_despacho        TIMESTAMPTZ,
   fecha_entrega         TIMESTAMPTZ,
+  valor_declarado       NUMERIC(14,4) NOT NULL DEFAULT 0,
   id_usuario            BIGINT REFERENCES seguridad.usuario(id) ON UPDATE CASCADE ON DELETE SET NULL,
   CONSTRAINT ck_remito_estado CHECK (estado IN ('PENDIENTE', 'DESPACHADO', 'ENTREGADO', 'ANULADO'))
 );
@@ -348,6 +350,10 @@ CREATE TABLE IF NOT EXISTS app.remito_detalle (
   PRIMARY KEY (id_remito, nro_linea),
   CONSTRAINT ck_remito_det_cant CHECK (cantidad > 0)
 );
+
+-- Schema updates for existing tables (ensure columns exist before views)
+ALTER TABLE app.remito ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
+ALTER TABLE app.documento ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
 
 -- ============================================================================
 -- VIEWS
@@ -431,6 +437,7 @@ SELECT
   doc.numero_serie AS documento_numero,
   doc.estado AS documento_estado,
   r.direccion_entrega,
+  r.valor_declarado,
   r.observacion,
   r.fecha_despacho,
   r.fecha_entrega,
@@ -458,6 +465,7 @@ GROUP BY
   doc.numero_serie,
   doc.estado,
   r.direccion_entrega,
+  r.valor_declarado,
   r.observacion,
   r.fecha_despacho,
   r.fecha_entrega,
@@ -480,6 +488,7 @@ SELECT
   doc.subtotal,
   doc.iva_total,
   doc.sena,
+  doc.valor_declarado,
   doc.descuento_porcentaje,
   doc.descuento_importe,
   doc.cae,
