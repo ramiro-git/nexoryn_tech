@@ -767,7 +767,7 @@ class MassUpdateView(ft.Container):
             ),
             actions=[
                 cancel_button("Cancelar", on_click=close_dlg),
-                ft.ElevatedButton("Confirmar y Aplicar", on_click=do_apply, bgcolor="#EF4444", color="white", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=4))),
+                ft.ElevatedButton("Confirmar y Aplicar", on_click=do_apply, bgcolor="#16A34A", color="white", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=4))),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
