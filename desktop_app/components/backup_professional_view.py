@@ -401,7 +401,7 @@ class BackupProfessionalView:
             confirm_text="ACEPTAR",
             error_format_text="Formato inválido",
             error_invalid_text="Fecha fuera de rango",
-            help_text="SELECCIONAR FECHA"
+            help_text="SELECCIONAR FECHA... *"
         )
         def _maybe_set(obj: Any, name: str, value: Any) -> None:
             if hasattr(obj, name):

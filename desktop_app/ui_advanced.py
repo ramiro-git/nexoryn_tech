@@ -707,7 +707,7 @@ def main(page: ft.Page) -> None:
         entity_tipo = AsyncSelect(
             loader=tipo_loader,
             value="",
-            placeholder="Seleccionar tipo...",
+            placeholder="Seleccionar tipo de entidad... *",
             width=240,
             label="Tipo",
         )
@@ -810,14 +810,14 @@ def main(page: ft.Page) -> None:
         article_marca = AsyncSelect(
             loader=marcas_loader,
             value="",
-            placeholder="Seleccionar marca...",
+            placeholder="Seleccionar marca... *",
             width=240,
             label="Marca",
         )
         article_rubro = AsyncSelect(
             loader=rubros_loader,
             value="",
-            placeholder="Seleccionar rubro...",
+            placeholder="Seleccionar rubro... *",
             width=240,
             label="Rubro",
         )

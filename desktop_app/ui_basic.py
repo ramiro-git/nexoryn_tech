@@ -397,6 +397,7 @@ def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, wid
     dd = ft.Dropdown(
         label=label,
         value=value,
+        hint_text=f"Seleccionar {label.replace('Filtrar ', '').replace('*', '').strip().lower()}... *",
         options=[ft.dropdown.Option(str(v) if v is not None else "", t) for v, t in options],
         width=width,
     )
@@ -451,7 +452,7 @@ def _date_field(*args, **kwargs) -> ft.TextField:
     
     dp = ft.DatePicker(
         on_change=on_date_change,
-        help_text="SELECCIONAR FECHA",
+        help_text="SELECCIONAR FECHA... *",
         cancel_text="CANCELAR",
         confirm_text="ACEPTAR",
         error_format_text="Formato inválido",
@@ -918,7 +919,7 @@ def main(page: ft.Page) -> None:
 
     # reload_catalogs() will be called at the end of main after all controls are defined
 
-    def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "Seleccionar...") -> Any:
+    def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "Seleccionar opción... *") -> Any:
         def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
             values = list(values_provider() or [])
             options: List[ft.dropdown.Option] = [ft.dropdown.Option(name, name) for name in values]
@@ -965,7 +966,7 @@ def main(page: ft.Page) -> None:
             dd = ft.Dropdown(
                 options=options,
                 value=selected_key if selected_key in option_keys else None,
-                hint_text="Seleccionar...",
+                hint_text="Seleccionar unidad... *",
                 width=width,
                 on_change=lambda e: setter(e.control.value),
             )
@@ -1480,7 +1481,7 @@ def main(page: ft.Page) -> None:
                 formatter=lambda v, _: v or "—", 
                 width=100,
                 editable=True,
-                inline_editor=dropdown_editor(lambda: ["CLIENTE", "PROVEEDOR", "AMBOS"], width=150, empty_label="Seleccionar...")
+                inline_editor=dropdown_editor(lambda: ["CLIENTE", "PROVEEDOR", "AMBOS"], width=150, empty_label="Seleccionar tipo... *")
             ),
             ColumnConfig(key="cuit", label="CUIT", width=110, editable=True),
             ColumnConfig(
@@ -1491,7 +1492,7 @@ def main(page: ft.Page) -> None:
                 inline_editor=dropdown_editor(
                     lambda: [c["nombre"] for c in db.fetch_condiciones_iva(limit=100)], 
                     width=200, 
-                    empty_label="Seleccionar..."
+                    empty_label="Seleccionar tipo... *"
                 )
             ),
             ColumnConfig(
@@ -1879,7 +1880,7 @@ def main(page: ft.Page) -> None:
                 label="Alicuota IVA",
                 editable=True,
                 formatter=lambda v, row: next((i["descripcion"] for i in tipos_iva_values if str(i["id"]) == str(v or row.get("id_tipo_iva"))), "—"),
-                inline_editor=dropdown_editor(lambda: [i["descripcion"] for i in tipos_iva_values], width=200, empty_label="Seleccionar..."),
+                inline_editor=dropdown_editor(lambda: [i["descripcion"] for i in tipos_iva_values], width=200, empty_label="Seleccionar IVA... *"),
                 width=150,
             ),
             ColumnConfig(
@@ -1887,7 +1888,7 @@ def main(page: ft.Page) -> None:
                 label="Proveedor",
                 editable=True,
                 formatter=lambda v, row: next((p["nombre"] for p in proveedores_values if str(p["id"]) == str(v or row.get("id_proveedor"))), "—"),
-                inline_editor=async_select_editor(supplier_loader, label="Seleccionar...", width=300),
+                inline_editor=async_select_editor(supplier_loader, label="Proveedor", width=300),
                 width=180,
             ),
             ColumnConfig(
@@ -1895,7 +1896,7 @@ def main(page: ft.Page) -> None:
                 label="Ubicación",
                 width=120,
                 editable=True,
-                inline_editor=dropdown_editor(lambda: [d["nombre"] for d in (db.fetch_depositos() if db else [])], width=200, empty_label="Seleccionar..."),
+                inline_editor=dropdown_editor(lambda: [d["nombre"] for d in (db.fetch_depositos() if db else [])], width=200, empty_label="Seleccionar depósito... *"),
             ),
             ColumnConfig(
                 key="activo",
@@ -3795,7 +3796,7 @@ def main(page: ft.Page) -> None:
     dtype_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Nombre", editable=True, width=160),
-            ColumnConfig(key="clase", label="Clase", editable=True, width=100, inline_editor=dropdown_editor(lambda: ["VENTA", "COMPRA"], width=120, empty_label="Seleccionar...")),
+            ColumnConfig(key="clase", label="Clase", editable=True, width=100, inline_editor=dropdown_editor(lambda: ["VENTA", "COMPRA"], width=120, empty_label="Seleccionar clase... *")),
             ColumnConfig(key="letra", label="Letra", editable=True, width=60),
             ColumnConfig(key="afecta_stock", label="Stk", editable=True, width=60, formatter=_format_bool, inline_editor=boolean_editor()),
             ColumnConfig(key="afecta_cuenta_corriente", label="Cta", editable=True, width=60, formatter=_format_bool, inline_editor=boolean_editor()),
@@ -3838,7 +3839,7 @@ def main(page: ft.Page) -> None:
     mtype_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Nombre", editable=True, width=240),
-            ColumnConfig(key="signo_stock", label="Signo", editable=True, width=80, inline_editor=dropdown_editor(lambda: ["1", "-1"], width=100, empty_label="Seleccionar...")),
+            ColumnConfig(key="signo_stock", label="Signo", editable=True, width=80, inline_editor=dropdown_editor(lambda: ["1", "-1"], width=100, empty_label="Seleccionar signo... *")),
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
