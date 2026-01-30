@@ -1596,3 +1596,11 @@ COMMENT ON FUNCTION app.registrar_movimiento_cc IS 'Registra un movimiento de cu
 COMMENT ON VIEW app.v_cuenta_corriente_resumen IS 'Resumen de cuentas corrientes con estado calculado';
 COMMENT ON VIEW app.v_movimiento_cc_full IS 'Movimientos de cuenta corriente con información completa de entidad, documento y usuario';
 
+-- ============================================================================
+-- CONFIGURACIÓN DE RETENCIÓN DE LOGS
+-- ============================================================================
+
+INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion) VALUES
+  ('log_retencion_dias', '90', 'NUMBER', 'Días de retención antes de archivar y purgar logs'),
+  ('log_directorio_archivo', 'logs_archive', 'PATH', 'Directorio donde se guardan los archivos de logs archivados')
+ON CONFLICT (clave) DO NOTHING;

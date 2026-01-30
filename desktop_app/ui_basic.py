@@ -6000,6 +6000,74 @@ def main(page: ft.Page) -> None:
     logs_adv_desde = _date_field("Desde", width=140)
     logs_adv_hasta = _date_field("Hasta", width=140)
 
+    # Toggle for historical logs
+    logs_historico_toggle = ft.Switch(label="Registros Históricos", value=False)
+    logs_historico_rango = ft.Dropdown(
+        label="Período",
+        options=[
+            ft.dropdown.Option("7", "Últimos 7 días"),
+            ft.dropdown.Option("14", "Últimos 14 días"),
+            ft.dropdown.Option("30", "Últimos 30 días"),
+            ft.dropdown.Option("60", "Últimos 60 días"),
+            ft.dropdown.Option("90", "Últimos 90 días"),
+        ],
+        value="30",
+        width=150,
+        visible=False,
+    )
+    _style_input(logs_historico_rango)
+
+    # State for logs view
+    logs_state = {"solo_hoy": True}
+
+    def _on_logs_toggle_change(e):
+        is_historico = logs_historico_toggle.value
+        logs_historico_rango.visible = is_historico
+        logs_state["solo_hoy"] = not is_historico
+        
+        try:
+            logs_historico_rango.update()
+        except: pass
+        
+        if is_historico:
+            # Apply current range immediately
+            _on_logs_rango_change(None)
+        else:
+            # Clear dates so solo_hoy logic works
+            logs_adv_desde.value = ""
+            logs_adv_hasta.value = ""
+            try:
+                logs_adv_desde.update()
+                logs_adv_hasta.update()
+            except: pass
+            logs_table.refresh()
+
+    def _on_logs_rango_change(e):
+        # When the range changes, apply the date filter and refresh
+        if logs_historico_toggle.value:
+            from datetime import datetime, timedelta
+            days = int(logs_historico_rango.value or 30)
+            desde_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            logs_adv_desde.value = desde_date
+            logs_adv_hasta.value = ""
+            try:
+                logs_adv_desde.update()
+                logs_adv_hasta.update()
+            except: pass
+        logs_table.refresh()
+
+    logs_historico_toggle.on_change = _on_logs_toggle_change
+    logs_historico_rango.on_change = _on_logs_rango_change
+
+    # Custom data provider that respects solo_hoy state
+    def logs_data_provider(offset, limit, search, simple, advanced, sorts):
+        if not db:
+            raise provider_error()
+        solo_hoy = logs_state.get("solo_hoy", True)
+        rows = db.fetch_logs(search=search, simple=simple, advanced=advanced, sorts=sorts, limit=limit, offset=offset, solo_hoy=solo_hoy)
+        total = db.count_logs(search=search, simple=simple, advanced=advanced, solo_hoy=solo_hoy)
+        return rows, total
+
     logs_table = GenericTable(
         columns=[
             ColumnConfig(key="fecha", label="Fecha", width=160, formatter=_format_datetime),
@@ -6011,7 +6079,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="ip", label="IP", width=120),
             ColumnConfig(key="detalle", label="Detalle", width=300),
         ],
-        data_provider=create_catalog_provider(db.fetch_logs, db.count_logs),
+        data_provider=logs_data_provider,
         advanced_filters=[
             AdvancedFilterControl("usuario", logs_adv_user),
             AdvancedFilterControl("entidad", logs_adv_ent),
@@ -6020,7 +6088,7 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("desde", logs_adv_desde),
             AdvancedFilterControl("hasta", logs_adv_hasta),
         ],
-        show_inline_controls=False, show_mass_actions=False, show_selection=True, auto_load=False, page_size=50,
+        show_inline_controls=False, show_mass_actions=False, show_selection=True, auto_load=True, page_size=50,
         show_export_button=True, show_export_scope=True,
     )
 
@@ -6032,9 +6100,172 @@ def main(page: ft.Page) -> None:
         ], expand=True, spacing=10)
     )
 
+    # --- LOGS CONFIGURATION LOGIC ---
+    logs_conf_retencion = ft.TextField(label="Días de Retención", width=150, keyboard_type=ft.KeyboardType.NUMBER)
+    logs_conf_dir = ft.TextField(label="Directorio Archivo", width=300)
+    log_conf_progress = ft.ProgressBar(width=400, visible=False)
+    log_conf_status = ft.Text("", size=12, italic=True, color="grey", visible=False)
+    log_conf_btn_run = ft.ElevatedButton("Ejecutar Archivado Ahora", icon=ft.icons.PLAY_ARROW_ROUNDED)
+
+    # File Picker setup
+    def pick_folder_result(e: ft.FilePickerResultEvent):
+        if e.path:
+            logs_conf_dir.value = e.path
+            logs_conf_dir.update()
+
+    file_picker = ft.FilePicker(on_result=pick_folder_result)
+    # We need to add file_picker to page.overlay, but page might not be fully ready?
+    # Usually it's safe to add here if page is passed to main.
+    try:
+        if file_picker not in page.overlay:
+            page.overlay.append(file_picker)
+    except: pass
+
+    def open_log_config_dialog(e):
+        try:
+            # Load values
+            retention = db.get_config("log_retencion_dias", "90")
+            directory = db.get_config("log_directorio_archivo", "logs_archive")
+            logs_conf_retencion.value = str(retention)
+            logs_conf_dir.value = str(directory)
+            logs_conf_retencion.error_text = None
+            log_conf_progress.visible = False
+            log_conf_status.visible = False
+            log_conf_btn_run.disabled = False
+            page.dialog = log_config_dialog
+            log_config_dialog.open = True
+            page.update()
+        except Exception as ex:
+            print(f"Error opening config: {ex}")
+
+    def save_log_config(e):
+        try:
+            val_days = int(logs_conf_retencion.value)
+            val_dir = logs_conf_dir.value.strip()
+            if not val_dir: val_dir = "logs_archive"
+            
+            db.set_config("log_retencion_dias", str(val_days), "NUMBER", "Días retención logs")
+            db.set_config("log_directorio_archivo", val_dir, "PATH", "Directorio archivo logs")
+            
+            log_config_dialog.open = False
+            page.update()
+            
+            # Show toast fallback
+            snack = getattr(page, "snack_bar", None)
+            if snack:
+                snack.content = ft.Text("Configuración guardada")
+                snack.open = True
+            page.update()
+            
+        except ValueError:
+            logs_conf_retencion.error_text = "Debe ser un número entero"
+            logs_conf_retencion.update()
+
+    def run_archive_now(e):
+        log_conf_progress.visible = True
+        log_conf_status.visible = True
+        log_conf_status.value = "Iniciando..."
+        log_conf_btn_run.disabled = True
+        page.update()
+        
+        def _run_thread():
+            try:
+                from pathlib import Path
+                # Resolve app dir safely (fallback to cwd/data)
+                # We assume standard structure if PROJECT_ROOT is missing
+                base_dir = Path.cwd() / "data"
+                
+                from desktop_app.log_archiver import LogArchiver
+                archiver = LogArchiver(db, app_data_dir=str(base_dir))
+                
+                # Callback to update UI
+                def _on_progress(curr, total, msg):
+                    if total > 0:
+                        val = min(curr / total, 1.0)
+                    else:
+                        val = 0 if curr == 0 else 1.0 # Indeterminate if total 0 but finished?
+                    
+                    log_conf_progress.value = val
+                    log_conf_status.value = msg
+                    try:
+                        log_conf_progress.update()
+                        log_conf_status.update()
+                    except: pass
+                
+                result = archiver.archive_old_logs(progress_callback=_on_progress)
+                
+                msg = f"Proceso completado.\n\nArchivados: {result['archived']}\nEliminados: {result['deleted']}"
+                if result['file']:
+                    msg += f"\n\nArchivo generado:\n{result['file']}"
+                if result['error']:
+                    msg = f"Error: {result['error']}"
+                
+                def _on_finish():
+                    log_conf_progress.visible = False
+                    log_conf_status.visible = False
+                    log_conf_btn_run.disabled = False
+                    # Show result alert
+                    page.dialog = ft.AlertDialog(title=ft.Text("Resultado"), content=ft.Text(msg))
+                    page.dialog.open = True
+                    page.update()
+
+                # Basic thread-safe UI update (Flet works fine with closures usually if page is valid)
+                _on_finish()
+                
+            except Exception as ex:
+                print(f"Manual archive error: {ex}")
+                try:
+                    log_conf_status.value = f"Error: {ex}"
+                    log_conf_status.update()
+                except: pass
+        
+        import threading
+        threading.Thread(target=_run_thread, daemon=True).start()
+
+    log_conf_btn_run.on_click = run_archive_now
+
+    log_config_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Configuración de Logs"),
+        content=ft.Column([
+            ft.Text("Política de Retención Automática", weight=ft.FontWeight.BOLD),
+            ft.Text("Días a conservar antes de archivar y borrar:", size=12, color="grey"),
+            logs_conf_retencion,
+            ft.Text("Carpeta de Archivo (Destino):", size=12, color="grey"),
+            ft.Row([
+                logs_conf_dir, 
+                ft.IconButton(ft.icons.FOLDER_OPEN, tooltip="Seleccionar carpeta", on_click=lambda _: file_picker.get_directory_path())
+            ]),
+            ft.Divider(),
+            ft.Text("Ejecución Manual", weight=ft.FontWeight.BOLD),
+            ft.Text("Forzar el archivado ahora mismo respetando la configuración actual.", size=12, color="grey"),
+            log_conf_btn_run,
+            log_conf_status,
+            log_conf_progress
+        ], tight=True, width=500, spacing=10),
+        actions=[
+            ft.TextButton("Cancelar", on_click=lambda e: setattr(log_config_dialog, 'open', False) or page.update()),
+            ft.ElevatedButton("Guardar Configuración", on_click=save_log_config),
+        ],
+    )
+    
+    logs_config_btn = ft.IconButton(icon=ft.icons.SETTINGS_ROUNDED, tooltip="Configurar Retención y Archivado", on_click=open_log_config_dialog)
+
+    # Build logs view with toggle controls
+    logs_toggle_row = ft.Row([
+        logs_config_btn,
+        logs_historico_toggle,
+        logs_historico_rango,
+        ft.Text("(Por defecto: solo logs de hoy)", size=11, color=COLOR_TEXT_MUTED, italic=True),
+    ], spacing=15, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
     logs_view = make_card(
         "Logs de Sistema", "Registro histórico de movimientos y acciones.",
-        logs_table.build()
+        ft.Column([
+            logs_toggle_row,
+            ft.Divider(height=1, color=COLOR_BORDER),
+            logs_table.build()
+        ], spacing=10, expand=True)
     )
 
     nueva_marca.on_submit = agregar_marca  # type: ignore[attr-defined]
@@ -8067,10 +8298,27 @@ def main(page: ft.Page) -> None:
     
     # Initial catalog load after all UI is ready
     if db is not None and not db_error:
+        # Check and run automatic log partition migration
+        try:
+            from desktop_app.db_migration import migrate_to_partitioned_logs
+            # Run in a separate thread to avoid UI freeze if migration is heavy? 
+            # Ideally blocking for safety, but if large data, better show loading.
+            # User wants "automatic", blocking is safest for integrity.
+            migrate_to_partitioned_logs(db)
+        except Exception as exc:
+            print(f"Auto-migration error: {exc}")
+
         try:
             reload_catalogs()
         except Exception as exc:
             print(f"Error initial reload: {exc}")
+        
+        # Start log archiver in background (archives old logs after 30s delay)
+        try:
+            from desktop_app.log_archiver import start_log_archiver
+            start_log_archiver(db, app_data_dir=str(PROJECT_ROOT / "data"), delay_seconds=30)
+        except Exception as exc:
+            print(f"Log archiver init error: {exc}")
 
     page.update()
 

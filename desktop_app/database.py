@@ -94,6 +94,24 @@ class Database:
         except Exception as e:
             logger.error(f"Error fetching config for key {key}: {e}")
             return default
+    
+    def set_config(self, key: str, value: Any, tipo: str = 'STRING', descripcion: str = '') -> None:
+        """Update or insert a configuration value in seguridad.config_sistema."""
+        query = """
+            INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (clave) DO UPDATE 
+            SET valor = EXCLUDED.valor, 
+                descripcion = EXCLUDED.descripcion
+        """
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (key, str(value), tipo, descripcion))
+                    conn.commit()
+        except Exception as e:
+            logger.error(f"Error setting config for key {key}: {e}")
+            raise
 
     def close_pool(self) -> None:
         """Close the connection pool temporarily."""
@@ -2075,7 +2093,16 @@ class Database:
                 """
                 cur.execute(q_list, (entity_id, int(id_lista_precio), descuento, limite_credito))
             
+            
             self.invalidate_catalog_cache("proveedores")
+            
+            self.log_activity(
+                entidad="app.entidad_comercial",
+                accion="ALTA",
+                id_entidad=entity_id,
+                detalle={"tipo": tipo_clean, "nombre": nombre_clean or razon_social_clean}
+            )
+            
             return entity_id
 
     def update_entity_full(
@@ -2126,6 +2153,13 @@ class Database:
                 cur.execute(q_list, (entity_id, int(id_lista_precio), descuento, limite_credito))
             
             self.invalidate_catalog_cache("proveedores")
+            
+            self.log_activity(
+                entidad="app.entidad_comercial",
+                accion="MODIFICACION",
+                id_entidad=entity_id,
+                detalle={"updates": updates, "id_lista_precio": id_lista_precio}
+            )
 
     def create_entity(self, **kwargs) -> int:
         """Legacy wrapper for create_entity_full"""
@@ -2290,8 +2324,23 @@ class Database:
         self.invalidate_catalog_cache("proveedores")
 
     def bulk_update_entities(self, ids: Sequence[int], updates: Dict[str, Any]) -> None:
-        for entity_id in ids:
-            self.update_entity_fields(entity_id, updates)
+        if not ids or not updates: return
+        cols = ", ".join([f"{k} = %s" for k in updates.keys()])
+        params = list(updates.values())
+        params.append(list(ids))
+        query = f"UPDATE app.entidad_comercial SET {cols}, fecha_actualizacion = now() WHERE id = ANY(%s)"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                self._setup_session(cur)
+                cur.execute(query, params)
+                count = cur.rowcount
+                conn.commit()
+                
+                self.log_activity(
+                    entidad="app.entidad_comercial",
+                    accion="UPDATE_MASIVO",
+                    detalle={"count": count, "updates": updates, "ids": list(ids)[:50]}
+                )
 
     def delete_entities(self, ids: Sequence[int]) -> None:
         if not ids:
@@ -2428,8 +2477,17 @@ class Database:
                     ),
                 )
                 res = cur.fetchone()
+                art_id = res.get("id") if isinstance(res, dict) else res[0]
                 conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+                
+                self.log_activity(
+                    entidad="app.articulo",
+                    accion="ALTA",
+                    id_entidad=art_id,
+                    detalle={"nombre": nombre_clean, "costo": costo_value}
+                )
+                
+                return art_id
 
     def update_article_fields(self, article_id: int, updates: Dict[str, Any]) -> None:
         allowed = {
@@ -2570,6 +2628,13 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, params)
                 conn.commit()
+                
+                self.log_activity(
+                    entidad="app.articulo",
+                    accion="MODIFICACION",
+                    id_entidad=article_id,
+                    detalle={"updates": updates}
+                )
 
     def fetch_article_by_id(self, article_id: int) -> Optional[Dict[str, Any]]:
         query = """
@@ -2637,8 +2702,23 @@ class Database:
 
 
     def bulk_update_articles(self, ids: Sequence[int], updates: Dict[str, Any]) -> None:
-        for article_id in ids:
-            self.update_article_fields(article_id, updates)
+        if not ids or not updates: return
+        cols = ", ".join([f"{k} = %s" for k in updates.keys()])
+        params = list(updates.values())
+        params.append(list(ids))
+        query = f"UPDATE app.articulo SET {cols} WHERE id = ANY(%s)"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                self._setup_session(cur)
+                cur.execute(query, params)
+                count = cur.rowcount
+                conn.commit()
+                
+                self.log_activity(
+                    entidad="app.articulo",
+                    accion="UPDATE_MASIVO",
+                    detalle={"count": count, "updates": updates, "ids": list(ids)[:50]}
+                )
 
     def delete_articles(self, ids: Sequence[int]) -> None:
         if not ids:
@@ -3234,7 +3314,12 @@ class Database:
             )
 
     # Logs
-    def fetch_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    def fetch_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 100, offset: int = 0, solo_hoy: bool = True) -> List[Dict[str, Any]]:
+        """Fetch logs with optional daily filter.
+        
+        Args:
+            solo_hoy: If True and no desde/hasta filters, only fetch today's logs.
+        """
         filters = ["1=1"]
         params = []
         advanced = advanced or {}
@@ -3284,14 +3369,18 @@ class Database:
             except (ValueError, TypeError): pass
 
         desde = advanced.get("desde")
-        if desde:
-            filters.append("l.fecha_hora >= %s")
-            params.append(desde)
-
         hasta = advanced.get("hasta")
-        if hasta:
-            filters.append("l.fecha_hora <= %s")
-            params.append(hasta)
+        
+        # Apply solo_hoy filter only if no explicit date filters
+        if solo_hoy and not desde and not hasta:
+            filters.append("l.fecha_hora >= CURRENT_DATE")
+        else:
+            if desde:
+                filters.append("l.fecha_hora >= %s")
+                params.append(desde)
+            if hasta:
+                filters.append("l.fecha_hora <= %s")
+                params.append(hasta)
 
         ip = advanced.get("ip")
         if ip:
@@ -3301,6 +3390,7 @@ class Database:
         where_clause = " AND ".join(filters)
         sort_columns = {"id": "l.id", "fecha": "l.fecha_hora", "usuario": "u.nombre", "entidad": "l.entidad", "accion": "l.accion", "resultado": "l.resultado", "id_entidad": "l.id_entidad"}
         order_by = self._build_order_by(sorts, sort_columns, default="l.fecha_hora DESC", tiebreaker="l.id DESC")
+        
         query = f"""
             SELECT l.id, l.fecha_hora as fecha, u.nombre as usuario, l.entidad, l.id_entidad, l.accion, l.resultado, l.ip, l.detalle
             FROM seguridad.log_actividad l
@@ -3315,7 +3405,12 @@ class Database:
                 cur.execute(query, params)
                 return _rows_to_dicts(cur)
 
-    def count_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
+    def count_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, solo_hoy: bool = True) -> int:
+        """Count logs with optional daily filter.
+        
+        Args:
+            solo_hoy: If True and no desde/hasta filters, only count today's logs.
+        """
         filters = ["1=1"]
         params = []
         advanced = advanced or {}
@@ -3365,20 +3460,24 @@ class Database:
             except (ValueError, TypeError): pass
 
         desde = advanced.get("desde")
-        if desde:
-            filters.append("l.fecha_hora >= %s")
-            params.append(desde)
-
         hasta = advanced.get("hasta")
-        if hasta:
-            filters.append("l.fecha_hora <= %s")
-            params.append(hasta)
+        
+        # Apply solo_hoy filter only if no explicit date filters
+        if solo_hoy and not desde and not hasta:
+            filters.append("l.fecha_hora >= CURRENT_DATE")
+        else:
+            if desde:
+                filters.append("l.fecha_hora >= %s")
+                params.append(desde)
+            if hasta:
+                filters.append("l.fecha_hora <= %s")
+                params.append(hasta)
 
         ip = advanced.get("ip")
         if ip:
             filters.append("l.ip ILIKE %s")
             params.append(f"%{ip.strip()}%")
-
+        
         where_clause = " AND ".join(filters)
         query = f"SELECT COUNT(*) AS total FROM seguridad.log_actividad l LEFT JOIN seguridad.usuario u ON l.id_usuario = u.id WHERE {where_clause}"
         with self.pool.connection() as conn:
@@ -3776,6 +3875,13 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, params)
                 conn.commit()
+                
+                self.log_activity(
+                    entidad="seguridad.usuario",
+                    accion="MODIFICACION",
+                    id_entidad=user_id,
+                    detalle={"updates": {k: v for k, v in updates.items() if k != "contrasena"}}
+                )
 
     def create_user(self, nombre: str, email: str, contrasena: str, id_rol: int) -> int:
         query = """
@@ -3787,8 +3893,17 @@ class Database:
                 self._setup_session(cur)
                 cur.execute(query, (nombre.strip(), email.strip(), contrasena, id_rol))
                 res = cur.fetchone()
+                user_id = res.get("id") if isinstance(res, dict) else res[0]
                 conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+                
+                self.log_activity(
+                    entidad="seguridad.usuario",
+                    accion="ALTA",
+                    id_entidad=user_id,
+                    detalle={"nombre": nombre, "email": email, "id_rol": id_rol}
+                )
+                
+                return user_id
 
     def fetch_roles(self) -> List[Dict[str, Any]]:
         """Fetch all available roles for user creation."""
@@ -4550,8 +4665,24 @@ class Database:
                     )
                 )
                 res = cur.fetchone()
+                movement_id = res.get("id") if isinstance(res, dict) else res[0]
                 conn.commit()
-                return res.get("id") if isinstance(res, dict) else res[0]
+                
+                # Log audit activity (if not internal to a document confirm)
+                if not id_documento:
+                    self.log_activity(
+                        entidad="app.articulo",
+                        accion="AJUSTE_STOCK",
+                        id_entidad=id_articulo,
+                        detalle={
+                            "cantidad": float(cantidad),
+                            "tipo_movimiento": id_tipo_movimiento,
+                            "deposito": id_deposito,
+                            "observacion": observacion
+                        }
+                    )
+                
+                return movement_id
 
     def create_payment(
         self,
@@ -4644,6 +4775,20 @@ class Database:
                         )
                     )
                 conn.commit()
+                
+                # Log audit activity
+                self.log_activity(
+                    entidad="app.pago",
+                    accion="REGISTRO",
+                    id_entidad=payment_id,
+                    detalle={
+                        "documento": id_documento,
+                        "forma_pago": id_forma_pago,
+                        "monto": float(monto),
+                        "referencia": referencia
+                    }
+                )
+                
                 return payment_id
 
     def create_document(self, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
@@ -4756,6 +4901,20 @@ class Database:
                     )
                 )
             cur.executemany(detail_query, detail_rows)
+            
+            # Log audit activity
+            self.log_activity(
+                entidad="app.documento",
+                accion="CREACION",
+                id_entidad=doc_id,
+                detalle={
+                    "tipo": id_tipo_documento,
+                    "numero": numero_para_insertar,
+                    "entidad": id_entidad_comercial,
+                    "total": float(total)
+                }
+            )
+            
             return doc_id
 
     def get_entity_balance(self, entity_id: int) -> float:
@@ -4963,20 +5122,19 @@ class Database:
                                 int(self.current_user_id) if self.current_user_id is not None else None
                             ),
                         )
-
-            if clase == "VENTA":
-                self._ensure_remito_for_document(
-                    cur,
-                    doc_id,
-                    doc_meta={
-                        "clase": clase,
-                        "id_entidad_comercial": entidad_id,
-                        "id_deposito": depo_id,
-                        "direccion_entrega": direccion,
-                        "observacion": observacion,
-                        "numero_serie": doc_numero,
-                    },
-                )
+            
+            # Log audit activity
+            self.log_activity(
+                entidad="app.documento",
+                accion="CONFIRMACION",
+                id_entidad=doc_id,
+                detalle={
+                    "numero": doc_numero,
+                    "clase": clase,
+                    "entidad": entidad_id,
+                    "total": float(doc_total)
+                }
+            )
 
     def _get_any_deposito_id(self, cur) -> int:
         cur.execute("SELECT id FROM ref.deposito ORDER BY id LIMIT 1")
@@ -5214,6 +5372,15 @@ class Database:
                         INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion, id_usuario)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                      """, (art_id, new_tipo_id, cant, dep_id, doc_id, "Anulación de Comprobante", self.current_user_id))
+        
+        # Log audit activity
+        self.log_activity(
+            entidad="app.documento",
+            accion="ANULACION",
+            id_entidad=doc_id,
+            detalle={"estado_previo": estado}
+        )
+        
         return True
 
     def get_article_stock(self, article_id: int) -> float:
