@@ -65,6 +65,12 @@ class ToastNotification(ft.Container):
         self.offset = ft.Offset(0.5, 0)
         self.animate_opacity = 300
         self.animate_offset = ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC)
+        # In Flet 0.25.2, z_index must be set after initialization if supported or 
+        # managed via overlay ordering
+        try:
+            self.z_index = 99999
+        except:
+            pass
 
     def did_mount(self):
         # Trigger entry animation
@@ -106,17 +112,30 @@ class ToastManager:
             alignment=ft.MainAxisAlignment.END,
             horizontal_alignment=ft.CrossAxisAlignment.END,
         )
+        try:
+            self.container.z_index = 99999
+        except:
+            pass
         self.page.overlay.append(self.container)
         self.page.update()
 
     def show(self, message: str, kind: str = "info", duration: int = 4000):
+        # Ensure container is still in overlay and at the front
+        if self.container not in self.page.overlay:
+            self.page.overlay.append(self.container)
+        else:
+            # Move to the end of overlay to be on top of other overlay elements 
+            # (z_index already handles this but this is extra insurance)
+            self.page.overlay.remove(self.container)
+            self.page.overlay.append(self.container)
+
         def on_dismiss(toast):
             try:
                 if toast in self.container.controls:
                     self.container.controls.remove(toast)
                     try:
                         self.page.update()
-                    except AssertionError:
+                    except (AssertionError, Exception):
                         pass
             except:
                 pass
@@ -125,7 +144,7 @@ class ToastManager:
         self.container.controls.append(toast)
         try:
             self.page.update()
-        except AssertionError:
+        except (AssertionError, Exception):
             pass
         
         # Manually trigger animations if did_mount doesn't likely fire immediately
