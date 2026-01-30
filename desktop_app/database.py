@@ -5991,7 +5991,7 @@ class Database:
                           detalle={"tipo": tipo, "monto": monto, "concepto": concepto})
         return mov_id
 
-    def get_movimientos_entidad(self, id_entidad: int, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_movimientos_entidad(self, id_entidad: int, limit: int = 500) -> List[Dict[str, Any]]:
         """Obtiene los últimos movimientos de una entidad específica."""
         return self.fetch_movimientos_cc(
             advanced={"id_entidad": id_entidad},

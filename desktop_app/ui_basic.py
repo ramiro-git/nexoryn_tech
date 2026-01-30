@@ -168,7 +168,10 @@ def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
         return "—"
     try:
         val = float(value)
-        # Format as 1,234.56 then swap chars to 1.234,56
+        # Fix for "-0,00": if absolute value is extremely small, treat as zero
+        if abs(val) < 0.001:
+            val = 0.0
+            
         formatted = f"{val:,.2f}"
         return f"${formatted.replace(',', 'X').replace('.', ',').replace('X', '.')}"
     except Exception:
@@ -5717,52 +5720,75 @@ def main(page: ft.Page) -> None:
         )
 
     def ver_movimientos_entidad(e, entidad_id):
-        """Muestra los movimientos de una entidad específica."""
+        """Muestra los movimientos de una entidad específica con formato contable."""
         if not db: return
         try:
-            movimientos = db.get_movimientos_entidad(int(entidad_id), limit=50)
+            # Obtenemos movimientos (ahora el límite es 500 por defecto en database.py)
+            movimientos = db.get_movimientos_entidad(int(entidad_id))
             
             mov_rows = []
             for m in movimientos:
                 tipo = m.get("tipo_movimiento", "")
                 monto = float(m.get("monto", 0))
-                signo = "+" if tipo in ("CREDITO", "AJUSTE_CREDITO", "ANULACION") else "-"
-                color = COLOR_SUCCESS if signo == "+" else COLOR_ERROR
+                
+                # Definición contable:
+                # DEBE (+ deuda): DEBITO, AJUSTE_DEBITO (Rojo)
+                # HABER (- deuda): CREDITO, AJUSTE_CREDITO, ANULACION (Verde)
+                
+                es_debe = tipo in ("DEBITO", "AJUSTE_DEBITO")
+                
+                monto_debe = _format_money(monto) if es_debe else ""
+                monto_haber = _format_money(monto) if not es_debe else ""
+                
+                # Colores: Rojo para lo que aumenta la deuda, Verde para lo que la baja
+                color_monto = COLOR_ERROR if es_debe else COLOR_SUCCESS
                 
                 mov_rows.append(
                     ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(str(m.get("fecha", ""))[:10])),
-                        ft.DataCell(ft.Text(m.get("concepto", ""), width=200)),
-                        ft.DataCell(ft.Text(tipo, size=11)),
-                        ft.DataCell(ft.Text(f"{signo}{_format_money(monto)}", color=color)),
-                        ft.DataCell(ft.Text(_format_money(m.get("saldo_nuevo", 0)))),
+                        ft.DataCell(ft.Text(str(m.get("fecha", ""))[:16], size=11)),
+                        ft.DataCell(ft.Text(m.get("concepto", ""), width=250, size=11)),
+                        ft.DataCell(ft.Text(monto_debe, color=COLOR_ERROR, weight=ft.FontWeight.BOLD if es_debe else None, size=11)),
+                        ft.DataCell(ft.Text(monto_haber, color=COLOR_SUCCESS, weight=ft.FontWeight.BOLD if not es_debe else None, size=11)),
+                        ft.DataCell(ft.Text(_format_money(m.get("saldo_nuevo", 0)), weight=ft.FontWeight.W_600, size=11)),
                     ])
                 )
             
             mov_table = SafeDataTable(
                 columns=[
-                    ft.DataColumn(ft.Text("Fecha")),
+                    ft.DataColumn(ft.Text("Fecha/Hora")),
                     ft.DataColumn(ft.Text("Concepto")),
-                    ft.DataColumn(ft.Text("Tipo")),
-                    ft.DataColumn(ft.Text("Monto")),
-                    ft.DataColumn(ft.Text("Saldo")),
+                    ft.DataColumn(ft.Text("Debe (+)")),
+                    ft.DataColumn(ft.Text("Haber (-)")),
+                    ft.DataColumn(ft.Text("Saldo Acum.")),
                 ],
-                rows=mov_rows[:30],
-                column_spacing=15,
+                rows=mov_rows, # Sin el límite de [:30]
+                column_spacing=20,
+                heading_row_color=ft.colors.with_opacity(0.05, COLOR_ACCENT),
+                heading_row_height=45,
             )
             
             dlg = ft.AlertDialog(
-                title=ft.Text(f"Movimientos de Cuenta Corriente"),
+                title=ft.Row([
+                    ft.Icon(ft.icons.HISTORY_ROUNDED, color=COLOR_ACCENT),
+                    ft.Text("Historial de Movimientos"),
+                ], spacing=10),
                 content=ft.Container(
-                    content=ft.Column([mov_table], scroll=ft.ScrollMode.ADAPTIVE),
-                    width=700,
-                    height=400,
+                    content=ft.Column([
+                        ft.Text("Mostrando los últimos movimientos (más recientes primero).", size=12, italic=True, color=COLOR_TEXT_MUTED),
+                        ft.Divider(height=1, color=COLOR_BORDER),
+                        mov_table
+                    ], scroll=ft.ScrollMode.ALWAYS, spacing=10),
+                    width=950,
+                    height=550,
+                    padding=10,
                 ),
-                actions=[ft.TextButton("Cerrar", on_click=lambda _: page.close(dlg))],
+                actions=[
+                    ft.TextButton("Cerrar", on_click=lambda _: page.close(dlg))
+                ],
             )
             page.open(dlg)
         except Exception as ex:
-            show_toast(f"Error: {ex}", kind="error")
+            show_toast(f"Error cargando movimientos: {ex}", kind="error")
 
     def open_pago_cc(_=None):
         """Abre formulario para registrar pago directo a cuenta corriente."""
