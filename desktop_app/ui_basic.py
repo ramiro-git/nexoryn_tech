@@ -5347,7 +5347,15 @@ def main(page: ft.Page) -> None:
     movimientos_table = GenericTable(
         columns=[
             ColumnConfig(key="fecha", label="Fecha", width=120, formatter=_format_datetime),
-            ColumnConfig(key="articulo", label="Artículo", width=200),
+            ColumnConfig(
+                key="articulo", label="Artículo", width=260,
+                renderer=lambda row: ft.Text(
+                    f"{row.get('articulo', '')} (Stock: {_format_quantity(row.get('stock_resultante'))})" 
+                    if row.get('stock_resultante') is not None 
+                    else row.get('articulo', ''),
+                    size=13
+                )
+            ),
             ColumnConfig(key="tipo_movimiento", label="Tipo", width=120),
             ColumnConfig(key="cantidad", label="Cant.", width=80, formatter=_format_quantity),
             ColumnConfig(

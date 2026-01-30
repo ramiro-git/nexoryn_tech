@@ -79,6 +79,9 @@ class Database:
         self.is_closing = False
         self._dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._dashboard_cache_lock = threading.RLock()
+        
+        # Apply necessary schema patches automatically
+        self._run_migrations()
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """Fetch a configuration value from seguridad.config_sistema."""
@@ -111,8 +114,86 @@ class Database:
                     conn.commit()
         except Exception as e:
             logger.error(f"Error setting config for key {key}: {e}")
-            raise
 
+    def _run_migrations(self) -> None:
+        """Run safe, idempotent schema updates to ensure the DB matches code requirements."""
+        logger.info("Checking for database schema updates...")
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    # 1. Ensure id_documento in app.pago is nullable
+                    # This is required for Cuenta Corriente payments which don't target a specific doc
+                    cur.execute("""
+                        DO $$ 
+                        BEGIN 
+                            IF EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_schema = 'app' 
+                                  AND table_name = 'pago' 
+                                  AND column_name = 'id_documento' 
+                                  AND is_nullable = 'NO'
+                            ) THEN 
+                                ALTER TABLE app.pago ALTER COLUMN id_documento DROP NOT NULL;
+                            END IF;
+                        END $$;
+                    """)
+                    
+                    # 2. Add stock_resultante column to movimiento_articulo for stock history tracking
+                    cur.execute("""
+                        ALTER TABLE app.movimiento_articulo 
+                        ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
+                    """)
+                    
+                    # 3. Update trigger to save stock_resultante on INSERT
+                    cur.execute("""
+                        CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
+                        RETURNS TRIGGER AS $fn$
+                        DECLARE
+                          v_signo INTEGER;
+                          v_new_stock NUMERIC(14,4);
+                        BEGIN
+                          -- Get the sign from the movement type
+                          SELECT signo_stock INTO v_signo 
+                          FROM ref.tipo_movimiento_articulo 
+                          WHERE id = COALESCE(NEW.id_tipo_movimiento, OLD.id_tipo_movimiento);
+
+                          IF (TG_OP = 'INSERT') THEN
+                            INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
+                            VALUES (NEW.id_articulo, NEW.cantidad * v_signo)
+                            ON CONFLICT (id_articulo) DO UPDATE 
+                            SET stock_total = app.articulo_stock_resumen.stock_total + (NEW.cantidad * v_signo),
+                                ultima_actualizacion = now();
+                            
+                            -- Get the new stock total and save it to the movement
+                            SELECT stock_total INTO v_new_stock 
+                            FROM app.articulo_stock_resumen 
+                            WHERE id_articulo = NEW.id_articulo;
+                            
+                            UPDATE app.movimiento_articulo 
+                            SET stock_resultante = v_new_stock 
+                            WHERE id = NEW.id;
+                                    
+                          ELSIF (TG_OP = 'UPDATE') THEN
+                            UPDATE app.articulo_stock_resumen 
+                            SET stock_total = stock_total - (OLD.cantidad * v_signo) + (NEW.cantidad * v_signo),
+                                ultima_actualizacion = now()
+                            WHERE id_articulo = NEW.id_articulo;
+                                
+                          ELSIF (TG_OP = 'DELETE') THEN
+                            UPDATE app.articulo_stock_resumen 
+                            SET stock_total = stock_total - (OLD.cantidad * v_signo),
+                                ultima_actualizacion = now()
+                            WHERE id_articulo = OLD.id_articulo;
+                          END IF;
+                            
+                          RETURN NULL;
+                        END;
+                        $fn$ LANGUAGE plpgsql;
+                    """)
+                    conn.commit()
+                    logger.info("Database schema updates applied successfully.")
+        except Exception as e:
+            logger.error(f"Error during automatic database migrations: {e}")
     def close_pool(self) -> None:
         """Close the connection pool temporarily."""
         if self.pool:
@@ -4318,7 +4399,8 @@ class Database:
               m.observacion, doc.id AS id_documento, td.nombre AS tipo_documento,
               doc.numero_serie AS nro_comprobante,
               COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
-              m.id_articulo AS id_articulo
+              m.id_articulo AS id_articulo,
+              m.stock_resultante
             FROM app.movimiento_articulo m
             JOIN app.articulo a ON m.id_articulo = a.id
             JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
@@ -4528,7 +4610,7 @@ class Database:
                    COALESCE(ec.apellido || ' ' || ec.nombre, ec.razon_social) as entidad
             FROM app.pago p
             JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
-            JOIN app.documento d ON p.id_documento = d.id
+            LEFT JOIN app.documento d ON p.id_documento = d.id
             LEFT JOIN app.entidad_comercial ec ON d.id_entidad_comercial = ec.id
             WHERE {where_clause}
             ORDER BY {order_by}
@@ -4596,7 +4678,7 @@ class Database:
             SELECT COUNT(*) as total 
             FROM app.pago p 
             JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id 
-            JOIN app.documento d ON p.id_documento = d.id
+            LEFT JOIN app.documento d ON p.id_documento = d.id
             LEFT JOIN app.entidad_comercial ec ON d.id_entidad_comercial = ec.id
             WHERE {where_clause}
         """
@@ -5570,7 +5652,7 @@ class Database:
         tipo: 'DEBITO' (aumenta deuda), 'CREDITO' (reduce deuda), 
               'AJUSTE_DEBITO', 'AJUSTE_CREDITO', 'ANULACION'
         """
-        query = "SELECT app.registrar_movimiento_cc(%s, %s, %s, %s, %s, %s, %s, %s)"
+        query = "SELECT app.registrar_movimiento_cc(%s::bigint, %s::varchar(20), %s::varchar(150), %s::numeric, %s::bigint, %s::bigint, %s::text, %s::bigint)"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 self._setup_session(cur)
@@ -5860,7 +5942,7 @@ class Database:
             with conn.cursor() as cur:
                 self._setup_session(cur)
                 
-        # Insertar el pago
+                # Insertar el pago
                 cur.execute(pago_query, (id_forma_pago, monto, referencia, observacion))
                 res_pago = cur.fetchone()
                 id_pago = res_pago[0] if res_pago else None
@@ -5868,10 +5950,17 @@ class Database:
                 # Registrar movimiento de cuenta corriente como CREDITO (reduce deuda)
                 # Se pasa id_pago al movimiento para conciliación
                 cur.execute(
-                    "SELECT app.registrar_movimiento_cc(%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (id_entidad, 'CREDITO', concepto, monto, None, id_pago, 
-                     f"{observacion or ''} Ref: {referencia or 'N/A'}".strip(), 
-                     self.current_user_id)
+                    "SELECT app.registrar_movimiento_cc(%s::bigint, %s::varchar(20), %s::varchar(150), %s::numeric, %s::bigint, %s::bigint, %s::text, %s::bigint)",
+                    (
+                        int(id_entidad), 
+                        'CREDITO', 
+                        concepto[:150], 
+                        Decimal(str(monto)), 
+                        None, 
+                        id_pago, 
+                        f"{observacion or ''} Ref: {referencia or 'N/A'}".strip(), 
+                        self.current_user_id
+                    )
                 )
                 res = cur.fetchone()
                 mov_id = res[0] if res else 0

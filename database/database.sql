@@ -306,12 +306,13 @@ CREATE TABLE IF NOT EXISTS app.movimiento_articulo (
   id_deposito         BIGINT NOT NULL REFERENCES ref.deposito(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   id_documento        BIGINT REFERENCES app.documento(id) ON UPDATE CASCADE ON DELETE SET NULL,
   id_usuario          BIGINT REFERENCES seguridad.usuario(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  stock_resultante    NUMERIC(14,4),
   CONSTRAINT ck_mov_cant CHECK (TRUE)
 );
 
 CREATE TABLE IF NOT EXISTS app.pago (
   id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  id_documento   BIGINT NOT NULL REFERENCES app.documento(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  id_documento   BIGINT REFERENCES app.documento(id) ON UPDATE CASCADE ON DELETE CASCADE,
   id_forma_pago  BIGINT NOT NULL REFERENCES ref.forma_pago(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   fecha          TIMESTAMPTZ NOT NULL DEFAULT now(),
   monto          NUMERIC(14,4) NOT NULL,
@@ -354,6 +355,7 @@ CREATE TABLE IF NOT EXISTS app.remito_detalle (
 -- Schema updates for existing tables (ensure columns exist before views)
 ALTER TABLE app.remito ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
 ALTER TABLE app.documento ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
+ALTER TABLE app.movimiento_articulo ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
 
 -- ============================================================================
 -- VIEWS
@@ -397,6 +399,7 @@ SELECT
 FROM app.articulo a
 LEFT JOIN app.articulo_stock_resumen sr ON a.id = sr.id_articulo;
 
+DROP VIEW IF EXISTS app.v_movimientos_full CASCADE;
 CREATE OR REPLACE VIEW app.v_movimientos_full AS
 SELECT 
   m.id,
@@ -412,7 +415,8 @@ SELECT
   td.nombre AS tipo_documento,
   doc.numero_serie AS nro_comprobante,
   COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
-  m.id_articulo AS id_articulo
+  m.id_articulo AS id_articulo,
+  m.stock_resultante
 FROM app.movimiento_articulo m
 JOIN app.articulo a ON m.id_articulo = a.id
 JOIN ref.tipo_movimiento_articulo tm ON m.id_tipo_movimiento = tm.id
@@ -645,6 +649,7 @@ CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
 RETURNS TRIGGER AS $$
 DECLARE
   v_signo INTEGER;
+  v_new_stock NUMERIC(14,4);
 BEGIN
   -- Get the sign from the movement type
   SELECT signo_stock INTO v_signo 
@@ -657,6 +662,15 @@ BEGIN
     ON CONFLICT (id_articulo) DO UPDATE 
     SET stock_total = app.articulo_stock_resumen.stock_total + (NEW.cantidad * v_signo),
         ultima_actualizacion = now();
+    
+    -- Get the new stock total and save it to the movement
+    SELECT stock_total INTO v_new_stock 
+    FROM app.articulo_stock_resumen 
+    WHERE id_articulo = NEW.id_articulo;
+    
+    UPDATE app.movimiento_articulo 
+    SET stock_resultante = v_new_stock 
+    WHERE id = NEW.id;
             
   ELSIF (TG_OP = 'UPDATE') THEN
     UPDATE app.articulo_stock_resumen 
