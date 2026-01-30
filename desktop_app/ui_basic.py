@@ -7597,9 +7597,35 @@ def main(page: ft.Page) -> None:
                 expand=True,
                 initial_items=art_initial_items
             )
+            def item_price_list_loader(query, offset, limit):
+                if not db: return [], False
+                rows = db.fetch_listas_precio(search=query, offset=offset, limit=limit)
+                active_rows = [r for r in rows if r.get("activa", True)]
+                
+                art_id = art_drop.value
+                prices_map = {}
+                if art_id:
+                    try:
+                        prices = db.fetch_article_prices(int(art_id))
+                        for p in prices:
+                            prices_map[str(p["id_lista_precio"])] = p.get("precio", 0)
+                    except: pass
+                
+                items = []
+                for r in active_rows:
+                    lid = str(r["id"])
+                    label = r["nombre"]
+                    if art_id and lid in prices_map:
+                        p_val = prices_map[lid]
+                        p_fmt = _format_money(p_val)
+                        label = f"{label} ({p_fmt})"
+                    items.append({"value": r["id"], "label": label})
+                
+                return items, len(rows) >= limit
+
             lista_drop = AsyncSelect(
                 label="Lista",
-                loader=price_list_loader,
+                loader=item_price_list_loader,
                 width=140,
                 initial_items=lista_initial_items,
             )
@@ -7658,17 +7684,9 @@ def main(page: ft.Page) -> None:
                         p_obj = next((p for p in prices if str(p["id_lista_precio"]) == str(lid)), None)
                         if p_obj and p_obj.get("precio"):
                             final_price = float(p_obj["precio"])
-                    
-                    # Si no hay lista seleccionada o no tiene precio, usar la primera con precio
-                    if final_price == 0.0:
-                        for p in prices:
-                            if p.get("precio") and float(p.get("precio", 0)) > 0:
-                                final_price = float(p["precio"])
-                                break
                 
-                # Fallback al costo si no hay precios
-                if final_price == 0.0:
-                    final_price = float(art.get("costo") or 0)
+                # Removed 'First available' usage and Cost fallback
+                # If no list selected, price stays 0.0 unless manually edited
                 
                 price_field.value = str(final_price)
                 iva_field.value = str(art.get("porcentaje_iva", 21))
@@ -7695,6 +7713,18 @@ def main(page: ft.Page) -> None:
                 except: pass
 
             def _on_art_change(e):
+                # Recargar opciones para actualizar los precios en los labels (ej: "Lista X ($500)")
+                try:
+                    # Si hay una lista seleccionada (ej: la global aplicada al iniciar), necesitamos
+                    # refrescar los labels para que aparezca el precio del nuevo artículo.
+                    items, _ = item_price_list_loader("", 0, 100) 
+                    # Convert dicts to Flet Options for the setter
+                    opts = [ft.dropdown.Option(str(i["value"]), i["label"]) for i in items]
+                    lista_drop.options = opts
+                    lista_drop.value = lista_drop.value # Force trigger label update
+                except Exception as ex:
+                    print(f"Error updating price labels: {ex}")
+
                 _update_price_from_list()
                 _check_stock_warning()
             
@@ -7744,8 +7774,26 @@ def main(page: ft.Page) -> None:
                 pass
             
             # Trigger initial stock check if article is pre-selected (e.g. from copy)
+            # Trigger initial stock check and label refresh if needed
             if art_drop.value:
                 _check_stock_warning()
+                # Manual trigger of label refresh
+                try: 
+                    _on_art_change(None) 
+                except: 
+                     lista_drop.clear_cache()
+            
+            # If global list is set and we have a value (e.g. from user or global default logic), 
+            # make sure labels are updated even if no article yet? No, if no article no price.
+            # But if article selected, _on_art_change above handles it.
+            
+            # If we just added a line and have a global list, but no article yet:
+            # The loader will return standard labels. That's fine.
+            # But if we HAVE an article (e.g. initial_data), _on_art_change should have run above.
+            
+            if not initial_data and dropdown_lista_global.value and art_drop.value:
+                 # Case where we might need to refresh if art was set differently
+                 pass
         
         def _remove_line(row_to_remove):
             lines_container.controls.remove(row_to_remove)
@@ -7763,7 +7811,10 @@ def main(page: ft.Page) -> None:
                 
                 # If the line list is empty (Automatic), change it to the new Global list
                 # This satisfies the user's request: "automaticamente todos los precios deberían tomar la lista 2"
+                # If the line list is empty (Automatic), change it to the new Global list
+                # This satisfies the user's request: "automaticamente todos los precios deberían tomar la lista 2"
                 if not line_lista_drop.value or line_lista_drop.value == "":
+                    line_lista_drop.value = new_global_list_id
                     row_map["update_price"]() # Update price using global list automatically
             
             page.update()
