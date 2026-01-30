@@ -31,16 +31,23 @@ def migrate_to_partitioned_logs(db):
 
                 print("INFO: Iniciando migración automática a tabla de logs particionada...")
                 
-                # 1. Create partition structure
+                # 1. Rename old table first to free up the name 'log_actividad'
+                # This is critical because the partition helper function expects 'log_actividad' to be the parent
+                print("INFO: Renombrando tabla antigua...")
+                cur.execute("ALTER TABLE seguridad.log_actividad RENAME TO log_actividad_old")
+                
+                # 2. Create partition structure (directly as log_actividad)
                 _create_partition_structure(conn, cur)
                 
-                # 2. Migrate Data
+                # 3. Migrate Data
                 print("INFO: Migrando datos existentes de logs. Esto puede tomar unos instantes...")
                 _migrate_data(conn, cur)
                 
-                # 3. Swap Tables
-                print("INFO: Finalizando particionamiento...")
-                _swap_tables(conn, cur)
+                # 4. Sync Sequence
+                # Ensure the sequence is in sync with the migrated data
+                cur.execute("""
+                    SELECT setval('seguridad.log_actividad_id_seq', (SELECT COALESCE(MAX(id), 1) FROM seguridad.log_actividad))
+                """)
                 
                 conn.commit()
                 print("SUCCESS: Tabla de logs particionada exitosamente.")
@@ -48,14 +55,23 @@ def migrate_to_partitioned_logs(db):
     except Exception as e:
         print(f"ERROR: Falló la migración automática de particiones: {e}")
         # Don't raise, let the app continue with non-partitioned table
+        # If we failed mid-way, we might be in a state where log_actividad_old exists but log_actividad doesn't or is partial.
+        # Ideally we would rollback, but we are inside a transaction block in the caller (db.pool -> conn)?
+        # No, the context manager `with db.pool.connection() as conn:` commits on exit if no exception, 
+        # but here we catch the exception. We should probably rollback.
+        try:
+           if 'conn' in locals():
+               conn.rollback()
+        except:
+           pass
 
 def _create_partition_structure(conn, cur):
     # Read sql from file is safer but for simplicity and self-containment we use the definitions here
     # Based on database/particion_logs.sql
     
-    # 1. Parent table
+    # 1. Parent table - Created directly as log_actividad (Partitioned)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS seguridad.log_actividad_partitioned (
+        CREATE TABLE IF NOT EXISTS seguridad.log_actividad (
           id                  BIGINT NOT NULL,
           id_usuario          BIGINT,
           id_tipo_evento_log  BIGINT NOT NULL,
@@ -75,11 +91,13 @@ def _create_partition_structure(conn, cur):
     
     # 2. Sequence
     cur.execute("CREATE SEQUENCE IF NOT EXISTS seguridad.log_actividad_id_seq")
+    cur.execute("ALTER TABLE seguridad.log_actividad ALTER COLUMN id SET DEFAULT nextval('seguridad.log_actividad_id_seq')")
     
     # 3. Functions
     update_partition_functions(conn, cur)
     
     # Create future partitions
+    # This will now work because seguridad.log_actividad exists and IS partitioned
     cur.execute("SELECT seguridad.crear_particion_log_semanal(CURRENT_DATE)")
     cur.execute("SELECT seguridad.crear_particion_log_semanal((CURRENT_DATE + INTERVAL '1 week')::DATE)")
     cur.execute("SELECT seguridad.crear_particion_log_semanal((CURRENT_DATE + INTERVAL '2 week')::DATE)")
@@ -133,8 +151,8 @@ def update_partition_functions(conn, cur):
     """)
 
 def _migrate_data(conn, cur):
-    # 1. Create historical partitions needed
-    cur.execute("SELECT MIN(fecha_hora), MAX(fecha_hora) FROM seguridad.log_actividad")
+    # 1. Create historical partitions needed based on OLD table data
+    cur.execute("SELECT MIN(fecha_hora), MAX(fecha_hora) FROM seguridad.log_actividad_old")
     row = cur.fetchone()
     if row and row[0]:
         min_date = row[0]
@@ -156,26 +174,10 @@ def _migrate_data(conn, cur):
         """
         cur.execute(sql_migracion)
 
-    # 2. Copy Data
+    # 2. Copy Data from OLD to NEW (Partitioned)
     cur.execute("""
-        INSERT INTO seguridad.log_actividad_partitioned 
+        INSERT INTO seguridad.log_actividad 
         (id, id_usuario, id_tipo_evento_log, fecha_hora, entidad, id_entidad, accion, resultado, ip, user_agent, session_id, detalle)
         SELECT id, id_usuario, id_tipo_evento_log, fecha_hora, entidad, id_entidad, accion, resultado, ip, user_agent, session_id, detalle
-        FROM seguridad.log_actividad
+        FROM seguridad.log_actividad_old
     """)
-
-    # 3. Sync Sequence
-    cur.execute("""
-        SELECT setval('seguridad.log_actividad_id_seq', (SELECT COALESCE(MAX(id), 1) FROM seguridad.log_actividad_partitioned))
-    """)
-
-def _swap_tables(conn, cur):
-    cur.execute("ALTER TABLE seguridad.log_actividad RENAME TO log_actividad_old")
-    cur.execute("ALTER TABLE seguridad.log_actividad_partitioned RENAME TO log_actividad")
-    
-    # Restore default value for ID to use sequence
-    cur.execute("ALTER TABLE seguridad.log_actividad ALTER COLUMN id SET DEFAULT nextval('seguridad.log_actividad_id_seq')")
-    # Restore constraints/indices not created by partition? 
-    # The partitioned table should handle most, but we miss foreign keys on the parent?
-    # Partitioned tables support FKs
-    pass

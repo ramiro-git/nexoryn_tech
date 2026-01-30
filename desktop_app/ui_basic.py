@@ -1684,7 +1684,7 @@ def main(page: ft.Page) -> None:
                 )
             ]
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
     
     entidades_view = ft.Container(
         content=entidades_view,
@@ -2016,7 +2016,7 @@ def main(page: ft.Page) -> None:
                 )
             ]
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
 
     articulos_view = ft.Container(
         content=articulos_view,
@@ -5114,7 +5114,7 @@ def main(page: ft.Page) -> None:
                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))),
             ]
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
 
     documentos_view = ft.Container(
         content=documentos_view,
@@ -5332,7 +5332,7 @@ def main(page: ft.Page) -> None:
             "Seguimiento de entregas y despachos generados automáticamente.",
             remitos_table.build(),
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
 
     remitos_view = ft.Container(
         content=remitos_view,
@@ -5394,7 +5394,7 @@ def main(page: ft.Page) -> None:
             "Registro histórico de entradas, salidas y transferencias.", 
             movimientos_table.build()
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
 
     movimientos_view = ft.Container(
         content=movimientos_view,
@@ -5642,7 +5642,7 @@ def main(page: ft.Page) -> None:
                  )
             ]
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
 
     pagos_view = ft.Container(
         content=pagos_view,
@@ -5990,7 +5990,7 @@ def main(page: ft.Page) -> None:
                 ),
             ]
         )
-    ], spacing=10, scroll=ft.ScrollMode.ADAPTIVE)
+    ], spacing=10, expand=True)
 
     cuentas_view = ft.Container(
         content=cuentas_view,
@@ -6326,7 +6326,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_marca, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_marca, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         marcas_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6336,7 +6336,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_rubro, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_rubro, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         rubros_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6346,7 +6346,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_uni_nombre, nueva_uni_abr, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_unidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         unidades_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6356,7 +6356,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_provincia_input, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_provincia, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         provincias_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6366,7 +6366,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_loc_nombre, nueva_loc_prov, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_localidad, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         localidades_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6376,7 +6376,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_civa, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_civa, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         civa_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6386,7 +6386,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_tiva_porc, nueva_tiva_desc, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_tiva, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         tiva_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6396,7 +6396,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nuevo_depo_nom, nuevo_depo_ubi, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_deposito, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         depo_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6406,7 +6406,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nueva_fpay, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_fpay, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         fpay_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6416,7 +6416,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nuevo_ptype, ft.ElevatedButton("Agregar", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_ptype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         ptype_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6433,7 +6433,7 @@ def main(page: ft.Page) -> None:
                         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         dtype_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
             make_tab(
@@ -6443,7 +6443,7 @@ def main(page: ft.Page) -> None:
                         ft.Container(content=ft.Row([nuevo_mtype_nom, nuevo_mtype_signo, ft.ElevatedButton("Agregar", icon=ft.icons.ADD_ROUNDED, on_click=agregar_mtype, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=ft.padding.symmetric(vertical=10)),
                         mtype_table.build(),
                     ],
-                    expand=True, spacing=10, scroll=ft.ScrollMode.ADAPTIVE,
+                    expand=True, spacing=10,
                 ),
             ),
         ],

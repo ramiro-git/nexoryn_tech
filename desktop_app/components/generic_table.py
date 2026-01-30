@@ -531,7 +531,7 @@ class GenericTable:
                             padding=ft.padding.only(bottom=15)  # Evita que el scrollbar horizontal tape la última fila
                         )
                     ],
-                    scroll=ft.ScrollMode.ADAPTIVE
+                    scroll=ft.ScrollMode.AUTO
                 )
             ],
             expand=True,
