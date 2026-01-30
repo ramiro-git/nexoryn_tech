@@ -164,6 +164,7 @@ class MassUpdateView(ft.Container):
             # expand=True, # Removed expand to let ListView handle scrolling
             heading_row_color="#F1F5F9",
             data_row_color={"hovered": "#F8FAFC"},
+            bgcolor="#FFFFFF",
         )
 
         # Buttons
@@ -197,20 +198,18 @@ class MassUpdateView(ft.Container):
             visible=False,
         )
 
-        # Preview Table Container (Scrollable)
-        self.scroll_container = ft.ListView(
+        # Preview Results Container (replaces ListView to avoid ghost space)
+        self.scroll_container = ft.Column(
             [self.preview_table, self.btn_load_more],
-            expand=True,
-            on_scroll_interval=10,
-            on_scroll=self._on_preview_scroll,
+            tight=True,
+            visible=False,
         )
-        self.scroll_container.visible = False
 
         self.preview_empty_title = ft.Text("Sin vista previa", weight=ft.FontWeight.BOLD, color="#1E293B")
         self.preview_empty_message = ft.Text("Genera la vista previa para ver articulos.", size=12, color="#64748B")
         self.preview_empty = ft.Container(
             visible=True,
-            expand=True,
+            expand=False,
             alignment=ft.Alignment(0, 0),
             padding=40,
             content=ft.Column(
@@ -222,6 +221,32 @@ class MassUpdateView(ft.Container):
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=6,
                 tight=True,
+            ),
+        )
+        
+        # Preview Section Container (created here to allow dynamic expand control)
+        self.preview_section_container = ft.Container(
+            padding=20,
+            border=ft.border.all(1, "#E2E8F0"),
+            border_radius=8,
+            bgcolor="#FFFFFF",
+            expand=False,  # Start collapsed, expand only when preview is shown
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Text("3. Vista Previa y Selección", weight=ft.FontWeight.W_600, color="#1E293B", size=16),
+                            ft.Text("Seleccione los ítems a actualizar (carga progresiva)", size=12, color="grey"),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    self.scroll_container,
+                    self.preview_empty,
+                    ft.Row([self.btn_apply], alignment=ft.MainAxisAlignment.END),
+                ],
+                spacing=15,
+                expand=False,  # Start collapsed
+                tight=True,    # Force tight layout to avoid gray space
             ),
         )
 
@@ -296,33 +321,12 @@ class MassUpdateView(ft.Container):
                     ),
                 ),
                 # Preview Section
-                ft.Container(
-                    padding=20,
-                    border=ft.border.all(1, "#E2E8F0"),
-                    border_radius=8,
-                    bgcolor="#FFFFFF",
-                    expand=True,
-                    content=ft.Column(
-                        [
-                            ft.Row(
-                                [
-                                    ft.Text("3. Vista Previa y Selección", weight=ft.FontWeight.W_600, color="#1E293B", size=16),
-                                    ft.Text("Seleccione los ítems a actualizar (carga progresiva)", size=12, color="grey"),
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            ),
-                            self.scroll_container,
-                            self.preview_empty,
-                            ft.Row([self.btn_apply], alignment=ft.MainAxisAlignment.END),
-                        ],
-                        spacing=15,
-                        expand=True,
-                    ),
-                ),
+                self.preview_section_container,
             ],
             scroll=ft.ScrollMode.AUTO,
             spacing=20,
-            expand=True,
+            expand=False,
+            tight=True,
         )
         
         # Initial Load
@@ -402,28 +406,31 @@ class MassUpdateView(ft.Container):
         self.preview_empty_message.value = message
         self.preview_empty.visible = True
         self.scroll_container.visible = False
+        
+        # Ensure section is not expanded
+        self.preview_section_container.expand = False
+        if isinstance(self.preview_section_container.content, ft.Column):
+            self.preview_section_container.content.expand = False
+            self.preview_section_container.content.tight = True
+        
         self.preview_empty.update()
         self.scroll_container.update()
+        self.preview_section_container.update()
 
     def _show_preview_table(self) -> None:
         self.preview_empty.visible = False
         self.scroll_container.visible = True
+        
+        # Ensure section is not expanded to only take necessary space
+        self.preview_section_container.expand = False
+        if isinstance(self.preview_section_container.content, ft.Column):
+            self.preview_section_container.content.expand = False
+            self.preview_section_container.content.tight = True
+        
         self.preview_empty.update()
         self.scroll_container.update()
+        self.preview_section_container.update()
     
-    
-    def _on_preview_scroll(self, e: ft.OnScrollEvent) -> None:
-        """Handle scroll events to load more rows when near bottom."""
-        if self._is_loading_batch or self._loading:
-            return
-        
-        # Check if near bottom
-        scroll_offset = e.pixels
-        max_scroll = e.max_scroll_extent
-        
-        # If we are close to the bottom (100px)
-        if (max_scroll - scroll_offset) < 100:
-            self._load_next_batch()
     
     def _load_next_batch(self) -> None:
         """Load the next batch of rows into the preview table."""
