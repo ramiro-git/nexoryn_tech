@@ -1,3 +1,7 @@
+"""
+Print service for generating professional PDF documents (invoices, quotes, remitos).
+Redesigned with improved layout, company data from config, and proper pagination.
+"""
 import logging
 import os
 import platform
@@ -9,6 +13,14 @@ from typing import Any, Callable, Dict, List, Optional
 from fpdf import FPDF
 
 logger = logging.getLogger(__name__)
+
+# Color constants for consistent styling
+COLOR_PRIMARY = (15, 23, 42)      # Dark blue for headers
+COLOR_WHITE = (255, 255, 255)
+COLOR_LIGHT_GRAY = (241, 245, 249)  # Light row background
+COLOR_BORDER = (226, 232, 240)
+COLOR_TEXT = (15, 23, 42)
+COLOR_TEXT_MUTED = (100, 116, 139)
 
 
 def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
@@ -22,7 +34,26 @@ def _format_money(value: Any) -> str:
     number = _safe_float(value, None)
     if number is None:
         return "-"
-    return f"${number:,.2f}"
+    return f"$ {number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _format_date(value: Any) -> str:
+    """Format date value to DD/MM/YYYY."""
+    if not value:
+        return "-"
+    # If it's already a string, try to parse it
+    if isinstance(value, str):
+        # Handle ISO format with timezone
+        value = value.split("T")[0].split(" ")[0]  # Get just the date part
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d")
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            return value
+    # If it's a datetime object
+    if hasattr(value, "strftime"):
+        return value.strftime("%d/%m/%Y")
+    return str(value)
 
 
 def _distribute_width(total: float, ratios: List[float], min_width: float = 10.0) -> List[float]:
@@ -122,7 +153,7 @@ def _create_qr_png(data: str) -> Optional[str]:
         return None
 
     try:
-        qr = qrcode.QRCode(box_size=3, border=1)
+        qr = qrcode.QRCode(box_size=4, border=1)
         qr.add_data(data)
         qr.make(fit=True)
         image = qr.make_image(fill_color="black", back_color="white")
@@ -149,44 +180,113 @@ def _open_pdf(path: str) -> None:
 
 
 class BaseDocumentPDF(FPDF):
-    def __init__(self, doc_data: Dict[str, Any], entity_data: Dict[str, Any], items_data: List[Dict[str, Any]]):
+    """Base class for all document PDFs with common header/footer and company data."""
+    
+    def __init__(
+        self,
+        doc_data: Dict[str, Any],
+        entity_data: Dict[str, Any],
+        items_data: List[Dict[str, Any]],
+        company_config: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.doc = doc_data or {}
         self.entity = entity_data or {}
         self.items = items_data or []
+        self.company = company_config or {}
         self.set_auto_page_break(True, margin=25)
-        self.set_margins(10, 35, 10)
+        self.set_margins(12, 10, 12)
         self._temp_images: List[str] = []
         self._table_header_active: bool = False
         self._table_header_drawer: Optional[Callable[[], None]] = None
         self._table_header_last_page: int = 0
+        
+        # Document type info for header
+        self._doc_type_label = ""
+        self._doc_letter = ""
 
-    def header(self) -> None:  # pragma: no cover - visual
-        self.set_fill_color(15, 23, 42)
-        self.set_draw_color(15, 23, 42)
-        self.rect(0, 0, self.w, 32, "F")
-        self.set_font("helvetica", "B", 18)
-        self.set_text_color(255, 255, 255)
-        self.set_xy(12, 8)
-        self.cell(0, 10, "NEXORYN TECH", border=0, ln=1)
+    def _get_company_name(self) -> str:
+        return self.company.get("nombre_sistema") or "NEXORYN TECH"
+    
+    def _get_company_slogan(self) -> str:
+        return self.company.get("slogan") or "Soluciones tecnológicas y logísticas"
+    
+    def _get_company_cuit(self) -> str:
+        return self.company.get("cuit_empresa") or "-"
+    
+    def _get_company_address(self) -> str:
+        return self.company.get("domicilio_empresa") or "-"
+    
+    def _get_company_razon_social(self) -> str:
+        return self.company.get("razon_social") or self._get_company_name()
+
+    def header(self) -> None:
+        """Draw document header with company info and document type."""
+        # Dark blue header bar
+        self.set_fill_color(*COLOR_PRIMARY)
+        self.set_draw_color(*COLOR_PRIMARY)
+        self.rect(0, 0, self.w, 28, "F")
+        
+        # Company name (left side)
+        self.set_font("helvetica", "B", 20)
+        self.set_text_color(*COLOR_WHITE)
+        self.set_xy(12, 7)
+        self.cell(100, 10, self._get_company_name(), border=0)
+        
+        # Slogan
         self.set_font("helvetica", "", 9)
-        self.cell(0, 5, "Soluciones tecnológicas y logísticas", border=0, ln=1)
-        self.set_text_color(0, 0, 0)
-        self.ln(4)
-        try:
-            self.set_y(self.t_margin + 4)
-        except Exception:
-            pass
+        self.set_xy(12, 17)
+        self.cell(100, 5, self._get_company_slogan(), border=0)
+        
+        # Document type (right side)
+        if self._doc_type_label:
+            # Calculate positions - letter box first if present
+            if self._doc_letter:
+                letter_box_size = 18
+                letter_x = self.w - letter_box_size - 12
+                letter_y = 5
+                # White box for letter
+                self.set_fill_color(*COLOR_WHITE)
+                self.set_draw_color(*COLOR_WHITE)
+                self.rect(letter_x, letter_y, letter_box_size, letter_box_size, "FD")
+                # Letter text
+                self.set_text_color(*COLOR_PRIMARY)
+                self.set_font("helvetica", "B", 14)
+                self.set_xy(letter_x, letter_y + 4)
+                self.cell(letter_box_size, 10, self._doc_letter, border=0, align="C")
+                
+                # Document type text to the left of the box
+                self.set_text_color(*COLOR_WHITE)
+                self.set_font("helvetica", "B", 14)
+                doc_type_width = self.get_string_width(self._doc_type_label) + 5
+                self.set_xy(letter_x - doc_type_width - 5, 9)
+                self.cell(doc_type_width, 8, self._doc_type_label, border=0, align="R")
+            else:
+                # No letter, just document type
+                self.set_text_color(*COLOR_WHITE)
+                self.set_font("helvetica", "B", 16)
+                doc_type_width = self.get_string_width(self._doc_type_label) + 10
+                self.set_xy(self.w - doc_type_width - 12, 9)
+                self.cell(doc_type_width, 8, self._doc_type_label, border=0, align="R")
+        
+        # Reset text color
+        self.set_text_color(*COLOR_TEXT)
+        
+        # Position for content
+        self.set_y(32)
+        
+        # Re-draw table header on new pages if active
         if self._table_header_active and self._table_header_drawer:
             current_page = self.page_no()
             if current_page > self._table_header_last_page:
                 self._table_header_drawer()
                 self._table_header_last_page = current_page
 
-    def footer(self) -> None:  # pragma: no cover - visual
-        self.set_y(-18)
-        self.set_font("helvetica", "I", 8)
-        self.set_text_color(100)
+    def footer(self) -> None:
+        """Draw page number in footer."""
+        self.set_y(-15)
+        self.set_font("helvetica", "", 8)
+        self.set_text_color(*COLOR_TEXT_MUTED)
         self.cell(0, 10, f"Página {self.page_no()}/{{nb}}", 0, 0, "C")
 
     def _register_temp_image(self, path: Optional[str]) -> None:
@@ -215,22 +315,48 @@ class BaseDocumentPDF(FPDF):
 
 
 class InvoicePDF(BaseDocumentPDF):
-    def __init__(self, doc_data: Dict[str, Any], entity_data: Dict[str, Any], items_data: List[Dict[str, Any]]):
-        super().__init__(doc_data, entity_data, items_data)
+    """PDF generator for invoices and similar documents (quotes, etc.)."""
+    
+    def __init__(
+        self,
+        doc_data: Dict[str, Any],
+        entity_data: Dict[str, Any],
+        items_data: List[Dict[str, Any]],
+        company_config: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(doc_data, entity_data, items_data, company_config)
         self.is_invoice = self._is_invoice_document()
         self.tax_summary = self._build_tax_summary()
         self.neto = self._resolve_neto()
         self.iva_total = self._resolve_iva_total()
         self.total = self._resolve_total()
+        
+        # Set document type for header
+        self._setup_doc_type()
+
+    def _setup_doc_type(self) -> None:
+        """Configure document type label and letter for header."""
+        doc_type = str(self.doc.get("tipo_documento") or "COMPROBANTE").strip().upper()
+        letter = str(self.doc.get("letra") or "").strip().upper()
+        
+        # Clean up doc_type - remove letter if already included
+        if letter and doc_type.endswith(f" {letter}"):
+            doc_type = doc_type[:-len(f" {letter}")]
+        
+        self._doc_type_label = doc_type
+        self._doc_letter = letter
 
     def build(self) -> None:
-        self._draw_document_header()
+        self._draw_document_info()
+        
+        if self.is_invoice:
+            self._draw_afip_block()
+        
         self._draw_client_block()
-        self.ln(2)
+        self.ln(4)
         self._draw_items_table()
         self.ln(4)
         self._draw_totals_block()
-        self.ln(5)
         self._draw_footer_remarks()
 
     def _resolve_neto(self) -> float:
@@ -273,129 +399,142 @@ class InvoicePDF(BaseDocumentPDF):
             bucket["iva"] += base * (pct / 100.0)
         return buckets
 
-    def _draw_document_header(self) -> None:
-        doc_type = str(self.doc.get("tipo_documento") or "COMPROBANTE").strip()
-        letter = str(self.doc.get("letra") or "").strip().upper()
-        number = self.doc.get("numero_serie") or "-"
-        date = self.doc.get("fecha") or datetime.now().strftime("%Y-%m-%d")
-        state = str(self.doc.get("estado") or "").upper()
-        doc_type_upper = doc_type.upper()
-        if letter:
-            if doc_type_upper.endswith(f" {letter}") or f" {letter} " in doc_type_upper or doc_type_upper == letter:
-                doc_label = doc_type
-            else:
-                doc_label = f"{doc_type} {letter}".strip()
-        else:
-            doc_label = doc_type or "COMPROBANTE"
-        self.ln(4)
-
-        self.set_font("helvetica", "B", 14)
-        self.cell(0, 8, doc_label, ln=1)
-        self.set_font("helvetica", "", 10)
-        self.cell(0, 5, f"Número: {number}", ln=1)
-        self.cell(0, 5, f"Fecha emisión: {date}", ln=1)
-        self.cell(0, 5, f"Estado: {state or '-'}", ln=1)
-        self.ln(2)
-        if self.is_invoice:
-            self._draw_afip_block()
-
     def _is_invoice_document(self) -> bool:
         doc_type = str(self.doc.get("tipo_documento") or "").upper()
         return "FACTURA" in doc_type
 
+    def _draw_document_info(self) -> None:
+        """Draw document number, date, and status."""
+        number = self.doc.get("numero_serie") or "-"
+        date = self.doc.get("fecha") or datetime.now().strftime("%Y-%m-%d")
+        state = str(self.doc.get("estado") or "").upper()
+        
+        label_width = 35
+        
+        self.set_font("helvetica", "B", 10)
+        self.set_text_color(*COLOR_TEXT)
+        self.cell(label_width, 6, "Número:", border=0)
+        self.set_font("helvetica", "", 10)
+        self.cell(0, 6, str(number), border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 10)
+        self.cell(label_width, 6, "Fecha emisión:", border=0)
+        self.set_font("helvetica", "", 10)
+        self.cell(0, 6, _format_date(date), border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 10)
+        self.cell(label_width, 6, "Estado:", border=0)
+        self.set_font("helvetica", "", 10)
+        self.cell(0, 6, state or "-", border=0, ln=1)
+        
+        self.ln(2)
+
     def _draw_afip_block(self) -> None:
+        """Draw CAE/AFIP info box with QR code."""
         cae = self.doc.get("cae") or "Pendiente"
         cae_vto = self.doc.get("cae_vencimiento")
-        cuit_emisor = self.doc.get("cuit_emisor") or self.entity.get("cuit") or "-"
+        cuit_emisor = self.doc.get("cuit_emisor") or self._get_company_cuit()
         qr_data = self.doc.get("qr_data")
-        has_qr = bool(qr_data)
-        block_height = 90 if has_qr else 72
-        x = self.l_margin
-        block_width = max(self.w - self.l_margin - self.r_margin, 0)
-        y = self.get_y()
-        text_margin = 6
-        min_text_width = (getattr(self, "c_margin", 0.5) * 2) + 0.1
-        desired_qr_width = min(130, max(90, block_width * (0.55 if has_qr else 0.38)))
-        available_for_qr = max(0.0, block_width - min_text_width - text_margin)
-        qr_section_width = min(desired_qr_width, available_for_qr)
-        text_width = block_width - qr_section_width - text_margin
-        if text_width < min_text_width:
-            qr_section_width = max(0.0, block_width - min_text_width - text_margin)
-            text_width = max(block_width - qr_section_width - text_margin, min_text_width)
-
-        self.set_xy(x + 4, y + 4)
+        
+        start_y = self.get_y()
+        box_x = self.l_margin
+        box_width = self.w - self.l_margin - self.r_margin
+        qr_size = 55 if qr_data else 0
+        text_width = box_width - qr_size - 10 if qr_data else box_width - 10
+        
+        # Draw border box
+        self.set_draw_color(*COLOR_BORDER)
+        self.set_line_width(0.3)
+        box_height = 30
+        self.rect(box_x, start_y, text_width + 10, box_height)
+        
+        # CAE info inside box
+        self.set_xy(box_x + 4, start_y + 4)
         self.set_font("helvetica", "B", 9)
-        self.cell(text_width, 5, f"CAE: {cae}", ln=1)
+        self.set_text_color(*COLOR_TEXT)
+        self.cell(text_width, 5, f"CAE: {cae}", border=0, ln=1)
+        
+        self.set_x(box_x + 4)
         self.set_font("helvetica", "", 9)
         if cae_vto:
-            self.cell(text_width, 5, f"Vencimiento CAE: {cae_vto}", ln=1)
-        self.cell(text_width, 5, f"CUIT Emisor: {cuit_emisor}", ln=1)
-        if qr_section_width > min_text_width:
-            qr_x = x + block_width - qr_section_width - text_margin
-            self._draw_qr_section(qr_x, y + 4, qr_section_width, block_height - 8, qr_data)
-        self.set_y(y + block_height + 4)
-
-    def _draw_qr_section(self, x: float, y: float, width: float, height: float, data: Optional[str]) -> None:
-        self.set_xy(x, y)
-        if not data:
-            self.set_font("helvetica", "", 7)
-            _safe_multicell(self, width, 4, "QR fiscal pendiente", border=0, align="C")
-            return
-        image_path = _create_qr_png(data)
-        if image_path:
-            self._register_temp_image(image_path)
-            size = min(width, height)
-            self.image(image_path, x=x + (width - size) / 2, y=y, w=size, h=size)
-            self.set_xy(x, y + size + 2)
-            self.set_font("helvetica", "", 7)
-            _safe_multicell(self, width, 4, "QR fiscal", border=0, align="C")
-        else:
-            self.set_font("helvetica", "", 7)
-            _safe_multicell(self, width, 4, data.strip()[:60], border=0, align="C")
+            self.cell(text_width, 5, f"Vencimiento CAE: {cae_vto}", border=0, ln=1)
+            self.set_x(box_x + 4)
+        self.cell(text_width, 5, f"CUIT Emisor: {cuit_emisor}", border=0, ln=1)
+        
+        # QR code on the right
+        if qr_data:
+            qr_x = box_x + text_width + 15
+            qr_y = start_y - 5
+            
+            image_path = _create_qr_png(qr_data)
+            if image_path:
+                self._register_temp_image(image_path)
+                self.image(image_path, x=qr_x, y=qr_y, w=qr_size, h=qr_size)
+                # QR label
+                self.set_xy(qr_x, qr_y + qr_size + 1)
+                self.set_font("helvetica", "", 8)
+                self.set_text_color(*COLOR_TEXT_MUTED)
+                self.cell(qr_size, 4, "QR fiscal", border=0, align="C")
+        
+        self.set_y(start_y + max(box_height, qr_size) + 8)
+        self.set_text_color(*COLOR_TEXT)
 
     def _draw_client_block(self) -> None:
+        """Draw client information section."""
         name = self.entity.get("nombre_completo") or self.entity.get("razon_social") or "Consumidor Final"
         cuit = self.entity.get("cuit") or "-"
         addr = self.entity.get("domicilio") or self.doc.get("direccion_entrega") or "-"
         condition = self.entity.get("condicion_iva") or "-"
-        delivery = self.doc.get("direccion_entrega")
 
-        self.set_fill_color(15, 23, 42)
-        self.set_text_color(255, 255, 255)
+        # Section header
+        self.set_fill_color(*COLOR_PRIMARY)
+        self.set_text_color(*COLOR_WHITE)
         self.set_font("helvetica", "B", 10)
-        self.cell(0, 6, "Datos del Cliente", ln=1, fill=True)
+        self.cell(0, 7, "  Datos del Cliente", ln=1, fill=True)
 
-        self.set_text_color(15, 23, 42)
+        # Client data
+        self.set_text_color(*COLOR_TEXT)
         self.set_font("helvetica", "", 9)
-        self.cell(0, 5, f"Razón social: {name}", ln=1)
-        self.cell(0, 5, f"CUIT: {cuit}", ln=1)
-        self.cell(0, 5, f"Domicilio: {addr}", ln=1)
-        self.cell(0, 5, f"Condición IVA: {condition}", ln=1)
-        if delivery:
-            self.cell(0, 5, f"Entrega: {delivery}", ln=1)
-        self.set_text_color(0, 0, 0)
+        self.ln(2)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "Razón social:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, name, border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "CUIT:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, cuit, border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "Domicilio:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, addr, border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "Condición IVA:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, condition, border=0, ln=1)
 
     def _draw_items_table(self) -> None:
+        """Draw items table with proper pagination."""
         headers = ["Descripción", "Cant.", "Precio", "IVA %", "Total"]
         start_x = self.l_margin
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        col_ratios = [0.5, 0.1, 0.16, 0.1, 0.14]
+        col_ratios = [0.45, 0.10, 0.15, 0.12, 0.18]
         col_widths = _distribute_width(table_width, col_ratios)
-        total_width = sum(col_widths)
-        if abs(total_width - table_width) > 0.01:
-            col_widths[-1] = max(10.0, col_widths[-1] + (table_width - total_width))
-        total_width = sum(col_widths)
-        if total_width > table_width + 0.01:
-            col_widths[-1] = max(10.0, col_widths[-1] - (total_width - table_width))
+        aligns = ["L", "C", "R", "C", "R"]
+        
         def _draw_table_header() -> None:
-            self.set_font("helvetica", "B", 10)
-            self.set_fill_color(15, 23, 42)
-            self.set_text_color(255, 255, 255)
+            self.set_font("helvetica", "B", 9)
+            self.set_fill_color(*COLOR_PRIMARY)
+            self.set_text_color(*COLOR_WHITE)
             self.set_x(start_x)
             for width, title in zip(col_widths, headers):
-                self.cell(width, 10, title, border=0, align="C", fill=True)
+                self.cell(width, 8, title, border=0, align="C", fill=True)
             self.ln()
-            self.set_text_color(15, 23, 42)
+            self.set_text_color(*COLOR_TEXT)
             self.set_font("helvetica", "", 9)
 
         self._table_header_drawer = _draw_table_header
@@ -406,62 +545,121 @@ class InvoicePDF(BaseDocumentPDF):
 
         if not self.items:
             self.set_font("helvetica", "", 9)
-            self.set_text_color(100)
+            self.set_text_color(*COLOR_TEXT_MUTED)
             self.cell(table_width, 8, "No hay ítems para este comprobante.", border=1, align="C")
+            self._table_header_active = False
             return
 
+        row_height = 7
         for idx, item in enumerate(self.items):
             qty = _safe_float(item.get("cantidad"), 0.0)
             unit = _safe_float(item.get("precio_unitario"), 0.0)
             iva_pct = _safe_float(item.get("porcentaje_iva"), 0.0)
             total = qty * unit
-            desc = (item.get("articulo_nombre") or item.get("descripcion") or f"Artículo {item.get('id_articulo')}")
-            shade = 245 if idx % 2 == 0 else 255
-            self.set_fill_color(shade, shade, 255)
-            self.set_draw_color(226, 232, 240)
-            row_height = 8
+            desc = (item.get("articulo_nombre") or item.get("descripcion") or f"Artículo {item.get('id_articulo', '-')}")
+            
+            # Alternating row colors
+            if idx % 2 == 0:
+                self.set_fill_color(*COLOR_LIGHT_GRAY)
+            else:
+                self.set_fill_color(*COLOR_WHITE)
+            
+            # Check for page break
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
             if self.get_y() + row_height > page_break_at:
                 self.add_page()
+            
+            self.set_x(start_x)
+            self.set_draw_color(*COLOR_BORDER)
+            
+            # Description (truncated if needed)
             desc_width = col_widths[0]
             content_width = desc_width - (getattr(self, "c_margin", 0.5) * 2)
             desc_text = _truncate_text_to_width(self, desc, max(content_width, 0))
-            self.cell(desc_width, row_height, desc_text, border="LR", fill=True)
-            self.cell(col_widths[1], row_height, f"{qty:.2f}", border="LR", align="R", fill=True)
-            self.cell(col_widths[2], row_height, _format_money(unit), border="LR", align="R", fill=True)
-            self.cell(col_widths[3], row_height, f"{iva_pct:.2f}%", border="LR", align="R", fill=True)
-            self.cell(col_widths[4], row_height, _format_money(total), border="LR", align="R", fill=True)
+            
+            self.cell(col_widths[0], row_height, f" {desc_text}", border="TB", fill=True, align="L")
+            
+            # Format quantity as integer if it's a whole number
+            qty_str = str(int(qty)) if qty == int(qty) else f"{qty:.2f}"
+            self.cell(col_widths[1], row_height, qty_str, border="TB", align="C", fill=True)
+            self.cell(col_widths[2], row_height, _format_money(unit), border="TB", align="R", fill=True)
+            self.cell(col_widths[3], row_height, f"{iva_pct:.2f}%", border="TB", align="C", fill=True)
+            self.cell(col_widths[4], row_height, _format_money(total), border="TB", align="R", fill=True)
             self.ln()
 
         self._table_header_active = False
         self._table_header_drawer = None
-        self.set_draw_color(15, 23, 42)
-        self.set_line_width(0.5)
-        self.line(start_x, self.get_y(), start_x + sum(col_widths), self.get_y())
-        self.ln(1)
 
     def _draw_totals_block(self) -> None:
+        """Draw totals section aligned to the right."""
+        totals_width = 80
+        label_width = 45
+        value_width = 35
+        x_start = self.w - self.r_margin - totals_width
+        
+        self.ln(2)
+        
+        # Subtotal
+        self.set_x(x_start)
         self.set_font("helvetica", "", 10)
-        self.cell(0, 6, f"Subtotal: {_format_money(self.neto)}", ln=1)
+        self.cell(label_width, 6, "Subtotal:", border=0, align="R")
+        self.cell(value_width, 6, _format_money(self.neto), border=0, align="R")
+        self.ln()
+        
+        # IVA details for Factura A
         if self._should_discriminate_iva():
-            self.cell(0, 6, f"IVA total: {_format_money(self.iva_total)}", ln=1)
+            self.set_x(x_start)
+            self.cell(label_width, 6, "IVA total:", border=0, align="R")
+            self.cell(value_width, 6, _format_money(self.iva_total), border=0, align="R")
+            self.ln()
+            
             if self.tax_summary:
-                self.set_font("helvetica", "B", 10)
-                self.cell(0, 6, "Detalle de IVA", ln=1)
-                self.set_font("helvetica", "", 9)
+                self.set_x(x_start)
+                self.set_font("helvetica", "B", 9)
+                self.cell(totals_width, 5, "Detalle de IVA", border=0, align="C")
+                self.ln()
+                self.set_font("helvetica", "", 8)
                 for pct, values in sorted(self.tax_summary.items(), key=lambda x: x[0]):
-                    self.cell(0, 5, f"Base {pct:.2f}%: {_format_money(values['base'])}  |  IVA {_format_money(values['iva'])}", ln=1)
+                    self.set_x(x_start)
+                    self.cell(label_width, 5, f"Base {pct:.2f}%: {_format_money(values['base'])}  |  IVA:", border=0, align="R")
+                    self.cell(value_width, 5, _format_money(values["iva"]), border=0, align="R")
+                    self.ln()
+        
+        self.ln(2)
+        
+        # Total box
+        self.set_x(x_start)
+        self.set_fill_color(*COLOR_PRIMARY)
+        self.set_text_color(*COLOR_WHITE)
         self.set_font("helvetica", "B", 12)
-        self.cell(0, 8, f"TOTAL: {_format_money(self.total)}", ln=1)
+        self.cell(label_width, 10, "TOTAL:", border=0, align="R", fill=True)
+        self.cell(value_width, 10, _format_money(self.total), border=0, align="R", fill=True)
+        self.set_text_color(*COLOR_TEXT)
+        self.ln()
 
     def _draw_footer_remarks(self) -> None:
-        return
+        """Draw footer message."""
+        self.ln(10)
+        self.set_font("helvetica", "I", 8)
+        self.set_text_color(*COLOR_TEXT_MUTED)
+        self.cell(0, 5, "Gracias por su compra - Este comprobante es emitido conforme a la normativa de AFIP.", border=0, align="C")
+        self.set_text_color(*COLOR_TEXT)
 
 
 class RemitoPDF(BaseDocumentPDF):
-    def __init__(self, remito_data: Dict[str, Any], entity_data: Dict[str, Any], items_data: List[Dict[str, Any]]):
-        super().__init__(remito_data, entity_data, items_data)
+    """PDF generator for remitos (delivery notes)."""
+    
+    def __init__(
+        self,
+        remito_data: Dict[str, Any],
+        entity_data: Dict[str, Any],
+        items_data: List[Dict[str, Any]],
+        company_config: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(remito_data, entity_data, items_data, company_config)
         self.remito = remito_data or {}
+        self._doc_type_label = "REMITO"
+        self._doc_letter = ""
 
     def build(self) -> None:
         self._draw_remito_header()
@@ -475,103 +673,150 @@ class RemitoPDF(BaseDocumentPDF):
         numero = self.remito.get("numero") or "-"
         fecha = self.remito.get("fecha") or datetime.now().strftime("%Y-%m-%d")
         estado = self.remito.get("estado") or "-"
-        entrega = self.remito.get("fecha_entrega") or "-"
+        entrega = self.remito.get("fecha_entrega")
         documento = self.remito.get("documento_numero")
+        valor_decl = _safe_float(self.remito.get("valor_declarado"), 0.0)
 
-        self.ln(4)
-        self.set_font("helvetica", "B", 14)
-        self.cell(0, 8, f"Remito {numero}", ln=1)
+        label_width = 45
+        
+        self.set_font("helvetica", "B", 10)
+        self.cell(label_width, 6, "Número:", border=0)
         self.set_font("helvetica", "", 10)
-        self.cell(0, 5, f"Fecha: {fecha}", ln=1)
-        self.cell(0, 5, f"Estado: {estado}", ln=1)
-        self.cell(0, 5, f"Entrega estimada: {entrega}", ln=1)
-        valor_decl = self.remito.get("valor_declarado") or 0
+        self.cell(0, 6, str(numero), border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 10)
+        self.cell(label_width, 6, "Fecha:", border=0)
+        self.set_font("helvetica", "", 10)
+        self.cell(0, 6, _format_date(fecha), border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 10)
+        self.cell(label_width, 6, "Estado:", border=0)
+        self.set_font("helvetica", "", 10)
+        self.cell(0, 6, str(estado), border=0, ln=1)
+        
+        # Only show optional fields if they have values
+        if entrega:
+            self.set_font("helvetica", "B", 10)
+            self.cell(label_width, 6, "Entrega estimada:", border=0)
+            self.set_font("helvetica", "", 10)
+            self.cell(0, 6, _format_date(entrega), border=0, ln=1)
+        
         if valor_decl > 0:
-            self.cell(0, 5, f"Valor declarado: ${valor_decl:,.2f}", ln=1)
+            self.set_font("helvetica", "B", 10)
+            self.cell(label_width, 6, "Valor declarado:", border=0)
+            self.set_font("helvetica", "", 10)
+            self.cell(0, 6, _format_money(valor_decl), border=0, ln=1)
+            
         if documento:
-            self.cell(0, 5, f"Documento asociado: {documento}", ln=1)
+            self.set_font("helvetica", "B", 10)
+            self.cell(label_width, 6, "Doc. asociado:", border=0)
+            self.set_font("helvetica", "", 10)
+            self.cell(0, 6, str(documento), border=0, ln=1)
+        
+        self.ln(2)
 
     def _draw_entity_block(self) -> None:
         name = self.entity.get("nombre_completo") or "Consumidor Final"
         cuit = self.entity.get("cuit") or "-"
         addr = self.entity.get("domicilio") or "-"
 
-        self.set_fill_color(15, 23, 42)
-        self.set_text_color(255, 255, 255)
+        self.set_fill_color(*COLOR_PRIMARY)
+        self.set_text_color(*COLOR_WHITE)
         self.set_font("helvetica", "B", 10)
-        self.cell(0, 6, "Datos del Cliente", ln=1, fill=True)
+        self.cell(0, 7, "  Datos del Cliente", ln=1, fill=True)
 
-        self.set_text_color(15, 23, 42)
+        self.set_text_color(*COLOR_TEXT)
         self.set_font("helvetica", "", 9)
-        self.cell(0, 5, f"Razón social: {name}", ln=1)
-        self.cell(0, 5, f"CUIT: {cuit}", ln=1)
-        self.cell(0, 5, f"Domicilio: {addr}", ln=1)
-        self.set_text_color(0, 0, 0)
+        self.ln(2)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "Razón social:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, name, border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "CUIT:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, cuit, border=0, ln=1)
+        
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "Domicilio:", border=0)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, addr, border=0, ln=1)
 
     def _draw_items_table(self) -> None:
         headers = ["Artículo", "Cantidad", "Observación"]
         start_x = self.l_margin
         content_width = max(self.w - self.l_margin - self.r_margin, 20)
-        col_ratios = [0.55, 0.2, 0.25]
+        col_ratios = [0.50, 0.15, 0.35]
         widths = _distribute_width(content_width, col_ratios)
-        total_width = sum(widths)
-        if abs(total_width - content_width) > 0.01:
-            widths[-1] = max(10.0, widths[-1] + (content_width - total_width))
-        total_width = sum(widths)
-        if total_width > content_width + 0.01:
-            widths[-1] = max(10.0, widths[-1] - (total_width - content_width))
+        
         def _draw_table_header() -> None:
-            self.set_font("helvetica", "B", 10)
-            self.set_fill_color(15, 23, 42)
-            self.set_text_color(255, 255, 255)
+            self.set_font("helvetica", "B", 9)
+            self.set_fill_color(*COLOR_PRIMARY)
+            self.set_text_color(*COLOR_WHITE)
             self.set_x(start_x)
             for w, title in zip(widths, headers):
-                self.cell(w, 10, title, border=0, align="C", fill=True)
+                self.cell(w, 8, title, border=0, align="C", fill=True)
             self.ln()
-            self.set_text_color(15, 23, 42)
+            self.set_text_color(*COLOR_TEXT)
             self.set_font("helvetica", "", 9)
 
+        self._table_header_drawer = _draw_table_header
+        self._table_header_last_page = 0
+        self._table_header_active = True
         _draw_table_header()
+        self._table_header_last_page = self.page_no()
 
         if not self.items:
             self.set_font("helvetica", "", 9)
-            self.set_text_color(100)
+            self.set_text_color(*COLOR_TEXT_MUTED)
             self.cell(sum(widths), 8, "No hay líneas disponibles para este remito.", border=1, align="C")
+            self._table_header_active = False
             return
 
+        row_height = 7
         for idx, line in enumerate(self.items):
-            shade = 245 if idx % 2 == 0 else 255
-            self.set_fill_color(shade, shade, 255)
+            if idx % 2 == 0:
+                self.set_fill_color(*COLOR_LIGHT_GRAY)
+            else:
+                self.set_fill_color(*COLOR_WHITE)
+            
             desc = str(line.get("articulo") or line.get("observacion") or "-")
             cantidad = _safe_float(line.get("cantidad"), 0.0)
             observacion = line.get("observacion") or "-"
-            row_height = 8
+            
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
             if self.get_y() + row_height > page_break_at:
                 self.add_page()
-                self.ln(2)
-                _draw_table_header()
+            
+            self.set_x(start_x)
+            self.set_draw_color(*COLOR_BORDER)
+            
             desc_text = _truncate_text_to_width(self, desc, widths[0] - (getattr(self, "c_margin", 0.5) * 2))
             obs_text = _truncate_text_to_width(self, observacion, widths[2] - (getattr(self, "c_margin", 0.5) * 2))
-            self.cell(widths[0], row_height, desc_text, border="LR", fill=True)
-            self.cell(widths[1], 8, f"{cantidad:.2f}", border="LR", align="R", fill=True)
-            self.cell(widths[2], row_height, obs_text, border="LR", fill=True)
+            
+            self.cell(widths[0], row_height, f" {desc_text}", border="TB", fill=True)
+            qty_str = str(int(cantidad)) if cantidad == int(cantidad) else f"{cantidad:.2f}"
+            self.cell(widths[1], row_height, qty_str, border="TB", align="C", fill=True)
+            self.cell(widths[2], row_height, f" {obs_text}", border="TB", fill=True)
             self.ln()
 
-        self.set_draw_color(15, 23, 42)
-        self.set_line_width(0.4)
-        self.line(start_x, self.get_y(), start_x + sum(widths), self.get_y())
+        self._table_header_active = False
+        self._table_header_drawer = None
 
     def _draw_remito_footer(self) -> None:
         direccion = self.remito.get("direccion_entrega") or "-"
-        usuario = self.remito.get("usuario") or "-"
-
+        
+        self.ln(4)
         self.set_font("helvetica", "B", 10)
         self.cell(0, 6, "Dirección de entrega", ln=1)
         self.set_font("helvetica", "", 9)
         self.cell(0, 5, direccion, ln=1)
-        self.ln(6)
+        
+        self.ln(8)
         self.cell(0, 5, "Recibí conforme", ln=1)
+        self.ln(3)
         self.cell(0, 5, "Firma: ______________________________", ln=1)
 
 
@@ -581,11 +826,30 @@ def generate_pdf_and_open(
     items_data: List[Dict[str, Any]],
     *,
     kind: str = "invoice",
+    company_config: Optional[Dict[str, Any]] = None,
 ) -> str:
+    """
+    Generate a PDF document and open it.
+    
+    Args:
+        doc_data: Document data (invoice, quote, remito, etc.)
+        entity_data: Client/entity data
+        items_data: Line items data
+        kind: Document type - "invoice" or "remito"
+        company_config: Optional company configuration dict with keys:
+            - nombre_sistema: Company name
+            - razon_social: Legal business name
+            - cuit_empresa: Tax ID
+            - domicilio_empresa: Company address
+            - slogan: Company slogan
+    
+    Returns:
+        Path to the generated PDF file
+    """
     if kind == "remito":
-        pdf = RemitoPDF(doc_data, entity_data, items_data)
+        pdf = RemitoPDF(doc_data, entity_data, items_data, company_config)
     else:
-        pdf = InvoicePDF(doc_data, entity_data, items_data)
+        pdf = InvoicePDF(doc_data, entity_data, items_data, company_config)
 
     path = pdf.generate()
     _open_pdf(path)

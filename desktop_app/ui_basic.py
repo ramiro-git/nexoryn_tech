@@ -570,6 +570,24 @@ def main(page: ft.Page) -> None:
     page.padding = 0
     page.fonts = {"Roboto": "Roboto-Regular.ttf"}
 
+    def get_company_config() -> dict:
+        """Get company configuration for PDF generation."""
+        if not db:
+            return {}
+        try:
+            cfg = db.fetch_config_sistema()
+            return {
+                "nombre_sistema": cfg.get("nombre_sistema", {}).get("valor", "NEXORYN TECH"),
+                "razon_social": cfg.get("razon_social", {}).get("valor", ""),
+                "cuit_empresa": cfg.get("cuit_empresa", {}).get("valor", ""),
+                "domicilio_empresa": cfg.get("domicilio_empresa", {}).get("valor", ""),
+                "telefono_empresa": cfg.get("telefono_empresa", {}).get("valor", ""),
+                "email_empresa": cfg.get("email_empresa", {}).get("valor", ""),
+                "slogan": cfg.get("slogan", {}).get("valor", "Soluciones tecnológicas y logísticas"),
+            }
+        except Exception:
+            return {}
+
     def print_document_external(doc_id):
         """Global helper to print from table"""
         try:
@@ -592,9 +610,9 @@ def main(page: ft.Page) -> None:
                 item_copy["articulo_nombre"] = art["nombre"] if art else f"Artículo {item['id_articulo']}"
                 items_data.append(item_copy)
 
-            # Generate PDF
-            generate_pdf_and_open(doc, ent or {}, items_data, kind="invoice")
-            show_toast(f"PDF generado correctamente.", kind="success")
+            # Generate PDF with company config
+            generate_pdf_and_open(doc, ent or {}, items_data, kind="invoice", company_config=get_company_config())
+            show_toast("PDF generado correctamente.", kind="success")
             
         except Exception as e:
             show_toast(f"Error al imprimir: {e}", kind="error")
@@ -4737,7 +4755,7 @@ def main(page: ft.Page) -> None:
             def _print_remito(_=None):
                 try:
                     entity_detail = db.get_entity_detail(rem_row.get("id_entidad_comercial")) if db else {}
-                    generate_pdf_and_open(rem_row, entity_detail or {}, details, kind="remito")
+                    generate_pdf_and_open(rem_row, entity_detail or {}, details, kind="remito", company_config=get_company_config())
                     show_toast("Remito generado correctamente.", kind="success")
                 except Exception as exc:
                     show_toast(f"Error al imprimir remito: {exc}", kind="error")
