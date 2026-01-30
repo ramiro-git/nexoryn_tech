@@ -4273,7 +4273,7 @@ class Database:
                 return res.get("total", 0) if isinstance(res, dict) else res[0]
 
     def fetch_documentos_pendientes(self, id_entidad: int, search: Optional[str] = None, limit: int = 60, offset: int = 0) -> List[Dict[str, Any]]:
-        filters = ["doc.id_entidad_comercial = %s", "doc.estado NOT IN ('ANULADO', 'PAGADO')"]
+        filters = ["doc.id_entidad_comercial = %s", "doc.estado NOT IN ('ANULADO', 'PAGADO', 'BORRADOR')"]
         params: List[Any] = [id_entidad]
         if search:
             filters.append("(doc.numero_serie ILIKE %s OR td.nombre ILIKE %s)")
@@ -4711,6 +4711,15 @@ class Database:
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 self._setup_session(cur)
+                
+                # 0. Validar estado del documento antes de crear pago
+                cur.execute("SELECT estado FROM app.documento WHERE id = %s", (id_documento,))
+                doc_state = cur.fetchone()
+                if doc_state:
+                    state = doc_state.get("estado") if isinstance(doc_state, dict) else doc_state[0]
+                    if state == 'BORRADOR':
+                        raise ValueError("No se puede registrar un pago para un documento en estado BORRADOR.")
+
                 # 1. Insert Payment
                 cur.execute(
                     query,
