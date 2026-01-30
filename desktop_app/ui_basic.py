@@ -5538,7 +5538,7 @@ def main(page: ft.Page) -> None:
                 items = [
                     {
                         "value": r["id"],
-                        "label": f"{r.get('numero_serie', 'N/A')} - ${r.get('total', 0):,.2f} ({r.get('fecha')})",
+                        "label": f"{r.get('numero_serie', 'N/A')} - {_format_money(r.get('total'))} ({_format_datetime(r.get('fecha'))})",
                     }
                     for r in rows
                 ]
@@ -5584,6 +5584,7 @@ def main(page: ft.Page) -> None:
                     id_documento=int(pago_documento.value), # This will fail if placeholder
                     id_forma_pago=int(pago_forma.value),
                     monto=float(monto_val),
+                    fecha=f_str,
                     referencia=pago_ref.value,
                     observacion=pago_obs.value
                 )
