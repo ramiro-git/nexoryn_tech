@@ -64,9 +64,9 @@ class AsyncSelect(ft.Column):
         if placeholder == "Seleccionar..." and label:
             # Clean label (remove "Filtrar ", "Seleccionar ", asterisks, etc if they exist)
             clean_label = label.replace("Filtrar ", "").replace("Seleccionar ", "").replace("*", "").strip()
-            self.placeholder = f"Seleccionar {clean_label.lower()}... *"
+            self.placeholder = f"Seleccionar {clean_label.lower()}..." + (" *" if "*" in label else "")
         else:
-            self.placeholder = placeholder or "Seleccionar... *"
+            self.placeholder = placeholder or "Seleccionar..."
 
         self._on_change_callback = on_change
         self.debounce_ms = debounce_ms
@@ -546,7 +546,7 @@ class AsyncSelect(ft.Column):
                     padding=ft.padding.all(16),
                     content=ft.Column([
                         ft.Row([
-                            ft.Text(f"Seleccionar {self.label.replace('Filtrar ', '').replace('*', '').strip().lower()}... *" if self.label else "Seleccionar... *", size=18, weight=ft.FontWeight.BOLD, color="#1E293B"),
+                            ft.Text((f"Seleccionar {self.label.replace('Filtrar ', '').replace('*', '').strip().lower()}..." + (" *" if "*" in self.label else "")) if self.label else "Seleccionar...", size=18, weight=ft.FontWeight.BOLD, color="#1E293B"),
                             ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=24, on_click=self._close_dialog)
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         self._search_field,

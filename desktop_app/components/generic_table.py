@@ -273,7 +273,7 @@ class GenericTable:
         self.simple_filter_dropdown = (
             ft.Dropdown(
                 label=self.simple_filter.label,
-                hint_text=f"Seleccionar {self.simple_filter.label.replace('*', '').strip().lower()}... *",
+                hint_text=f"Seleccionar {self.simple_filter.label.replace('*', '').strip().lower()}..." + (" *" if "*" in self.simple_filter.label else ""),
                 options=[
                     ft.dropdown.Option(_ALL_VALUE if value is None else str(value), label)
                     for value, label in self.simple_filter.options

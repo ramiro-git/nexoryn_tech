@@ -373,7 +373,9 @@ def _style_input(control: Any) -> None:
         _maybe_set(control, "bgcolor", "#F8FAFC")
         _maybe_set(control, "filled", True)
         _maybe_set(control, "border_width", 2)
-        _maybe_set(control, "height", 50)
+        # Only force height if NOT dense
+        if not getattr(control, "dense", False):
+            _maybe_set(control, "height", 50)
         return
 
     _maybe_set(control, "filled", True)
@@ -402,7 +404,7 @@ def _dropdown(label: str, options: List[Tuple[Any, str]], value: Any = None, wid
     dd = ft.Dropdown(
         label=label,
         value=value,
-        hint_text=f"Seleccionar {label.replace('Filtrar ', '').replace('*', '').strip().lower()}... *",
+        hint_text=f"Seleccionar {label.replace('Filtrar ', '').replace('*', '').strip().lower()}..." + (" *" if "*" in label else ""),
         options=[ft.dropdown.Option(str(v) if v is not None else "", t) for v, t in options],
         width=width,
     )
@@ -936,7 +938,7 @@ def main(page: ft.Page) -> None:
 
     # reload_catalogs() will be called at the end of main after all controls are defined
 
-    def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "Seleccionar opción... *") -> Any:
+    def dropdown_editor(values_provider: Callable[[], Sequence[str]], *, width: int, empty_label: str = "Seleccionar opción...") -> Any:
         def build(value: Any, row: Dict[str, Any], setter) -> ft.Control:
             values = list(values_provider() or [])
             options: List[ft.dropdown.Option] = [ft.dropdown.Option(name, name) for name in values]
@@ -983,7 +985,7 @@ def main(page: ft.Page) -> None:
             dd = ft.Dropdown(
                 options=options,
                 value=selected_key if selected_key in option_keys else None,
-                hint_text="Seleccionar unidad... *",
+                hint_text="Seleccionar unidad...",
                 width=width,
                 on_change=lambda e: setter(e.control.value),
             )
