@@ -118,12 +118,14 @@ class MassUpdateView(ft.Container):
         ]
 
         # Action Components
-        self.target_selector = _dropdown("Actualizar Precio en", width=250)
-        self.target_selector.options = [
-            ft.dropdown.Option("COSTO", "COSTO BASE"),
-        ]
-        self.target_selector.value = "COSTO"
-        self.target_selector.on_change = self._on_target_change
+        self.target_selector = AsyncSelect(
+            label="Actualizar Precio en",
+            loader=self._target_loader,
+            width=300,
+            value="COSTO",
+            initial_items=[{"value": "COSTO", "label": "COSTO BASE"}],
+            on_change=self._on_target_change,
+        )
 
         self.op_selector = _dropdown("Tipo de Ajuste", width=250)
         self.op_selector.options = [
@@ -545,6 +547,32 @@ class MassUpdateView(ft.Container):
     # -----------------------------
     # Catalogs / Filters
     # -----------------------------
+    async def _target_loader(self, query: str, offset: int, limit: int):
+        items = []
+        has_more = False
+        
+        # Virtual item "COSTO BASE"
+        if offset == 0:
+            if not query or any(x in query.lower() for x in ["costo", "base"]):
+                items.append({"value": "COSTO", "label": "COSTO BASE"})
+        
+        if self.price_list_loader:
+            try:
+                res = self.price_list_loader(query, offset, limit)
+                # Check if it's a coroutine (async)
+                if asyncio.iscoroutine(res):
+                    list_items, has_more = await res
+                else:
+                    # Sync loader
+                    list_items, has_more = await asyncio.to_thread(self.price_list_loader, query, offset, limit)
+                
+                for r in list_items:
+                    items.append({"value": f"LIST:{r['value']}", "label": f"Lista: {r['label']}"})
+            except Exception as e:
+                print(f"Error in _target_loader: {e}")
+                
+        return items, has_more
+
     def load_catalogs(self):
         try:
             marcas = self.db.list_marcas_full()
@@ -560,18 +588,15 @@ class MassUpdateView(ft.Container):
             # provs = self.db.list_proveedores() # AsyncSelect handles it
 
             # Fetch IVA types
-            lists = self.db.fetch_listas_precio()
+            # AsyncSelect handles price lists via loader
+            if hasattr(self.target_selector, "clear_cache"):
+                self.target_selector.clear_cache()
+            
             ivas = self.db.fetch_tipos_iva()
             self.filter_iva.options = [ft.dropdown.Option("", "Todas")] + [
                 ft.dropdown.Option(str(i["id"]), f"{i['descripcion']} ({i['porcentaje']}%)") for i in ivas
             ]
 
-            # Target Selector - specific lists
-            current_target = self.target_selector.value
-            self.target_selector.options = [ft.dropdown.Option("COSTO", "COSTO BASE")] + [
-                ft.dropdown.Option(f"LIST:{l['id']}", f"Lista: {l['nombre']}") for l in lists
-            ]
-            self.target_selector.value = current_target or "COSTO"
             self._ui_update()
         except Exception as e:
             print(f"Error loading catalogs: {e}")
