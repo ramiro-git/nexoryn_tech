@@ -3579,7 +3579,7 @@ def main(page: ft.Page) -> None:
     unidades_table = GenericTable(
         columns=[
             ColumnConfig(key="nombre", label="Unidad", editable=True, width=200),
-            ColumnConfig(key="abreviatura", label="Abr.", editable=True, width=100),
+            ColumnConfig(key="abreviatura", label="Abr.", editable=True, width=150),
             ColumnConfig(
                 key="_delete", label="", sortable=False, width=40,
                 renderer=lambda row: ft.IconButton(
@@ -3593,7 +3593,7 @@ def main(page: ft.Page) -> None:
         show_inline_controls=True, show_mass_actions=False, show_selection=False, auto_load=False, page_size=12,
     )
     nueva_uni_nombre = ft.TextField(label="Nombre Unidad", width=180)
-    nueva_uni_abr = ft.TextField(label="Abreviatura", width=100)
+    nueva_uni_abr = ft.TextField(label="Abreviatura", width=150)
     _style_input(nueva_uni_nombre); _style_input(nueva_uni_abr)
 
     def agregar_unidad(_: Any = None):
