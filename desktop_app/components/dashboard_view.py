@@ -1002,9 +1002,9 @@ class DashboardView(ft.Container):
             elif self.current_period == "Año": chart_title = "Tendencia Anual (Mensual)"
 
             chart_row.controls.extend([
-                self._chart_panel(chart_title, self._line_chart(charts.get("ventas_mensuales", [])), col={"xs": 12, "lg": 7}),
-                self._chart_panel("Mix de Documentos", self._pie_chart(v.get("por_tipo", {}), value_formatter=lambda x: f"{int(x)}"), col={"xs": 12, "sm": 6, "lg": 2.5}),
-                self._chart_panel("Participación Formas de Pago", self._pie_chart(v.get("por_forma_pago", {}), value_formatter=lambda x: self._format_number(x, 2, "$")), col={"xs": 12, "sm": 6, "lg": 2.5}),
+                self._chart_panel(chart_title, self._line_chart(charts.get("ventas_mensuales", [])), col={"xs": 12, "lg": 12}),
+                self._chart_panel("Mix de Documentos", self._pie_chart(v.get("por_tipo", {}), value_formatter=lambda x: f"{int(x)}"), col={"xs": 12, "sm": 6, "lg": 6}),
+                self._chart_panel("Participación Formas de Pago", self._pie_chart(v.get("por_forma_pago", {}), value_formatter=lambda x: self._format_number(x, 2, "$")), col={"xs": 12, "sm": 6, "lg": 6}),
             ])
         else:
             chart_row.controls.append(
