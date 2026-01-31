@@ -1786,23 +1786,35 @@ class GenericTable:
             # For custom controls (AsyncSelect, etc.), use the holder value
             
             # Call update
+            # Cierre robusto e inmediato antes del callback para mejor UX
+            try:
+                if self.root and self.root.page:
+                    self.root.page.close(self._edit_dialog)
+                self._edit_dialog.open = False
+                self.update()
+            except:
+                pass
+
             try:
                 if self.inline_edit_callback:
                     self.inline_edit_callback(row_id, {col.key: new_val})
                     self._notify("Actualizado", kind="success")
-                    if hasattr(self._edit_dialog, "open"):
-                        self._edit_dialog.open = False
-                    self.update()
-                    self._refresh_data()
+                
+                self._refresh_data()
             except Exception as ex:
                 self._notify(f"Error: {ex}", kind="error")
 
         def close(e):
-            if self.root and self.root.page and hasattr(self.root.page, "close"):
-                self.root.page.close(self._edit_dialog)
-            else:
+            try:
+                if self.root and self.root.page and hasattr(self.root.page, "close"):
+                    self.root.page.close(self._edit_dialog)
                 self._edit_dialog.open = False
                 self.update()
+            except:
+                # Fallback manual
+                self._edit_dialog.open = False
+                try: self.update()
+                except: pass
 
         # Build Input - Use inline_editor if available
         input_control: ft.Control
@@ -1814,6 +1826,23 @@ class GenericTable:
                 # and save on selection, without the intermediate edit dialog
                 def async_select_setter(val: Any) -> None:
                     new_val_holder["value"] = val
+                    
+                    # Cierre robusto e inmediato del diálogo de AsyncSelect
+                    try:
+                        if hasattr(input_control, "_close_dialog"):
+                            input_control._close_dialog()
+                        # Forzar visibilidad false si el componente tiene el atributo
+                        if hasattr(input_control, "_dialog"):
+                            input_control._dialog.visible = False
+                        
+                        # Actualizar overlay si es posible
+                        pg = None
+                        if self.root and self.root.page: pg = self.root.page
+                        elif self.page: pg = self.page
+                        if pg: pg.update()
+                    except:
+                        pass
+
                     # Auto-save when AsyncSelect value is selected
                     try:
                         if self.inline_edit_callback:
