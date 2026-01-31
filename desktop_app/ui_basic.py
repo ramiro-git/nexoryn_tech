@@ -1414,14 +1414,14 @@ def main(page: ft.Page) -> None:
     entidades_advanced_localidad = AsyncSelect(
         label="Localidad",
         loader=localidad_search_loader,
-        width=200,
+        width=300,
         on_change=lambda _: _ent_live(None),
         show_label=False,
     )
     entidades_advanced_provincia = AsyncSelect(
         label="Provincia",
         loader=province_loader,
-        width=180,
+        width=250,
         on_change=lambda _: _ent_live(None),
         show_label=False,
     )
@@ -1444,11 +1444,11 @@ def main(page: ft.Page) -> None:
     entidades_advanced_desde.on_submit = _ent_live
     entidades_advanced_hasta.on_submit = _ent_live
 
-    entidades_advanced_iva = _dropdown("Condición IVA", [("", "Todos")], on_change=_ent_live, width=200)
+    entidades_advanced_iva = _dropdown("Condición IVA", [("", "Todos")], on_change=_ent_live, width=250)
     entidades_advanced_lista_precio = AsyncSelect(
         label="Lista Precio",
         loader=price_list_loader,
-        width=200,
+        width=300,
         on_change=lambda _: _ent_live(None),
         show_label=False,
     )
@@ -1458,7 +1458,7 @@ def main(page: ft.Page) -> None:
         [("", "Todos"), ("CLIENTE", "Cliente"), ("PROVEEDOR", "Proveedor"), ("AMBOS", "Ambos")],
         value="",
         on_change=_ent_live,
-        width=150
+        width=180
     )
 
     def entidades_provider(
