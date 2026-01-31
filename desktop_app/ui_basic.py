@@ -381,7 +381,9 @@ def _style_input(control: Any) -> None:
     _maybe_set(control, "border_width", 1)
 
     if is_textfield and not is_dropdown:
-        _maybe_set(control, "height", 50)
+        # Only force height if NOT dense
+        if not getattr(control, "dense", False):
+            _maybe_set(control, "height", 50)
         _maybe_set(control, "cursor_color", COLOR_ACCENT)
         _maybe_set(control, "selection_color", "#C7D2FE")
 
@@ -1188,8 +1190,8 @@ def main(page: ft.Page) -> None:
             _art_live(None)
         except: pass
 
-    articulos_advanced_costo_min_field = ft.TextField(label="Mín. (Costo)", width=105, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_min_field)
-    articulos_advanced_costo_max_field = ft.TextField(label="Máx. (Costo)", width=105, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_max_field)
+    articulos_advanced_costo_min_field = ft.TextField(label="Mín. (Costo)", width=120, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_min_field)
+    articulos_advanced_costo_max_field = ft.TextField(label="Máx. (Costo)", width=120, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_max_field)
 
     def _get_costo_min_value(_: Any) -> Optional[float]:
         slider = articulos_advanced_costo_slider
@@ -1230,7 +1232,7 @@ def main(page: ft.Page) -> None:
         start_value=0,
         end_value=10000,
         divisions=100,
-        width=300,
+        width=250,
         inactive_color="#E2E8F0",
         active_color=COLOR_ACCENT,
         label="{value}",
@@ -1241,9 +1243,9 @@ def main(page: ft.Page) -> None:
     articulos_advanced_costo_label = ft.Text(f"Costo: entre {_format_money(0)} y {_format_money(10000)}", size=12, weight=ft.FontWeight.BOLD)
     articulos_advanced_costo_ctrl = ft.Column([
         articulos_advanced_costo_label,
-        ft.Row([articulos_advanced_costo_min_field, articulos_advanced_costo_max_field], spacing=10),
-        articulos_advanced_costo_slider
-    ], spacing=5, width=350)
+        ft.Row([articulos_advanced_costo_min_field, articulos_advanced_costo_max_field], spacing=10, alignment=ft.MainAxisAlignment.START),
+        ft.Container(articulos_advanced_costo_slider, padding=ft.padding.only(left=5, right=5))
+    ], spacing=8, width=260, horizontal_alignment=ft.CrossAxisAlignment.START)
 
     # Stock range filter
     def _art_stock_slider_change(e):
@@ -1283,8 +1285,8 @@ def main(page: ft.Page) -> None:
             _art_live(None)
         except: pass
 
-    articulos_advanced_stock_min_field = ft.TextField(label="Mín. (Stock)", width=105, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_min_field)
-    articulos_advanced_stock_max_field = ft.TextField(label="Máx. (Stock)", width=105, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_max_field)
+    articulos_advanced_stock_min_field = ft.TextField(label="Mín. (Stock)", width=120, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_min_field)
+    articulos_advanced_stock_max_field = ft.TextField(label="Máx. (Stock)", width=120, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_max_field)
 
     def _get_stock_min_value(_: Any) -> Optional[float]:
         slider = articulos_advanced_stock_slider
@@ -1310,7 +1312,7 @@ def main(page: ft.Page) -> None:
         min=-1000, max=10000,
         start_value=-1000, end_value=10000,
         divisions=200,
-        width=300,
+        width=250,
         inactive_color="#E2E8F0",
         active_color=COLOR_ACCENT,
         label="{value}",
@@ -1320,9 +1322,9 @@ def main(page: ft.Page) -> None:
     articulos_advanced_stock_label = ft.Text(f"Stock: entre -1000 y 10000 un.", size=12, weight=ft.FontWeight.BOLD)
     articulos_advanced_stock_ctrl = ft.Column([
         articulos_advanced_stock_label,
-        ft.Row([articulos_advanced_stock_min_field, articulos_advanced_stock_max_field], spacing=10),
-        articulos_advanced_stock_slider
-    ], spacing=5, width=350)
+        ft.Row([articulos_advanced_stock_min_field, articulos_advanced_stock_max_field], spacing=10, alignment=ft.MainAxisAlignment.START),
+        ft.Container(articulos_advanced_stock_slider, padding=ft.padding.only(left=5, right=5))
+    ], spacing=8, width=260, horizontal_alignment=ft.CrossAxisAlignment.START)
 
     articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo (stock)", value=False, on_change=_art_live)
     
