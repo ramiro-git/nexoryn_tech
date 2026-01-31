@@ -707,6 +707,18 @@ def main(page: ft.Page) -> None:
     # Session state
     current_user: Dict[str, Any] = {}
     
+    # Inactivity Timeout Configuration (5 minutes = 300 seconds)
+    INACTIVITY_TIMEOUT = 300
+    last_activity_time = time.time()
+
+    def reset_inactivity_timer(e=None):
+        nonlocal last_activity_time
+        # Only track activity if a user is logged in
+        if current_user and current_user.get("id"):
+            last_activity_time = time.time()
+
+    page.on_event = reset_inactivity_timer
+    
     db_error: Optional[str] = None
     local_ip = "127.0.0.1"
     try:
@@ -7078,6 +7090,16 @@ def main(page: ft.Page) -> None:
             def background_monitor():
                 while not window_is_closing:
                     try:
+                        # Check for inactivity timeout
+                        if current_user and current_user.get("id"):
+                            elapsed = time.time() - last_activity_time
+                            if elapsed > INACTIVITY_TIMEOUT:
+                                # Log timeout and logout
+                                if db:
+                                    db.log_activity("SISTEMA", "TIMEOUT_INACTIVIDAD", detalle={"timeout_seg": INACTIVITY_TIMEOUT})
+                                do_logout()
+                                continue # Skip remainder of this loop cycle after logout
+
                         # Only refresh if logged in
                         if db and db.current_user_id:
                             # Comprehensive list of entities to monitor for changes
