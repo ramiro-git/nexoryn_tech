@@ -236,6 +236,9 @@ class GenericTable:
         self.page = 1
         self.page_size = page_size
         self.page_size_options = list(page_size_options)
+        if self.page_size not in self.page_size_options:
+            self.page_size_options.append(self.page_size)
+            self.page_size_options.sort()
         self.sorts: SortSpec = []
         self._last_sort_idx: Optional[int] = None  # Internal tracking
         self.selected_ids: set = set()

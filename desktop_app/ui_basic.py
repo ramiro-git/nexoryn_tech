@@ -2003,7 +2003,7 @@ def main(page: ft.Page) -> None:
         show_mass_actions=True,
         show_selection=True,
         auto_load=True,
-        page_size=12,
+        page_size=10,
         page_size_options=(10, 25, 50),
         show_export_button=True,
         show_export_scope=True,
