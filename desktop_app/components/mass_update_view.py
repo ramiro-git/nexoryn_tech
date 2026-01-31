@@ -107,8 +107,8 @@ class MassUpdateView(ft.Container):
 
         self.filter_marca = _dropdown("Marca")
         self.filter_rubro = _dropdown("Rubro")
-        self.filter_proveedor = AsyncSelect(label="Proveedor", loader=self.supplier_loader, width=200, on_change=lambda _: self._update_count(None))
-        self.filter_lista = AsyncSelect(label="En Lista Precios", loader=self.price_list_loader, width=200, on_change=lambda _: self._update_count(None))
+        self.filter_proveedor = AsyncSelect(label="Proveedor", loader=self.supplier_loader, width=250, on_change=lambda _: self._update_count(None))
+        self.filter_lista = AsyncSelect(label="En Lista Precios", loader=self.price_list_loader, width=300, on_change=lambda _: self._update_count(None))
         self.filter_iva = _dropdown("Alicuota IVA")
         self.filter_activo = _dropdown("Estado")
         self.filter_activo.options = [

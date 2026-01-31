@@ -5435,7 +5435,7 @@ def main(page: ft.Page) -> None:
     pago_adv_ref = ft.TextField(label="Referencia", width=200, on_change=lambda _: pagos_table.trigger_refresh()); _style_input(pago_adv_ref)
     pago_adv_desde = _date_field("Desde", width=140); pago_adv_desde.on_submit = lambda _: pagos_table.trigger_refresh()
     pago_adv_hasta = _date_field("Hasta", width=140); pago_adv_hasta.on_submit = lambda _: pagos_table.trigger_refresh()
-    pago_adv_entidad = AsyncSelect(label="Entidad *", loader=entity_loader, width=280, on_change=lambda _: pagos_table.trigger_refresh())
+    pago_adv_entidad = AsyncSelect(label="Entidad", loader=entity_loader, width=280, on_change=lambda _: pagos_table.trigger_refresh())
     
     # Forma de pago filter
     try:
