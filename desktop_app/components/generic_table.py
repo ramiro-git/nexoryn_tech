@@ -816,11 +816,12 @@ class GenericTable:
         self.root = ft.Column(controls, expand=1, spacing=6)
         return self.root
 
-    def refresh(self) -> None:
+    def refresh(self, silent: bool = False) -> None:
         if self._search_timer:
             self._search_timer.cancel()
-        self.page = 1
-        self._refresh_data()
+        if not silent:
+            self.page = 1
+        self._refresh_data(silent=silent)
         self._loaded_once = True
 
     def trigger_refresh(self) -> None:
@@ -1184,7 +1185,7 @@ class GenericTable:
         else:
             self.status.color = "#64748B"
 
-    def _refresh_data(self, update_ui: bool = True) -> None:
+    def _refresh_data(self, update_ui: bool = True, silent: bool = False) -> None:
         search = self.search_field.value.strip() if self.search_field.value else None
         simple_value = (self.simple_filter_dropdown.value if self.simple_filter_dropdown else None)
         if simple_value == _ALL_VALUE:
@@ -1196,7 +1197,8 @@ class GenericTable:
         }
         offset = (self.page - 1) * self.page_size
         self._last_error = None
-        self._set_loading(True)
+        if not silent:
+            self._set_loading(True)
         if update_ui:
             self.update()
         

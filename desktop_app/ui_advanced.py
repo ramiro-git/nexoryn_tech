@@ -7,6 +7,7 @@ import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import flet as ft
+import time
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -148,6 +149,55 @@ def main(page: ft.Page) -> None:
     #     CronTrigger(hour=1, minute=0),
     #     id="backup_prune"
     # )
+
+    # --- Real-Time Updates (Polling) ---
+    last_check_wrapper = {"ts": time.time()}
+
+    def check_updates() -> None:
+        try:
+            # Comprehensive list of entities to monitor for changes
+            tables = [
+                "DOCUMENTO", "PAGO", "ENTIDAD", "ARTICULO", "PAGO_CC", "AJUSTE_CC",
+                "REMITO", "MOVIMIENTO", "USUARIO", "SISTEMA", "CONFIG",
+                "app.documento", "app.pago", "app.entidad_comercial", "app.articulo",
+                "app.remito", "app.movimiento_articulo", "seguridad.usuario", "ref.lista_precio"
+            ]
+            if db.check_recent_activity(last_check_wrapper["ts"], tables):
+                last_check_wrapper["ts"] = time.time()
+                
+                # Update general stats always
+                refresh_all_stats()
+                
+                key = current_view.get("key")
+                # Route refresh to current active table/view
+                if key == "entidades":
+                    refresh_entities(silent=True)
+                elif key == "articulos":
+                    refresh_articles(silent=True)
+                elif key == "stock":
+                    refresh_stock()
+                elif key == "documentos":
+                    documentos_table.refresh(silent=True)
+                elif key == "remitos":
+                    remitos_table.refresh(silent=True)
+                elif key == "movimientos":
+                    movimientos_table.refresh(silent=True)
+                elif key == "pagos":
+                    pagos_table.refresh(silent=True)
+                elif key == "cuentas":
+                    refresh_cc_context(silent=True)
+                elif key == "usuarios":
+                    usuarios_table.refresh()
+                    sesiones_table.refresh()
+                elif key == "logs":
+                    logs_table.refresh()
+                elif key == "dashboard":
+                    if dashboard_view:
+                        dashboard_view.load_data()
+        except Exception:
+            pass
+
+    scheduler.add_job(check_updates, 'interval', seconds=5, id='polling_task')
     
     scheduler.start()
 
@@ -658,19 +708,21 @@ def main(page: ft.Page) -> None:
             except Exception:
                 stock_alertas_text.value = "—"
 
-        def refresh_entities() -> None:
+        def refresh_entities(silent: bool = False) -> None:
             try:
-                hide_message()
-                entity_table.refresh()
+                if not silent:
+                    hide_message()
+                entity_table.refresh(silent=silent)
                 refresh_entity_metrics()
             except Exception as exc:
                 set_connection(False, "DB error")
                 show_message(f"Error cargando entidades: {exc}", kind="error")
 
-        def refresh_articles() -> None:
+        def refresh_articles(silent: bool = False) -> None:
             try:
-                hide_message()
-                article_table.refresh()
+                if not silent:
+                    hide_message()
+                article_table.refresh(silent=silent)
                 refresh_article_metrics()
             except Exception as exc:
                 set_connection(False, "DB error")

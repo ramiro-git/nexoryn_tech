@@ -7068,23 +7068,59 @@ def main(page: ft.Page) -> None:
         
         def start_background_monitor():
             nonlocal monitor_started
-            if monitor_started:
-                return
-            monitor_started = True
-            import threading
-            import time
+            last_check_wrapper = {"ts": time.time()}
+
             def background_monitor():
                 while not window_is_closing:
                     try:
                         # Only refresh if logged in
                         if db and db.current_user_id:
-                            refresh_all_stats()
-                            # If current view is Usuarios (Sessions), refresh sesiones_table only
-                            if current_view["key"] == "usuarios":
-                                try:
-                                    sesiones_table.refresh()
-                                except: pass
-                    except: pass
+                            # Comprehensive list of entities to monitor for changes
+                            tables = [
+                                "DOCUMENTO", "PAGO", "ENTIDAD", "ARTICULO", "PAGO_CC", "AJUSTE_CC",
+                                "REMITO", "MOVIMIENTO", "USUARIO", "SISTEMA", "CONFIG",
+                                "app.documento", "app.pago", "app.entidad_comercial", "app.articulo",
+                                "app.remito", "app.movimiento_articulo", "seguridad.usuario", "ref.lista_precio"
+                            ]
+                            if db.check_recent_activity(last_check_wrapper["ts"], tables):
+                                last_check_wrapper["ts"] = time.time()
+                                
+                                refresh_all_stats()
+                                
+                                key = current_view.get("key")
+                                # Route refresh to current active table/view in Basic UI
+                                if key == "entidades":
+                                    entidades_table.refresh(silent=True)
+                                elif key == "articulos":
+                                    articulos_table.refresh(silent=True)
+                                elif key == "cuentas":
+                                    cuentas_table.refresh(silent=True)
+                                    refresh_cc_stats()
+                                elif key == "documentos":
+                                    documentos_summary_table.refresh(silent=True)
+                                elif key == "remitos":
+                                    remitos_table.refresh(silent=True)
+                                elif key == "movimientos":
+                                    movimientos_table.refresh(silent=True)
+                                elif key == "pagos":
+                                    pagos_table.refresh(silent=True)
+                                elif key == "precios":
+                                    if hasattr(globals().get("precios_table"), "refresh"):
+                                        globals()["precios_table"].refresh(silent=True)
+                                elif key == "usuarios":
+                                    try:
+                                        usuarios_table.refresh()
+                                        sesiones_table.refresh()
+                                    except: pass
+                                elif key == "logs":
+                                    logs_table.refresh(silent=True)
+                                elif key == "dashboard":
+                                    # Dashboard view has its own load_data in Basic UI component
+                                    if dashboard_view_component:
+                                        dashboard_view_component.load_data()
+                            
+                    except Exception:
+                        pass
                     # Refresh every 5 seconds for real-time feel
                     for _ in range(5):
                         if window_is_closing: break

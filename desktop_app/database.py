@@ -326,6 +326,35 @@ class Database:
         except Exception:
             return False
 
+    def check_recent_activity(self, since_timestamp: float, tables: List[str] = None) -> bool:
+        """
+        Check if there has been any activity in the specified tables since the given timestamp.
+        """
+        if not tables:
+            return False
+            
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    # Convert timestamp to datetime
+                    since_dt = datetime.fromtimestamp(since_timestamp)
+                    
+                    query = """
+                        SELECT EXISTS(
+                            SELECT 1 
+                            FROM seguridad.log_actividad 
+                            WHERE fecha_hora > %s 
+                            AND entidad = ANY(%s)
+                        )
+                    """
+                    # Note: 'entidad' column in log_actividad stores the table name/entity type (e.g. 'ENTIDAD', 'DOCUMENTO')
+                    cur.execute(query, (since_dt, tables))
+                    row = cur.fetchone()
+                    return row[0] if row else False
+        except Exception as e:
+            print(f"Error checking recent activity: {e}")
+            return False
+
     # =========================================================================
     # In-Memory Catalog Cache (reduces DB hits for frequently accessed data)
     # =========================================================================
