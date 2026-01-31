@@ -367,7 +367,8 @@ def _style_input(control: Any) -> None:
     _maybe_set(control, "border_radius", 12)
     _maybe_set(control, "text_size", 14)
     _maybe_set(control, "label_style", ft.TextStyle(color="#1E293B", size=13, weight=ft.FontWeight.BOLD))
-    _maybe_set(control, "content_padding", ft.padding.symmetric(horizontal=12))
+    if not is_dropdown:
+        _maybe_set(control, "content_padding", ft.padding.symmetric(horizontal=12))
 
     if is_dropdown:
         _maybe_set(control, "bgcolor", "#F8FAFC")
@@ -1330,18 +1331,18 @@ def main(page: ft.Page) -> None:
 
     articulos_advanced_stock_bajo = ft.Switch(label="Solo bajo mínimo (stock)", value=False, on_change=_art_live)
     
-    articulos_advanced_iva = _dropdown("Alicuota IVA", [("", "Todas")], value="", width=200, on_change=_art_live)
-    articulos_advanced_unidad = _dropdown("Unidad Medida", [("", "Todas")], value="", width=200, on_change=_art_live)
-    articulos_advanced_redondeo = _dropdown("Redondeo", [("", "Todos"), ("SI", "Sí"), ("NO", "No")], value="", width=150, on_change=_art_live)
+    articulos_advanced_iva = _dropdown("Alicuota IVA", [("", "Todas")], value="", width=250, on_change=_art_live)
+    articulos_advanced_unidad = _dropdown("Unidad Medida", [("", "Todas")], value="", width=250, on_change=_art_live)
+    articulos_advanced_redondeo = _dropdown("Redondeo", [("", "Todos"), ("SI", "Sí"), ("NO", "No")], value="", width=200, on_change=_art_live)
     
-    articulos_advanced_lista_precio = AsyncSelect(label="Precios de lista", loader=price_list_loader, width=200, on_change=lambda _: _art_live(None))
+    articulos_advanced_lista_precio = AsyncSelect(label="Precios de lista", loader=price_list_loader, width=350, on_change=lambda _: _art_live(None))
     
     articulos_advanced_estado = _dropdown(
         "Estado",
         [("", "Todos"), ("ACTIVO", "Activos"), ("INACTIVO", "Inactivos")],
         value="",
         on_change=_art_live,
-        width=150
+        width=200
     )
 
     def refresh_articles_catalogs():
