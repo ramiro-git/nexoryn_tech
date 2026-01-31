@@ -7,58 +7,58 @@ logger = logging.getLogger(__name__)
 def migrate_to_partitioned_logs(db):
     """
     Checks if logs table is partitioned and migrates it if not.
-    This is an automatic migration requested by the user.
+    Improved version: handles partial failures and ensures log_actividad exists.
     """
     try:
+        # Check current state of both potential tables
         check_query = """
-            SELECT c.relkind 
+            SELECT c.relname, c.relkind 
             FROM pg_class c 
             JOIN pg_namespace n ON n.oid = c.relnamespace 
-            WHERE n.nspname = 'seguridad' AND c.relname = 'log_actividad'
+            WHERE n.nspname = 'seguridad' AND c.relname IN ('log_actividad', 'log_actividad_old')
         """
         
         with db.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(check_query)
-                res = cur.fetchone()
-                if not res:
-                    return # Table doesn't exist?
+                rows = cur.fetchall()
+                tables = {row[0]: row[1] for row in rows}
                 
-                relkind = res[0]
-                if relkind == 'p':
-                    # Already partitioned
+                has_current = 'log_actividad' in tables
+                has_old = 'log_actividad_old' in tables
+                
+                # Scenario 1: Already partitioned log_actividad exists
+                if has_current and tables['log_actividad'] == 'p':
                     return
 
-                print("INFO: Iniciando migración automática a tabla de logs particionada...")
-                
-                # 1. Rename old table first to free up the name 'log_actividad'
-                # This is critical because the partition helper function expects 'log_actividad' to be the parent
-                print("INFO: Renombrando tabla antigua...")
-                cur.execute("ALTER TABLE seguridad.log_actividad RENAME TO log_actividad_old")
-                
-                # 2. Create partition structure (directly as log_actividad)
+                # Scenario 2: Exists but NOT partitioned
+                if has_current and tables['log_actividad'] != 'p':
+                    print("INFO: Renombrando tabla de logs para iniciar particionamiento...")
+                    # If log_actividad_old already exists (odd but possible), drop it or rename it again
+                    if has_old:
+                        cur.execute("DROP TABLE IF EXISTS seguridad.log_actividad_old CASCADE")
+                    cur.execute("ALTER TABLE seguridad.log_actividad RENAME TO log_actividad_old")
+                    has_old = True
+                    has_current = False
+
+                # Scenario 3: log_actividad is missing (start from scratch or resume from log_actividad_old)
+                print("INFO: Creando estructura de tabla de logs particionada...")
                 _create_partition_structure(conn, cur)
                 
-                # 3. Migrate Data
-                print("INFO: Migrando datos existentes de logs. Esto puede tomar unos instantes...")
-                _migrate_data(conn, cur)
+                if has_old:
+                    print("INFO: Migrando datos existentes a la estructura particionada...")
+                    _migrate_data(conn, cur)
                 
-                # 4. Sync Sequence
-                # Ensure the sequence is in sync with the migrated data
+                # Sync sequence regardless of outcome
                 cur.execute("""
                     SELECT setval('seguridad.log_actividad_id_seq', (SELECT COALESCE(MAX(id), 1) FROM seguridad.log_actividad))
                 """)
                 
                 conn.commit()
-                print("SUCCESS: Tabla de logs particionada exitosamente.")
+                print("SUCCESS: Migración a logs particionados completada exitosamente.")
                 
     except Exception as e:
         print(f"ERROR: Falló la migración automática de particiones: {e}")
-        # Don't raise, let the app continue with non-partitioned table
-        # If we failed mid-way, we might be in a state where log_actividad_old exists but log_actividad doesn't or is partial.
-        # Ideally we would rollback, but we are inside a transaction block in the caller (db.pool -> conn)?
-        # No, the context manager `with db.pool.connection() as conn:` commits on exit if no exception, 
-        # but here we catch the exception. We should probably rollback.
         try:
            if 'conn' in locals():
                conn.rollback()
