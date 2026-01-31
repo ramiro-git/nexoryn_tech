@@ -83,9 +83,60 @@ No es estrictamente obligatorio instalar Git en la computadora del cliente, pero
 
 ---
 
-## Estructura de archivos para Modo Portable
+---
 
-Si eliges el **Modo Portable**, así debe verse tu carpeta de trabajo:
+## Implementación en Red LAN (Ejecutable Compartido)
+
+Si planeas dejar el ejecutable en una carpeta compartida de la red para que varios usuarios lo abran (ej: `\\SERVIDOR\Sistema\NexorynTech.exe`), esta es la mejor estrategia:
+
+### Ubicación Centralizada (Recomendada)
+Coloca el archivo `.env` y la carpeta `certs/` **en la misma carpeta de red** donde está el ejecutable.
+- **Ventaja**: "Cero Instalación". Si cambias la contraseña de la base de datos o renuevas un certificado, lo haces una sola vez en el servidor y todos los usuarios se actualizan automáticamente al abrir el programa.
+- **Estructura en el Servidor**:
+  ```text
+  \\SERVIDOR\Nexoryn\
+  ├── NexorynTech.exe
+  ├── .env
+  └── certs/
+      ├── mi_empresa.crt
+      └── mi_empresa.key
+  ```
+
+### Consideraciones de Seguridad
+Al estar el `.env` en la red, cualquier usuario con acceso a esa carpeta puede ver los datos de conexión. Si la red es privada y de confianza, esto es lo más práctico.
+
+### Requisito en cada PC
+Aunque el programa esté en la red, cada computadora que lo ejecute **debe tener instalado OpenSSL** (o Git para Windows) para que la facturación electrónica funcione, ya que el ejecutable llama a las herramientas criptográficas locales del sistema.
+
+---
+
+## Seguridad de Archivos en Red
+
+Si te preocupa que los usuarios puedan entrar a la carpeta y ver el `.env` o los certificados, tienes estas opciones (de menor a mayor seguridad):
+
+### 1. Atributos de Windows (Básico)
+Puedes marcar la carpeta `certs` y el archivo `.env` como **Ocultos** y **de Sistema**.
+- Command: `attrib +h +s .env` / `attrib +h +s certs`
+- *Efectividad*: Muy baja. Solo oculta los archivos a usuarios casuales.
+
+### 2. Permisos de Carpeta NTFS (Recomendado)
+Es la forma profesional. En el servidor:
+1. Haz clic derecho en la carpeta `Sistema_Nexoryn` > Propiedades > Seguridad.
+2. Quita el acceso de "Lectura" a los usuarios estándar para los archivos específicos `.env` y la carpeta `certs`.
+3. **Ojo**: Para que el sistema funcione, el usuario que abre el programa *debe* tener permiso de lectura. Si bloqueas al usuario, bloqueas al sistema (porque el sistema corre "como" el usuario). 
+4. *Mejor práctica*: Crear un usuario de red específico para la aplicación (Service Account), pero suele ser complejo para redes hogareñas/pymes.
+
+### 3. Almacenamiento en Base de Datos (Avanzado)
+Lo más seguro es no tener archivos físicos en la red.
+- **Configuración**: El sistema ya puede leer configuraciones (como el CUIT) desde la tabla `seguridad.config_sistema` en lugar del `.env`.
+- **Certificados**: Podrías guardar el contenido de los `.crt` y `.key` dentro de la base de datos (como texto) y que el sistema los descargue a una carpeta temporal solo al momento de facturar.
+
+> [!TIP]
+> Si buscas una solución rápida, usa los **Permisos de NTFS** restringiendo quién puede entrar a esa carpeta compartida a nivel de Windows, y usa el atributo **Oculto** para evitar errores accidentales de los usuarios.
+
+---
+
+## Estructura de archivos para Modo Portable (Local)
 
 ```text
 Carpeta_App/
