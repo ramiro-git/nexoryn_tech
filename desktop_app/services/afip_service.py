@@ -50,8 +50,16 @@ class AfipService:
             if gp.exists():
                 return str(gp)
 
-        # 3. Look relative to the executable (Portable mode)
-        # If frozen, sys.executable is the .exe path
+        # 3. Common OpenSSL for Windows locations
+        win_openssl = [
+            Path("C:/Program Files/OpenSSL-Win64/bin/openssl.exe"),
+            Path("C:/Program Files (x86)/OpenSSL-Win32/bin/openssl.exe"),
+        ]
+        for wp in win_openssl:
+            if wp.exists():
+                return str(wp)
+
+        # 4. Look relative to the executable (Portable mode)
         if getattr(sys, 'frozen', False):
              root_dir = Path(sys.executable).parent
         else:
@@ -68,6 +76,13 @@ class AfipService:
                 return str(lp)
                 
         return None
+
+    def _get_env(self) -> Dict[str, str]:
+        """Provides a safe environment for subprocesses on Windows."""
+        env = os.environ.copy()
+        # Prevent Git/MSYS from mangling paths in arguments
+        env["MSYS_NO_PATHCONV"] = "1"
+        return env
 
     def __init__(self, cuit: str, cert_path: str, key_path: str, production: bool = False):
         """
@@ -196,9 +211,12 @@ class AfipService:
                 "-out",
                 cms_path,
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            res = subprocess.run(cmd, capture_output=True, text=True, env=self._get_env())
             if res.returncode != 0:
-                raise RuntimeError(f"Error generando CMS: {res.stderr.strip() or res.stdout.strip()}")
+                # Si falla, intentamos con shell=True por si hay problemas de resolución
+                res_shell = subprocess.run(cmd, capture_output=True, text=True, env=self._get_env(), shell=True)
+                if res_shell.returncode != 0:
+                     raise RuntimeError(f"Error generando CMS: {res.stderr.strip() or res.stdout.strip()}")
 
             with open(cms_path, "rb") as fh:
                 cms = fh.read()

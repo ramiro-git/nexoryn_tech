@@ -41,7 +41,11 @@ if not getattr(CoreDataCell.before_update, "_nexoryn_patched_v3", False):
     CoreDataCell.before_update = _patched_before_update_cell
     ft.DataCell.before_update = _patched_before_update_cell
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    PROJECT_ROOT = Path(sys._MEIPASS)
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

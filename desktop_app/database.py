@@ -203,6 +203,10 @@ class Database:
                 pass
             self.pool = None
 
+    def close(self) -> None:
+        """Alias for close_pool to ensure compatibility."""
+        self.close_pool()
+
     def reconnect(self) -> None:
         """Reinitialize the connection pool."""
         if self.pool:
@@ -330,7 +334,7 @@ class Database:
         """
         Check if there has been any activity in the specified tables since the given timestamp.
         """
-        if not tables:
+        if not tables or self.is_closing or not self.pool:
             return False
             
         try:
@@ -351,8 +355,8 @@ class Database:
                     cur.execute(query, (since_dt, tables))
                     row = cur.fetchone()
                     return row[0] if row else False
-        except Exception as e:
-            print(f"Error checking recent activity: {e}")
+        except Exception:
+            # Silent failure for polling
             return False
 
     # =========================================================================
