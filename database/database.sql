@@ -1,7 +1,10 @@
 -- ============================================================================
 -- NEXORYN TECH - Database Schema (PostgreSQL)
--- Version: 2.0 - Optimized with snake_case, ARCA/AFIP integration, Remitos
+-- Version: 2.2 - Optimized with Smart Sync Version Stamp
 -- ============================================================================
+
+-- Acquire advisory lock to prevent concurrent schema updates from multiple instances
+SELECT pg_advisory_lock(543210);
 
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -735,12 +738,19 @@ AFTER INSERT OR UPDATE OR DELETE ON app.movimiento_articulo
 FOR EACH ROW EXECUTE FUNCTION app.fn_sync_stock_resumen();
 
 -- Initialize the summary table with current totals (Ensures consistency if data exists)
-INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
-SELECT id_articulo, stock_total 
-FROM app.v_stock_total
-ON CONFLICT (id_articulo) DO UPDATE 
-SET stock_total = EXCLUDED.stock_total, 
-    ultima_actualizacion = now();
+-- Initialize the summary table with current totals only if empty or missing data
+-- This prevents heavy recalculation on every startup
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app.articulo_stock_resumen LIMIT 1) THEN
+    INSERT INTO app.articulo_stock_resumen (id_articulo, stock_total)
+    SELECT id_articulo, stock_total 
+    FROM app.v_stock_total
+    ON CONFLICT (id_articulo) DO UPDATE 
+    SET stock_total = EXCLUDED.stock_total, 
+        ultima_actualizacion = now();
+  END IF;
+END $$;
 
 -- ============================================================================
 -- INDEXES
@@ -1618,3 +1628,15 @@ INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion) VALUES
   ('log_retencion_dias', '90', 'NUMBER', 'Días de retención antes de archivar y purgar logs'),
   ('log_directorio_archivo', 'logs_archive', 'PATH', 'Directorio donde se guardan los archivos de logs archivados')
 ON CONFLICT (clave) DO NOTHING;
+
+-- ============================================================================
+-- VERSION STAMP
+-- ============================================================================
+INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
+VALUES ('db_version', '2.2', 'TEXT', 'Versión actual de la base de datos')
+ON CONFLICT (clave) DO UPDATE 
+SET valor = '2.2';
+
+-- Release advisory lock
+SELECT pg_advisory_unlock(543210);
+

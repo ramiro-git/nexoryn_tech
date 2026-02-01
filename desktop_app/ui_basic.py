@@ -525,7 +525,70 @@ def _date_field(*args, **kwargs) -> ft.TextField:
 
 
 def main(page: ft.Page) -> None:
-    config = load_config()
+    # 1. Load config FIRST to ensure environment variables (DB_PASSWORD) are available for SchemaSync
+    try:
+        config = load_config()
+    except Exception as e:
+        page.add(ft.Text(f"Error loading configuration: {e}", color="red"))
+        page.update()
+        return
+
+    # --- EARLY SCHEMA SYNC (Added to prevent deadlocks) ---
+    # This runs BEFORE any database connection is opened.
+    try:
+        from desktop_app.services.schema_sync import SchemaSync
+        
+        # Pass db=None creates no connection pool.
+        # We assume schema_sync creates its own connection/subprocess.
+        schema_sync_svc = SchemaSync(
+            None, 
+            sql_path=PROJECT_ROOT / "database" / "database.sql", 
+            logs_dir=PROJECT_ROOT / "logs"
+        )
+        
+        if schema_sync_svc.needs_sync():
+            # Show a simple loading screen
+            page.clean()
+            page.add(
+                ft.Container(
+                    content=ft.Column([
+                        ft.ProgressRing(),
+                        ft.Text("Verificando y actualizando base de datos...", size=16)
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    alignment=ft.alignment.center,
+                    expand=True
+                )
+            )
+            page.update()
+            
+            result = schema_sync_svc.apply()
+            
+            if not result.success:
+                page.clean()
+                page.add(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Icon(ft.icons.ERROR_OUTLINE, color="red", size=50),
+                            ft.Text("Error crítico al actualizar base de datos", size=20, weight=ft.FontWeight.BOLD),
+                            ft.Text(result.error or "Error desconocido", color="red"),
+                            ft.Text("Revise 'database.sql' o la conexión."),
+                        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                        alignment=ft.alignment.center,
+                        expand=True
+                    )
+                )
+                page.update()
+                # Stop execution here
+                return
+
+            page.clean()
+            page.update()
+            
+    except Exception as e:
+        print(f"Warning: Schema sync check failed: {e}")
+    # -----------------------------------------------------
+    # Config already loaded at start of main
+
     db = Database(
         config.database_url,
         pool_min_size=config.db_pool_min,
@@ -7004,38 +7067,9 @@ def main(page: ft.Page) -> None:
                         )
                         return
 
-                try:
-                    from desktop_app.services.schema_sync import SchemaSync
-                except ImportError:
-                    from services.schema_sync import SchemaSync  # type: ignore
+                # Schema sync moved to application startup (see main())
+                # to prevent deadlocks with open DB connections.
 
-                schema_sync = SchemaSync(
-                    db,
-                    sql_path=PROJECT_ROOT / "database" / "database.sql",
-                    logs_dir=PROJECT_ROOT / "logs",
-                )
-                if schema_sync.needs_sync():
-                    # print("DEBUG: Closing DB pool to release locks...", flush=True)
-                    if db:
-                        db.close_pool()
-                    
-                    # print("DEBUG: Calling schema_sync.apply...", flush=True)
-                    result = schema_sync.apply(progress_callback=_schema_progress)
-                    # print(f"DEBUG: schema_sync returned: {result}", flush=True)
-                    
-                    # print("DEBUG: Reconnecting DB pool...", flush=True)
-                    if db:
-                        db.reconnect()
-
-                    if not result.success:
-                        _set_overlay_state(
-                            "Error actualizando esquema",
-                            result.error or "Fallo la sincronizacion.",
-                            progress=1.0,
-                            badge="ERROR",
-                            badge_color=COLOR_ERROR,
-                        )
-                        return
 
                 _hide_overlay()
                 login_container.disabled = False

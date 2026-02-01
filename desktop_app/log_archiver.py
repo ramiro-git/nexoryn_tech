@@ -144,6 +144,11 @@ class LogArchiver:
         """
         result = {"archived": 0, "deleted": 0, "file": None, "error": None}
         
+        # Validate DB connection
+        if not self.db or not hasattr(self.db, 'pool') or self.db.pool is None:
+            # print("[LogArchiver] No database connection active. Skipping archive run.") # Debug info
+            return result
+
         # Prevent concurrent runs
         if not self._lock.acquire(blocking=False):
             result["error"] = "Another archive operation is in progress"
