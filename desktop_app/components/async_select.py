@@ -53,8 +53,9 @@ class AsyncSelect(ft.Column):
         label_color: str = "#1E293B",
         label_size: int = 13,
         label_weight: ft.FontWeight = ft.FontWeight.BOLD,
+        horizontal_alignment: ft.CrossAxisAlignment = ft.CrossAxisAlignment.STRETCH,
     ):
-        super().__init__(spacing=2, expand=expand, width=width, disabled=disabled)
+        super().__init__(spacing=2, expand=expand, width=width, disabled=disabled, horizontal_alignment=horizontal_alignment)
         self.loader = loader
         if bgcolor is None:
             bgcolor = "#F1F5F9"
@@ -140,6 +141,7 @@ class AsyncSelect(ft.Column):
                         size=14,
                         weight=text_weight,
                         no_wrap=True,
+                        expand=True,
                     ),
                     ft.Icon(
                         ft.icons.ARROW_DROP_DOWN,

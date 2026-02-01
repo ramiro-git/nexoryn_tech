@@ -721,8 +721,7 @@ def main(page: ft.Page) -> None:
             shape=ft.RoundedRectangleBorder(radius=12),
             content=ft.Container(
                 padding=24,
-                width=850, # Default wide
-                height=850, # Increased from 650 to handle larger forms
+                # Flexible sizing based on content
                 content=ft.Column([
                     _form_header,
                     _form_content_area,
@@ -7831,7 +7830,7 @@ def main(page: ft.Page) -> None:
         dropdown_entidad = AsyncSelect(
             label="Entidad *",
             loader=entity_loader,
-            width=300,
+            width=500,
             on_change=lambda _: _update_entidad_info(None),
             initial_items=ent_initial_items
         )
@@ -7842,12 +7841,12 @@ def main(page: ft.Page) -> None:
         dropdown_lista_global = AsyncSelect(
             label="Lista de Precios (Global)", 
             loader=price_list_loader,
-            width=220,
+            width=500,
             initial_items=lista_initial_items,
         )
         
         field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs)
-        field_direccion = ft.TextField(label="Dirección de Entrega *", width=500); _style_input(field_direccion)
+        field_direccion = ft.TextField(label="Dirección de Entrega *", expand=True); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
         _style_input(field_numero)
         field_descuento = ft.TextField(label="Desc. %", width=100, value="0"); _style_input(field_descuento)
@@ -8059,7 +8058,7 @@ def main(page: ft.Page) -> None:
             lista_drop = AsyncSelect(
                 label="Lista",
                 loader=item_price_list_loader,
-                width=140,
+                width=220,
                 initial_items=lista_initial_items,
             )
             cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field)
@@ -8410,7 +8409,7 @@ def main(page: ft.Page) -> None:
                     ft.Text("Ítems", weight=ft.FontWeight.BOLD),
                     ft.Container(
                         content=lines_container,
-                        height=400, # Height for the items list specifically
+                        height=500, # Height for the items list specifically
                         border=ft.border.all(1, "#E2E8F0"),
                         border_radius=8,
                     ),
@@ -8457,7 +8456,7 @@ def main(page: ft.Page) -> None:
                 spacing=15,
             ),
             padding=ft.padding.all(25),
-            width=900,
+            width=1600,
             bgcolor="white",
             border_radius=12,
         )
