@@ -7123,12 +7123,12 @@ def main(page: ft.Page) -> None:
         
         # Successful login
         current_user = user
-        CURRENT_USER_ROLE = user.get("rol", "EMPLEADO")
+        CURRENT_USER_ROLE = user.get("rol") or "EMPLEADO"
         logout_logged = False
         db.set_context(user["id"], local_ip)
         
         # Update sidebar info
-        sidebar_user_name.value = user["nombre"]
+        sidebar_user_name.value = user.get("nombre") or "Usuario"
         sidebar_user_role.value = f"Rol: {CURRENT_USER_ROLE}"
         apply_role_permissions()
         
@@ -7607,7 +7607,7 @@ def main(page: ft.Page) -> None:
 
     # User info display (updated after login)
     sidebar_user_name = ft.Text("Usuario", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
-    sidebar_user_role = ft.Text("Sesión activa", size=10, color=COLOR_SIDEBAR_TEXT)
+    sidebar_user_role = ft.Text("Sesión inactiva", size=10, color=COLOR_SIDEBAR_TEXT)
 
     sidebar_list_view = ft.ListView(
         controls=[
