@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
+import ssl
+from requests.adapters import HTTPAdapter
 from zeep import Client, Settings
 from zeep.exceptions import Fault
 from zeep.helpers import serialize_object
@@ -21,7 +23,7 @@ from zeep.transports import Transport
 WSAA_WSDL_HOMO = "https://wsaahomo.afip.gov.ar/ws/services/LoginCms?WSDL"
 WSAA_WSDL_PROD = "https://wsaa.afip.gov.ar/ws/services/LoginCms?WSDL"
 WSFE_WSDL_HOMO = "https://wswhomo.afip.gov.ar/wsfev1/service.asmx?WSDL"
-WSFE_WSDL_PROD = "https://wsfe.afip.gov.ar/wsfev1/service.asmx?WSDL"
+WSFE_WSDL_PROD = "https://servicios1.afip.gov.ar/wsfev1/service.asmx?WSDL"
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,15 @@ class AfipToken:
     token: str
     sign: str
     expires_at: dt.datetime
+
+
+class LegacySslAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.set_ciphers("DEFAULT@SECLEVEL=0")
+        ctx.check_hostname = False
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
 
 
 class AfipService:
@@ -101,6 +112,8 @@ class AfipService:
         self._ta_cache_path: Optional[Path] = None
 
         self._session = requests.Session()
+        adapter = LegacySslAdapter()
+        self._session.mount("https://", adapter)
         self._transport = Transport(session=self._session, timeout=30)
         self._settings = Settings(strict=False, xml_huge_tree=True)
 
