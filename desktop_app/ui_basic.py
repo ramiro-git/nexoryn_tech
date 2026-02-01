@@ -11,6 +11,7 @@ import sys
 import time
 import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import quote
 from venv import logger
 
 import flet as ft
@@ -4094,7 +4095,7 @@ def main(page: ft.Page) -> None:
             show_toast("Solicitando CAE...", kind="info")
             doc_id = int(doc_row["id"])
             codigo_afip = int(doc_row.get("codigo_afip"))
-            punto_venta = 1
+            punto_venta = int(getattr(config, "afip_punto_venta", 1) or 1)
             last = afip.get_last_voucher_number(punto_venta, codigo_afip)
             next_num = last + 1
 
@@ -4168,9 +4169,12 @@ def main(page: ft.Page) -> None:
 
             res = afip.authorize_invoice(invoice_data)
             if res.get("success"):
-                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "")).strip() if ch.isdigit())
+                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "") or config.afip_cuit or "").strip() if ch.isdigit())
+                cae = res.get("CAE") or res.get("cae")
                 qr_data = None
                 try:
+                    if not cae:
+                        raise ValueError("CAE ausente para generar QR.")
                     fecha_doc = str(doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
                     qr_payload = {
                         "ver": 1,
@@ -4185,13 +4189,15 @@ def main(page: ft.Page) -> None:
                         "tipoDocRec": int(doc_tipo),
                         "nroDocRec": int(doc_nro),
                         "tipoCodAut": "E",
-                        "codAut": res.get("CAE"),
+                        "codAut": cae,
                     }
                     qr_json = json.dumps(qr_payload, separators=(",", ":"), ensure_ascii=False)
                     qr_base64 = base64.b64encode(qr_json.encode("utf-8")).decode("ascii")
-                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_base64}"
+                    qr_param = quote(qr_base64, safe="")
+                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_param}"
                 except Exception:
                     qr_data = None
+                    show_toast("No se pudo generar el QR fiscal del comprobante.", kind="warning")
 
                 db_local.update_document_afip_data(
                     doc_id,
@@ -4289,7 +4295,7 @@ def main(page: ft.Page) -> None:
             show_toast("Solicitando CAE...", kind="info")
             doc_id = int(doc_row["id"])
             codigo_afip = int(doc_row.get("codigo_afip"))
-            punto_venta = 1
+            punto_venta = int(getattr(config, "afip_punto_venta", 1) or 1)
             last = afip.get_last_voucher_number(punto_venta, codigo_afip)
             next_num = last + 1
 
@@ -4363,9 +4369,12 @@ def main(page: ft.Page) -> None:
 
             res = afip.authorize_invoice(invoice_data)
             if res.get("success"):
-                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "")).strip() if ch.isdigit())
+                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "") or config.afip_cuit or "").strip() if ch.isdigit())
+                cae = res.get("CAE") or res.get("cae")
                 qr_data = None
                 try:
+                    if not cae:
+                        raise ValueError("CAE ausente para generar QR.")
                     fecha_doc = str(doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
                     qr_payload = {
                         "ver": 1,
@@ -4380,13 +4389,15 @@ def main(page: ft.Page) -> None:
                         "tipoDocRec": int(doc_tipo),
                         "nroDocRec": int(doc_nro),
                         "tipoCodAut": "E",
-                        "codAut": res.get("CAE"),
+                        "codAut": cae,
                     }
                     qr_json = json.dumps(qr_payload, separators=(",", ":"), ensure_ascii=False)
                     qr_base64 = base64.b64encode(qr_json.encode("utf-8")).decode("ascii")
-                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_base64}"
+                    qr_param = quote(qr_base64, safe="")
+                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_param}"
                 except Exception:
                     qr_data = None
+                    show_toast("No se pudo generar el QR fiscal del comprobante.", kind="warning")
 
                 db_local.update_document_afip_data(
                     doc_id,

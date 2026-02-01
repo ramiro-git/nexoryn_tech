@@ -41,6 +41,7 @@ PG_BIN_PATH="C:\Program Files\PostgreSQL\16\bin"
 AFIP_CUIT=20XXXXXXXX9
 AFIP_CERT_PATH="C:/Nexoryn/Certs/empresa.crt"
 AFIP_KEY_PATH="C:/Nexoryn/Certs/empresa.key"
+AFIP_PUNTO_VENTA=3
 AFIP_PRODUCTION=False
 ```
 

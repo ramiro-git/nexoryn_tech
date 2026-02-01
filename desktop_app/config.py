@@ -17,6 +17,7 @@ class AppConfig:
     afip_cert: str = None
     afip_key: str = None
     afip_prod: bool = False
+    afip_punto_venta: int = 1
     pg_bin_path: str = None
     config_dir: str = None
 
@@ -172,6 +173,7 @@ def load_config() -> AppConfig:
 
     afip_prod = _read_afip_production_flag()
     afip_cuit, afip_cert, afip_key = _select_afip_credentials(afip_prod, config_source)
+    afip_punto_venta = _read_int_env("AFIP_PUNTO_VENTA", 1, min_value=1)
     
     return AppConfig(
         database_url=database_url,
@@ -181,6 +183,7 @@ def load_config() -> AppConfig:
         afip_cert=afip_cert,
         afip_key=afip_key,
         afip_prod=afip_prod,
+        afip_punto_venta=afip_punto_venta,
         pg_bin_path=os.getenv("PG_BIN_PATH"),
         config_dir=str(config_source)
     )
