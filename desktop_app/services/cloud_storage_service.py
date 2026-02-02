@@ -153,38 +153,38 @@ class CloudStorageService:
         # Google Drive no está implementado. Usar carpeta de sincronización LOCAL como fallback
         sync_dir = self.config.get('sync_dir')
         
-        if sync_dir:
-            # Use LOCAL copy as fallback
+        if not sync_dir or not str(sync_dir).strip():
+            # CRÍTICO: No marcar como exitoso si no hay destino configurado
+            mensaje = (
+                "ERROR DE SEGURIDAD: Google Drive no está implementado y no hay carpeta de sincronización configurada. "
+                "Configura 'sync_dir' en la configuración de nube antes de hacer backups."
+            )
+            self.logger.error(mensaje)
+            fin = datetime.now()
+            return CloudUploadResult(
+                exitoso=False,
+                url=None,
+                mensaje=mensaje,
+                tiempo_segundos=(fin - inicio).total_seconds(),
+                tamaño_bytes=0
+            )
+        
+        # Use LOCAL copy as fallback
+        try:
             result = self._copy_to_local_folder(backup_file, backup_id)
             # Change the message to indicate it was copied to sync folder
             result.mensaje = f"Backup copiado a carpeta de sincronización: {sync_dir} (Google Drive no está implementado)"
             return result
-        else:
-            # No sync dir, return stub response
-            try:
-                self.logger.info(f"Subiendo backup a Google Drive: {backup_file.name}")
-                
-                fin = datetime.now()
-                
-                self._update_backup_cloud_status(backup_id, True, None, "GOOGLE_DRIVE")
-                
-                return CloudUploadResult(
-                    exitoso=True,
-                    url=f"gdrive:///{backup_file.name}",
-                    mensaje=f"Backup subido a Google Drive (simulado - sin carpeta de sincronización)",
-                    tiempo_segundos=(fin - inicio).total_seconds(),
-                    tamaño_bytes=backup_file.stat().st_size
-                )
-                
-            except Exception as e:
-                fin = datetime.now()
-                return CloudUploadResult(
-                    exitoso=False,
-                    url=None,
-                    mensaje=f"Error subiendo a Google Drive: {str(e)}",
-                    tiempo_segundos=(fin - inicio).total_seconds(),
-                    tamaño_bytes=0
-                )
+        except Exception as e:
+            fin = datetime.now()
+            self.logger.error(f"Error subiendo a Google Drive (fallback LOCAL): {e}", exc_info=True)
+            return CloudUploadResult(
+                exitoso=False,
+                url=None,
+                mensaje=f"Error subiendo a Google Drive: {str(e)}",
+                tiempo_segundos=(fin - inicio).total_seconds(),
+                tamaño_bytes=0
+            )
     
     def _upload_to_s3(self, backup_file: Path, backup_id: int) -> CloudUploadResult:
         inicio = datetime.now()
@@ -192,38 +192,38 @@ class CloudStorageService:
         # S3 no está implementado. Usar carpeta de sincronización LOCAL como fallback
         sync_dir = self.config.get('sync_dir')
         
-        if sync_dir:
-            # Use LOCAL copy as fallback
+        if not sync_dir or not str(sync_dir).strip():
+            # CRÍTICO: No marcar como exitoso si no hay destino configurado
+            mensaje = (
+                "ERROR DE SEGURIDAD: S3 no está implementado y no hay carpeta de sincronización configurada. "
+                "Configura 'sync_dir' en la configuración de nube antes de hacer backups."
+            )
+            self.logger.error(mensaje)
+            fin = datetime.now()
+            return CloudUploadResult(
+                exitoso=False,
+                url=None,
+                mensaje=mensaje,
+                tiempo_segundos=(fin - inicio).total_seconds(),
+                tamaño_bytes=0
+            )
+        
+        # Use LOCAL copy as fallback
+        try:
             result = self._copy_to_local_folder(backup_file, backup_id)
             # Change the message to indicate it was copied to sync folder
             result.mensaje = f"Backup copiado a carpeta de sincronización: {sync_dir} (S3 no está implementado)"
             return result
-        else:
-            # No sync dir, return stub response
-            try:
-                self.logger.info(f"Subiendo backup a S3: {backup_file.name}")
-                
-                fin = datetime.now()
-                
-                self._update_backup_cloud_status(backup_id, True, None, "S3")
-                
-                return CloudUploadResult(
-                    exitoso=True,
-                    url=f"s3://{self.config.get('s3_bucket')}/{backup_file.name}",
-                    mensaje=f"Backup subido a S3 (simulado - sin carpeta de sincronización)",
-                    tiempo_segundos=(fin - inicio).total_seconds(),
-                    tamaño_bytes=backup_file.stat().st_size
-                )
-                
-            except Exception as e:
-                fin = datetime.now()
-                return CloudUploadResult(
-                    exitoso=False,
-                    url=None,
-                    mensaje=f"Error subiendo a S3: {str(e)}",
-                    tiempo_segundos=(fin - inicio).total_seconds(),
-                    tamaño_bytes=0
-                )
+        except Exception as e:
+            fin = datetime.now()
+            self.logger.error(f"Error subiendo a S3 (fallback LOCAL): {e}", exc_info=True)
+            return CloudUploadResult(
+                exitoso=False,
+                url=None,
+                mensaje=f"Error subiendo a S3: {str(e)}",
+                tiempo_segundos=(fin - inicio).total_seconds(),
+                tamaño_bytes=0
+            )
     
     def _update_backup_cloud_status(self, backup_id: int, subido: bool, url: Optional[str], proveedor: str):
         query = """
