@@ -1769,6 +1769,14 @@ class GenericTable:
 
         current_val = row.get(col.key)
         
+        # Apply formatter if available to display value
+        display_val = current_val
+        if col.formatter:
+            try:
+                display_val = col.formatter(current_val, row)
+            except:
+                display_val = current_val
+        
         # Variable to store the new value from the editor
         new_val_holder = {"value": current_val}
         
@@ -1916,8 +1924,12 @@ class GenericTable:
             )
 
         self._edit_dialog.title = ft.Text(f"Editar {col.label}")
+        # Apply boolean formatting if formatter didn't handle it yet
+        final_display_val = display_val
+        if isinstance(current_val, bool) and display_val == current_val:
+            final_display_val = "Verdadero" if current_val else "Falso"
         self._edit_dialog.content = ft.Column([
-            ft.Text(f"Valor actual: {current_val if current_val is not None else '—'}"),
+            ft.Text(f"Valor actual: {final_display_val if current_val is not None else '—'}"),
             input_control
         ], tight=True, width=350)
         
