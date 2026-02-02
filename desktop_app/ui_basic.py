@@ -306,6 +306,43 @@ def _maybe_set(obj: Any, name: str, value: Any) -> None:
             return
 
 
+def _safe_update_control(control: Any) -> bool:
+    """
+    Safely update a control if it's attached to the page.
+    
+    Returns True if update was successful, False otherwise.
+    Prevents "Text Control must be added to the page first" errors.
+    """
+    if control is None:
+        return False
+    
+    try:
+        # Check if control has a page reference (is attached to page)
+        if not hasattr(control, 'page') or control.page is None:
+            return False
+        
+        # Try to update the control
+        control.update()
+        return True
+    except Exception as e:
+        # Log but don't raise - many controls may not be on page yet
+        logger.debug(f"Could not update control: {type(control).__name__} - {e}")
+        return False
+
+
+def _safe_update_multiple(*controls: Any) -> int:
+    """
+    Safely update multiple controls.
+    
+    Returns the number of controls successfully updated.
+    """
+    updated_count = 0
+    for control in controls:
+        if _safe_update_control(control):
+            updated_count += 1
+    return updated_count
+
+
 # Flet Tab API compatibility across versions.
 try:
     _TAB_PARAMS = set(inspect.signature(ft.Tab).parameters)
@@ -645,11 +682,13 @@ def main(page: ft.Page) -> None:
             login_brand_logo.padding = 20
         
         try:
-            sidebar_brand_name.update()
-            sidebar_brand_slogan.update()
-            sidebar_brand_logo.update()
-            login_brand_name.update()
-            login_brand_logo.update()
+            _safe_update_multiple(
+                sidebar_brand_name,
+                sidebar_brand_slogan,
+                sidebar_brand_logo,
+                login_brand_name,
+                login_brand_logo
+            )
         except Exception as e:
             logger.warning(f"Falló al actualizar elementos de marca: {e}")
 
@@ -1251,9 +1290,11 @@ def main(page: ft.Page) -> None:
         articulos_advanced_costo_min_field.value = str(s.start_value)
         articulos_advanced_costo_max_field.value = str(s.end_value)
         try: 
-            articulos_advanced_costo_label.update()
-            articulos_advanced_costo_min_field.update()
-            articulos_advanced_costo_max_field.update()
+            _safe_update_multiple(
+                articulos_advanced_costo_label,
+                articulos_advanced_costo_min_field,
+                articulos_advanced_costo_max_field
+            )
         except Exception as e:
             logger.warning(f"Falló al actualizar UI de filtro de costo: {e}")
 
@@ -1265,10 +1306,12 @@ def main(page: ft.Page) -> None:
         articulos_advanced_costo_min_field.value = str(s.min)
         articulos_advanced_costo_max_field.value = str(s.max)
         try: 
-            s.update()
-            articulos_advanced_costo_label.update()
-            articulos_advanced_costo_min_field.update()
-            articulos_advanced_costo_max_field.update()
+            _safe_update_multiple(
+                s,
+                articulos_advanced_costo_label,
+                articulos_advanced_costo_min_field,
+                articulos_advanced_costo_max_field
+            )
         except Exception as e:
             logger.warning(f"Falló al resetear filtro de costo: {e}")
 
@@ -1349,9 +1392,11 @@ def main(page: ft.Page) -> None:
         articulos_advanced_stock_min_field.value = str(int(s.start_value))
         articulos_advanced_stock_max_field.value = str(int(s.end_value))
         try: 
-            articulos_advanced_stock_label.update()
-            articulos_advanced_stock_min_field.update()
-            articulos_advanced_stock_max_field.update()
+            _safe_update_multiple(
+                articulos_advanced_stock_label,
+                articulos_advanced_stock_min_field,
+                articulos_advanced_stock_max_field
+            )
         except Exception as e:
             logger.warning(f"Falló al actualizar UI de filtro de stock: {e}")
 
@@ -1363,10 +1408,12 @@ def main(page: ft.Page) -> None:
         articulos_advanced_stock_min_field.value = str(int(s.min))
         articulos_advanced_stock_max_field.value = str(int(s.max))
         try:
-            s.update()
-            articulos_advanced_stock_label.update()
-            articulos_advanced_stock_min_field.update()
-            articulos_advanced_stock_max_field.update()
+            _safe_update_multiple(
+                s,
+                articulos_advanced_stock_label,
+                articulos_advanced_stock_min_field,
+                articulos_advanced_stock_max_field
+            )
         except Exception as e:
             logger.warning(f"Falló al resetear filtro de stock: {e}")
 
@@ -5091,7 +5138,7 @@ def main(page: ft.Page) -> None:
     def on_range_change(e):
         s = e.control
         range_label.value = f"Total: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
-        try: range_label.update()
+        try: _safe_update_control(range_label)
         except Exception as e:
             logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -5118,8 +5165,7 @@ def main(page: ft.Page) -> None:
         doc_adv_total.end_value = max_total
         range_label.value = f"Total: entre $0 y ${max_total:,.0f}"
         try:
-            doc_adv_total.update()
-            range_label.update()
+            _safe_update_multiple(doc_adv_total, range_label)
         except Exception as e:
             logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -5574,7 +5620,7 @@ def main(page: ft.Page) -> None:
     def on_pago_monto_change(e):
         s = e.control
         monto_range_label.value = f"Monto: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
-        try: monto_range_label.update()
+        try: _safe_update_control(monto_range_label)
         except Exception as e:
             logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -5600,8 +5646,7 @@ def main(page: ft.Page) -> None:
         pago_adv_monto.end_value = max_monto
         monto_range_label.value = f"Monto: entre $0 y ${max_monto:,.0f}"
         try:
-            pago_adv_monto.update()
-            monto_range_label.update()
+            _safe_update_multiple(pago_adv_monto, monto_range_label)
         except Exception as e:
             logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -5706,7 +5751,7 @@ def main(page: ft.Page) -> None:
                 pago_monto.value = str(doc_totals[str(val)]).replace(".", ",")
             else:
                 pago_monto.value = ""
-            try: pago_monto.update()
+            try: _safe_update_control(pago_monto)
             except Exception as e:
                 logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -5734,8 +5779,7 @@ def main(page: ft.Page) -> None:
                 pago_documento.disabled = True
             
             try:
-                pago_documento.update()
-                pago_monto.update()
+                _safe_update_multiple(pago_documento, pago_monto)
             except Exception as e:
                 logger.warning(f"Falló al actualizar interfaz: {e}")
 
