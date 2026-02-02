@@ -64,25 +64,28 @@ class BackupProfessionalView:
                 print(f"Error purgando backups inválidos: {e}")
         return self._backup_manager
     
+    def _load_cloud_config(self) -> Dict:
+        """Carga y retorna la configuración de nube desde la DB."""
+        cloud_config = {}
+        try:
+            stored_cloud = self.db.get_config("backup_cloud_config")
+            if stored_cloud:
+                if isinstance(stored_cloud, str):
+                    cloud_config = json.loads(stored_cloud)
+                elif isinstance(stored_cloud, dict):
+                    cloud_config = stored_cloud
+        except Exception as e:
+            print(f"Error cargando config de nube: {e}")
+        return cloud_config
+
     @property
     def cloud_service(self):
         if self._cloud_service is None:
             from desktop_app.services.cloud_storage_service import CloudStorageService
             
             # Cargar configuración desde la DB
-            cloud_config = {}
-            provider = 'LOCAL'
-            try:
-                stored_cloud = self.db.get_config("backup_cloud_config")
-                if stored_cloud:
-                    if isinstance(stored_cloud, str):
-                        cloud_config = json.loads(stored_cloud)
-                    elif isinstance(stored_cloud, dict):
-                        cloud_config = stored_cloud
-                    
-                    provider = cloud_config.get('provider', 'LOCAL')
-            except Exception as e:
-                print(f"Error cargando config de nube para el servicio: {e}")
+            cloud_config = self._load_cloud_config()
+            provider = cloud_config.get('provider', 'LOCAL')
             
             self._cloud_service = CloudStorageService(self.db, provider=provider, config=cloud_config)
         return self._cloud_service
@@ -127,6 +130,17 @@ class BackupProfessionalView:
         else:
             return "próximamente"
     
+    def _load_cloud_config_initial(self):
+        """Carga la configuración de nube en la UI al inicializar."""
+        try:
+            cloud_config = self._load_cloud_config()
+            if cloud_config:
+                self.cloud_provider.value = cloud_config.get('provider', 'LOCAL')
+                self.sync_dir.value = cloud_config.get('sync_dir', '')
+                self.enable_sync.value = cloud_config.get('enabled', False)
+        except Exception as e:
+            print(f"Error cargando configuración de nube al inicializar: {e}")
+
     def _setup_view(self):
         # Metricas
         self.total_backups_text = ft.Text("—", size=24, weight=ft.FontWeight.BOLD, color=self.COLOR_TEXT)
@@ -331,6 +345,9 @@ class BackupProfessionalView:
             label="Habilitar sincronización en la nube",
             value=False
         )
+        
+        # Cargar configuración de nube guardada
+        self._load_cloud_config_initial()
         
         # Logs
         self.logs_table = ft.DataTable(
@@ -1013,13 +1030,15 @@ class BackupProfessionalView:
                 self.retention_dif.value = str(retention.get('dif_weeks', 8))
                 self.retention_inc.value = str(retention.get('inc_days', 7))
             
-            # Nube
-            cloud = self.db.get_config("backup_cloud_config")
-            if cloud:
-                if isinstance(cloud, str): cloud = json.loads(cloud)
-                self.enable_sync.value = cloud.get('enabled', False)
-                self.cloud_provider.value = cloud.get('provider', 'LOCAL')
-                self.sync_dir.value = cloud.get('sync_dir', '')
+            # Nube (volver a cargar para asegurar que está al día)
+            try:
+                cloud_config = self._load_cloud_config()
+                if cloud_config:
+                    self.enable_sync.value = cloud_config.get('enabled', False)
+                    self.cloud_provider.value = cloud_config.get('provider', 'LOCAL')
+                    self.sync_dir.value = cloud_config.get('sync_dir', '')
+            except Exception as e:
+                self.logger.error(f"Error cargando config de nube en _load_configs: {e}")
             
             self.page.update()
         except Exception as e:
@@ -1072,13 +1091,20 @@ class BackupProfessionalView:
                 'provider': self.cloud_provider.value
             }
             
+            # Validar que se especifique carpeta de sync si está habilitado
             if self.enable_sync.value and not self.sync_dir.value:
                 self.show_message("Especifica la carpeta de sincronización", "warning")
                 return
 
-            self.db.set_config("backup_cloud_config", json.dumps(cloud_config), tipo='TEXT', descripcion='Configuración de sincronización en la nube')
+            # Guardar configuración persistentemente en la DB
+            self.db.set_config(
+                "backup_cloud_config", 
+                json.dumps(cloud_config), 
+                tipo='TEXT', 
+                descripcion='Configuración de sincronización en la nube'
+            )
             
-            # Resetear el servicio para que tome la nueva configuración
+            # Resetear el servicio para que tome la nueva configuración en el próximo acceso
             self._cloud_service = None
             
             self.show_message(f"Configuración de nube guardada con éxito", "success")
