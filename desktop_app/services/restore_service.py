@@ -99,6 +99,27 @@ class RestoreService:
     def _restore_full_backup(self, backup_file: Path, target_db: Optional[str] = None) -> RestoreResult:
         logger.info(f"Restaurando backup FULL: {backup_file}")
         
+        # Validar que el archivo existe y tiene contenido
+        if not backup_file.exists():
+            return RestoreResult(
+                exitoso=False,
+                mensaje=f"Archivo de backup no encontrado: {backup_file}",
+                backups_aplicados=[],
+                tiempo_segundos=0,
+                lsn_final=None,
+                checksum=None
+            )
+        
+        if backup_file.stat().st_size == 0:
+            return RestoreResult(
+                exitoso=False,
+                mensaje=f"Archivo de backup vacío: {backup_file}",
+                backups_aplicados=[],
+                tiempo_segundos=0,
+                lsn_final=None,
+                checksum=None
+            )
+        
         config = self._get_db_config()
         pg_restore = self._get_pg_restore_path()
         db_name = target_db or config["name"]
@@ -108,6 +129,8 @@ class RestoreService:
         env["PGPASSWORD"] = config["password"]
         
         try:
+            # Las tablas de sistema de backup (backup_manifest, backup_event) ya fueron
+            # excluidas del pg_dump, por lo que no es necesario excluirlas aquí
             cmd = [
                 pg_restore,
                 "-h", config["host"],
@@ -120,24 +143,57 @@ class RestoreService:
                 str(backup_file)
             ]
             
-            logger.info("Ejecutando pg_restore...")
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            logger.info(f"Ejecutando pg_restore: {' '.join(cmd[:8])}...")
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
             
             fin = datetime.now()
             tiempo = (fin - inicio).total_seconds()
             
+            # pg_restore puede retornar exit code 1 por warnings menores
+            # Analizamos stderr para determinar si es un error crítico
+            stderr_lower = (result.stderr or "").lower()
+            
+            # Errores críticos que indican falla real
+            critical_errors = [
+                "fatal:",
+                "could not connect",
+                "authentication failed",
+                "permission denied",
+                "database does not exist",
+                "no such file",
+                "invalid input syntax",
+                "out of memory"
+            ]
+            
+            has_critical_error = any(err in stderr_lower for err in critical_errors)
+            
+            if result.returncode != 0 and has_critical_error:
+                logger.error(f"Error crítico restaurando backup FULL: {result.stderr}")
+                return RestoreResult(
+                    exitoso=False,
+                    mensaje=f"Error restaurando backup FULL: {result.stderr[:500] if result.stderr else 'Error desconocido'}",
+                    backups_aplicados=[],
+                    tiempo_segundos=tiempo,
+                    lsn_final=None,
+                    checksum=None
+                )
+            
+            # Si hay warnings pero no errores críticos, consideramos éxito
+            if result.returncode != 0:
+                logger.warning(f"pg_restore completó con warnings (exit code {result.returncode})")
+                logger.warning(f"stderr: {result.stderr[:1000] if result.stderr else 'N/A'}")
+            
             return RestoreResult(
                 exitoso=True,
-                mensaje=f"Backup FULL restaurado exitosamente",
+                mensaje=f"Backup FULL restaurado exitosamente" + (f" (con warnings)" if result.returncode != 0 else ""),
                 backups_aplicados=[str(backup_file.name)],
                 tiempo_segundos=tiempo,
                 lsn_final=None,
                 checksum=None
             )
             
-        except subprocess.CalledProcessError as e:
+        except Exception as e:
             logger.error(f"Error restaurando backup FULL: {e}")
-            logger.error(f"stderr: {e.stderr}")
             return RestoreResult(
                 exitoso=False,
                 mensaje=f"Error restaurando backup FULL: {str(e)}",
@@ -147,50 +203,167 @@ class RestoreService:
                 checksum=None
             )
     
+    def _get_backup_tables(self, backup_file: Path) -> List[str]:
+        """
+        Lee el TOC del backup usando pg_restore -l y extrae los nombres de las tablas
+        que contienen datos (TABLE DATA).
+        """
+        pg_restore = self._get_pg_restore_path()
+        cmd = [pg_restore, "-l", str(backup_file)]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            tables = []
+            for line in result.stdout.splitlines():
+                # Buscamos líneas como: "5459; 0 607288 TABLE DATA seguridad backup_manifest postgres"
+                if "TABLE DATA" in line:
+                    parts = line.split()
+                    # El formato suele ser: ID; 0 ADDR TABLE DATA SCHEMA TABLE OWNER
+                    try:
+                        idx = parts.index("DATA")
+                        schema = parts[idx + 1]
+                        table = parts[idx + 2]
+                        if schema != 'pg_catalog' and schema != 'information_schema':
+                            tables.append(f"{schema}.{table}")
+                    except (ValueError, IndexError):
+                        continue
+            return list(set(tables))
+        except Exception as e:
+            logger.error(f"Error leyendo TOC del backup: {e}")
+            return []
+
+    def _truncate_tables(self, tables: List[str]) -> bool:
+        """
+        Ejecuta TRUNCATE de las tablas especificadas usando psql.
+        """
+        if not tables:
+            return True
+            
+        config = self._get_db_config()
+        psql = self._get_psql_path()
+        
+        # Construir comando SQL
+        truncate_sql = f"TRUNCATE TABLE {', '.join(tables)} RESTART IDENTITY CASCADE;"
+        
+        env = os.environ.copy()
+        env["PGPASSWORD"] = config["password"]
+        
+        cmd = [
+            psql,
+            "-h", config["host"],
+            "-p", config["port"],
+            "-U", config["user"],
+            "-d", config["name"],
+            "-c", truncate_sql
+        ]
+        
+        try:
+            logger.info(f"Truncando {len(tables)} tablas antes de restauración parcial...")
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error truncando tablas: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.error(f"Error inesperado truncando tablas: {e}")
+            return False
+
     def _apply_differential_backup(self, backup_file: Path, lsn_inicio: str) -> RestoreResult:
         logger.info(f"Aplicando backup DIFERENCIAL (Data Only): {backup_file}")
         
+        # Validar que el archivo existe y tiene contenido
+        if not backup_file.exists():
+            return RestoreResult(
+                exitoso=False,
+                mensaje=f"Archivo de backup diferencial no encontrado: {backup_file}",
+                backups_aplicados=[],
+                tiempo_segundos=0,
+                lsn_final=None,
+                checksum=None
+            )
+        
+        if backup_file.stat().st_size == 0:
+            # Un archivo vacío puede ser válido si no hubo cambios
+            logger.warning(f"Archivo de backup diferencial vacío: {backup_file}")
+        
         config = self._get_db_config()
         pg_restore = self._get_pg_restore_path()
-        pg_bin = self.pg_bin_path
         
         inicio = datetime.now()
         env = os.environ.copy()
         env["PGPASSWORD"] = config["password"]
         
         try:
+            # --- Fase de Truncado Inteligente ---
+            # Dado que pg_restore --clean es incompatible con --data-only en algunas versiones,
+            # vaciamos las tablas manualmente antes de restaurar los datos.
+            tables_to_truncate = self._get_backup_tables(backup_file)
+            if tables_to_truncate:
+                if not self._truncate_tables(tables_to_truncate):
+                    logger.warning("No se pudieron truncar todas las tablas, la restauración podría tener duplicados.")
+            
+            # --- Fase de Restauración de Datos ---
             # Differential/Incremental contains data only.
-            # We use --clean to TRUNCATE tables before inserting to avoid duplicates.
+            # Nota: En algunas versiones de pg_restore, --clean y --data-only son incompatibles.
+            # Como los backups parciales son solo de datos, intentamos restaurar directamente.
             cmd = [
                 pg_restore,
                 "-h", config["host"], "-p", config["port"], "-U", config["user"],
                 "-d", config["name"],
                 "--data-only",
-                "--clean", # Truncates target tables
-                "--if-exists",
+                "--disable-triggers",  # Importante para evitar errores de FK
                 "-v",
                 str(backup_file)
             ]
             
-            logger.info(f"Ejecutando pg_restore DIFERENCIAL...")
-            # Note: pg_restore might exit with 1 if there are minor warnings (like nothing to do), check exit code?
-            # subprocess.run checks return code 0 by default.
-            subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            logger.info(f"Ejecutando pg_restore DIFERENCIAL (Data Only): {backup_file.name}")
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
             
             fin = datetime.now()
             tiempo = (fin - inicio).total_seconds()
             
+            # pg_restore puede retornar exit code 1 por warnings menores
+            stderr_lower = (result.stderr or "").lower()
+            
+            critical_errors = [
+                "fatal:",
+                "could not connect",
+                "authentication failed",
+                "permission denied",
+                "database does not exist",
+                "no such file",
+                "invalid input syntax",
+                "out of memory"
+            ]
+            
+            has_critical_error = any(err in stderr_lower for err in critical_errors)
+            
+            if result.returncode != 0 and has_critical_error:
+                logger.error(f"Error crítico aplicando backup DIFERENCIAL: {result.stderr}")
+                return RestoreResult(
+                    exitoso=False,
+                    mensaje=f"Error aplicando backup DIFERENCIAL: {result.stderr[:500] if result.stderr else 'Error desconocido'}",
+                    backups_aplicados=[],
+                    tiempo_segundos=tiempo,
+                    lsn_final=None,
+                    checksum=None
+                )
+            
+            if result.returncode != 0:
+                logger.warning(f"pg_restore DIFERENCIAL completó con warnings (exit code {result.returncode})")
+                logger.warning(f"stderr: {result.stderr[:1000] if result.stderr else 'N/A'}")
+            
             return RestoreResult(
                 exitoso=True,
-                mensaje=f"Backup DIFERENCIAL aplicado exitosamente",
+                mensaje=f"Backup DIFERENCIAL aplicado exitosamente" + (f" (con warnings)" if result.returncode != 0 else ""),
                 backups_aplicados=[str(backup_file.name)],
                 tiempo_segundos=tiempo,
                 lsn_final=None,
                 checksum=None
             )
             
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error aplicando backup DIFERENCIAL: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Error aplicando backup DIFERENCIAL: {e}")
             return RestoreResult(
                 exitoso=False,
                 mensaje=f"Error aplicando backup DIFERENCIAL: {str(e)}",

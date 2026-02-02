@@ -32,7 +32,17 @@ class BackupInfo:
 class BackupIncrementalService:
     def __init__(self, db, backup_dir: str = "backups_incrementales", pg_bin_path: Optional[str] = None):
         self.db = db
-        self.backup_dir = Path(backup_dir)
+        
+        # Usar ruta absoluta para evitar problemas con directorio de trabajo
+        backup_path = Path(backup_dir)
+        if not backup_path.is_absolute():
+            # Si es relativa, hacerla relativa al directorio del proyecto
+            # Buscar el directorio raíz del proyecto (donde está desktop_app)
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parent.parent.parent  # services -> desktop_app -> project
+            backup_path = project_root / backup_dir
+        
+        self.backup_dir = backup_path
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         self.pg_bin_path = pg_bin_path
         
@@ -45,6 +55,8 @@ class BackupIncrementalService:
 
         self.stats_dir = self.backup_dir / "stats"
         self.stats_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Backup directory inicializado: {self.backup_dir}")
     
     def _get_db_config(self) -> Dict[str, str]:
         return {
@@ -96,6 +108,7 @@ class BackupIncrementalService:
         query = """
             SELECT schemaname, relname, n_tup_ins, n_tup_upd, n_tup_del
             FROM pg_stat_user_tables
+            WHERE schemaname != 'seguridad'
         """
         stats = {}
         with self.db.pool.connection() as conn:
@@ -162,9 +175,25 @@ class BackupIncrementalService:
                 if not row: return None
                 return BackupInfo(*row)
     
+    def _sync_manifest_sequence(self):
+        """Asegura que la secuencia de IDs esté sincronizada con el máximo ID actual."""
+        # Al usar setval con el valor actual del ID, el próximo nextval() devolverá el siguiente operando
+        query = "SELECT setval('seguridad.backup_manifest_id_seq', COALESCE((SELECT MAX(id) FROM seguridad.backup_manifest), 1))"
+        try:
+            with self.db.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"No se pudo sincronizar la secuencia de backup_manifest: {e}")
+
     def _register_backup_manifest(self, tipo: str, archivo: Path, fecha_inicio: datetime,
                                  fecha_fin: datetime, tamano: int, checksum: str,
                                  lsn_inicio: str = "0/0", lsn_fin: str = "0/0", backup_base_id: Optional[int] = None) -> int:
+        
+        # Sincronizar secuencia antes de insertar para evitar "llave duplicada"
+        self._sync_manifest_sequence()
+        
         query = """
         INSERT INTO seguridad.backup_manifest (
             tipo_backup, archivo_nombre, archivo_ruta, fecha_inicio, fecha_fin,
@@ -203,7 +232,11 @@ class BackupIncrementalService:
             cmd = [
                 pg_dump,
                 "-h", config["host"], "-p", config["port"], "-U", config["user"],
-                "-F", "c", "-b", "-v", "-f", str(filepath),
+                "-F", "c", "-b", "-v",
+                # Excluir tablas de sistema de backup para evitar sobrescritura circular
+                "--exclude-table=seguridad.backup_manifest",
+                "--exclude-table=seguridad.backup_event",
+                "-f", str(filepath),
                 config["name"]
             ]
             

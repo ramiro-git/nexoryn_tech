@@ -1,6 +1,7 @@
 import flet as ft
 from typing import List, Dict, Any, Optional, Callable, Tuple
 from datetime import datetime, timedelta
+import json
 
 try:
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
@@ -54,13 +55,36 @@ class BackupProfessionalView:
         if self._backup_manager is None:
             from desktop_app.services.backup_manager import BackupManager
             self._backup_manager = BackupManager(self.db)
+            # Purgar registros huérfanos (archivos que ya no existen)
+            try:
+                purged = self._backup_manager.purge_invalid_backups()
+                if purged > 0:
+                    print(f"Purgados {purged} registros de backups huérfanos")
+            except Exception as e:
+                print(f"Error purgando backups inválidos: {e}")
         return self._backup_manager
     
     @property
     def cloud_service(self):
         if self._cloud_service is None:
             from desktop_app.services.cloud_storage_service import CloudStorageService
-            self._cloud_service = CloudStorageService(self.db, provider='LOCAL')
+            
+            # Cargar configuración desde la DB
+            cloud_config = {}
+            provider = 'LOCAL'
+            try:
+                stored_cloud = self.db.get_config("backup_cloud_config")
+                if stored_cloud:
+                    if isinstance(stored_cloud, str):
+                        cloud_config = json.loads(stored_cloud)
+                    elif isinstance(stored_cloud, dict):
+                        cloud_config = stored_cloud
+                    
+                    provider = cloud_config.get('provider', 'LOCAL')
+            except Exception as e:
+                print(f"Error cargando config de nube para el servicio: {e}")
+            
+            self._cloud_service = CloudStorageService(self.db, provider=provider, config=cloud_config)
         return self._cloud_service
     
     def _format_size(self, size_bytes: int) -> str:
@@ -365,6 +389,9 @@ class BackupProfessionalView:
             
             # Cargar logs
             self._load_logs()
+            
+            # Cargar configuraciones de la DB
+            self._load_configs()
             
             self.data_loaded = True
             
@@ -685,15 +712,36 @@ class BackupProfessionalView:
         threading.Thread(target=run_validation, daemon=True).start()
     
     def _upload_to_cloud(self, backup: Dict):
+        provider = self.cloud_provider.value
+        sync_dir_value = self.sync_dir.value
+        enable_sync_value = self.enable_sync.value
+        
         def run_upload():
             try:
-                # Log intent
                 try:
-                    self.db.log_activity("BACKUP", "UPLOAD_INIT", id_entidad=backup['id'], detalle={"provider": self.cloud_provider.value})
+                    self.db.log_activity("BACKUP", "UPLOAD_INIT", id_entidad=backup['id'], detalle={"provider": provider})
                 except: pass
 
                 from pathlib import Path
                 backup_file = Path(backup['archivo'])
+                
+                cloud_config = {
+                    'enabled': enable_sync_value,
+                    'sync_dir': sync_dir_value,
+                    'provider': provider
+                }
+                
+                if provider == "LOCAL":
+                    if not sync_dir_value or not sync_dir_value.strip():
+                        self.show_message("Error: Debes especificar la carpeta de sincronización para LOCAL", "error")
+                        try:
+                            self.db.log_activity("BACKUP", "UPLOAD_CONFIG_MISSING", id_entidad=backup['id'], resultado="FAIL", detalle={"error": "sync_dir not configured"})
+                        except: pass
+                        return
+                
+                self.db.set_config("backup_cloud_config", json.dumps(cloud_config), tipo='TEXT', descripcion='Configuración de sincronización en la nube')
+                
+                self._cloud_service = None
                 
                 result = self.cloud_service.upload_backup(
                     backup_file, 
@@ -704,7 +752,7 @@ class BackupProfessionalView:
                 if result.exitoso:
                     self.show_message("Backup subido a la nube exitosamente", "success")
                     try:
-                        self.db.log_activity("BACKUP", "UPLOAD_OK", id_entidad=backup['id'])
+                        self.db.log_activity("BACKUP", "UPLOAD_OK", id_entidad=backup['id'], detalle={"url": result.url, "tiempo_segundos": result.tiempo_segundos})
                     except: pass
                 else:
                     self.show_message(f"Error subiendo a la nube: {result.mensaje}", "error")
@@ -791,12 +839,24 @@ class BackupProfessionalView:
     def _run_restore_wizard(self, backup: Dict):
         preview = self.backup_manager.restore_service.preview_restore(backup['fecha_inicio'])
         
+        # Verificar si hay una cadena de backups válida
+        if not preview.get('existe', False) or not preview.get('backups'):
+            self.show_message(
+                f"No se encontró una cadena de backups válida para restaurar desde {self._format_datetime(backup['fecha_inicio'])}. "
+                "Asegúrese de que existe un backup FULL previo.",
+                "error"
+            )
+            return
+        
         def on_confirm_restore(e):
             self.page.close(wizard_dlg)
             self._perform_restore(backup)
         
         def on_cancel(e):
             self.page.close(wizard_dlg)
+        
+        cantidad_backups = preview.get('cantidad_backups', len(preview['backups']))
+        tamano_total_mb = preview.get('tamano_total_mb', 0)
         
         content = ft.Column([
             ft.Text("Resumen de Restauración", size=18, weight=ft.FontWeight.BOLD),
@@ -814,8 +874,8 @@ class BackupProfessionalView:
                 ft.Row([
                     ft.Icon(ft.icons.LAYERS_ROUNDED, size=20, color=self.COLOR_INFO),
                     ft.Column([
-                        ft.Text(f"Backups a aplicar: {preview['cantidad_backups']}", size=12, weight=ft.FontWeight.BOLD),
-                        ft.Text(f"Tamaño total: {preview['tamano_total_mb']:.2f} MB", size=11),
+                        ft.Text(f"Backups a aplicar: {cantidad_backups}", size=12, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Tamaño total: {tamano_total_mb:.2f} MB", size=11),
                     ], spacing=2)
                 ], spacing=10),
                 
@@ -931,6 +991,40 @@ class BackupProfessionalView:
         else:
             self._manual_ask_confirm("Eliminar Backup", f"¿Está seguro que desea eliminar este backup?", on_confirm, self.COLOR_ERROR)
     
+    def _load_configs(self):
+        """Carga todas las configuraciones de la base de datos a los controles de la UI."""
+        try:
+            # Horarios (ya cargados en backup_manager)
+            schedules = self.backup_manager.schedules
+            
+            self.full_schedule_day.value = str(schedules['FULL'].get('day', 1))
+            self.full_schedule_hour.value = str(schedules['FULL'].get('hour', 0))
+            
+            self.dif_schedule_weekday.value = str(schedules['DIFERENCIAL'].get('weekday', 6))
+            self.dif_schedule_hour.value = str(schedules['DIFERENCIAL'].get('hour', 23))
+            
+            self.inc_schedule_hour.value = str(schedules['INCREMENTAL'].get('hour', 23))
+            
+            # Retención
+            retention = self.db.get_config("backup_retention")
+            if retention:
+                if isinstance(retention, str): retention = json.loads(retention)
+                self.retention_full.value = str(retention.get('full_months', 12))
+                self.retention_dif.value = str(retention.get('dif_weeks', 8))
+                self.retention_inc.value = str(retention.get('inc_days', 7))
+            
+            # Nube
+            cloud = self.db.get_config("backup_cloud_config")
+            if cloud:
+                if isinstance(cloud, str): cloud = json.loads(cloud)
+                self.enable_sync.value = cloud.get('enabled', False)
+                self.cloud_provider.value = cloud.get('provider', 'LOCAL')
+                self.sync_dir.value = cloud.get('sync_dir', '')
+            
+            self.page.update()
+        except Exception as e:
+            self.logger.error(f"Error cargando configuraciones en la vista: {e}")
+
     def _save_schedule(self):
         try:
             self.backup_manager.set_schedule('FULL', 
@@ -955,28 +1049,43 @@ class BackupProfessionalView:
         except Exception as e:
             self.show_message(f"Error guardando horarios: {str(e)}", "error")
     
+    def _save_retention(self):
+        try:
+            retention_config = {
+                'full_months': int(self.retention_full.value or 12),
+                'dif_weeks': int(self.retention_dif.value or 8),
+                'inc_days': int(self.retention_inc.value or 7)
+            }
+            self.db.set_config("backup_retention", json.dumps(retention_config), tipo='TEXT', descripcion='Política de retención de backups')
+            self.show_message("Política de retención guardada correctamente", "success")
+            try:
+                self.db.log_activity("BACKUP", "UPDATE_RETENTION", detalle=retention_config)
+            except: pass
+        except Exception as e:
+            self.show_message(f"Error guardando retención: {str(e)}", "error")
+
     def _save_cloud_config(self):
         try:
-            if self.enable_sync.value:
-                if not self.sync_dir.value:
-                    self.show_message("Especifica la carpeta de sincronización", "warning")
-                    return
+            cloud_config = {
+                'enabled': self.enable_sync.value,
+                'sync_dir': self.sync_dir.value,
+                'provider': self.cloud_provider.value
+            }
+            
+            if self.enable_sync.value and not self.sync_dir.value:
+                self.show_message("Especifica la carpeta de sincronización", "warning")
+                return
 
-                # Actualizar configuración de nube
-                cloud_config = {
-                    'sync_dir': self.sync_dir.value,
-                    'provider': self.cloud_provider.value
-                }
-
-                self.show_message(f"Configuración de nube guardada: {self.cloud_provider.value}", "success")
-                try:
-                    self.db.log_activity("BACKUP", "UPDATE_CLOUD_CONFIG", detalle=cloud_config)
-                except: pass
-            else:
-                self.show_message("Sincronización en la nube desactivada", "info")
-                try:
-                    self.db.log_activity("BACKUP", "DISABLE_CLOUD")
-                except: pass
+            self.db.set_config("backup_cloud_config", json.dumps(cloud_config), tipo='TEXT', descripcion='Configuración de sincronización en la nube')
+            
+            # Resetear el servicio para que tome la nueva configuración
+            self._cloud_service = None
+            
+            self.show_message(f"Configuración de nube guardada con éxito", "success")
+            
+            try:
+                self.db.log_activity("BACKUP", "UPDATE_CLOUD_CONFIG", detalle=cloud_config)
+            except: pass
 
         except Exception as e:
             self.show_message(f"Error guardando configuración de nube: {str(e)}", "error")
@@ -1169,7 +1278,18 @@ class BackupProfessionalView:
                     self.retention_full,
                     self.retention_dif,
                     self.retention_inc,
-                ], spacing=12),
+                ]),
+                ft.ElevatedButton(
+                    "Guardar Política de Retención",
+                    icon=ft.icons.HISTORY_ROUNDED,
+                    bgcolor=self.COLOR_WARNING,
+                    color=ft.Colors.WHITE,
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                        padding=ft.padding.symmetric(horizontal=20, vertical=12)
+                    ),
+                    on_click=lambda e: self._save_retention()
+                ),
 
                 ft.Divider(height=20),
 

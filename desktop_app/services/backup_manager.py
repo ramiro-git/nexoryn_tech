@@ -11,12 +11,15 @@ from .restore_service import RestoreService
 logger = logging.getLogger(__name__)
 
 
+import json
+...
 class BackupManager:
     def __init__(self, db, backup_dir: str = "backups_incrementales", pg_bin_path: Optional[str] = None):
         self.db = db
         self.backup_incremental_service = BackupIncrementalService(db, backup_dir, pg_bin_path)
         self.restore_service = RestoreService(db, self.backup_incremental_service, pg_bin_path)
         
+        # Horarios por defecto
         self.schedules = {
             'FULL': {'day': 1, 'hour': 0, 'minute': 0},
             'DIFERENCIAL': {'weekday': 6, 'hour': 23, 'minute': 30},
@@ -24,6 +27,30 @@ class BackupManager:
         }
         
         self.logger = logger
+        
+        # Cargar configuración desde la DB si existe
+        self._load_settings()
+
+    def _load_settings(self):
+        """Carga los horarios de la base de datos."""
+        try:
+            stored_schedules = self.db.get_config("backup_schedules")
+            if stored_schedules:
+                if isinstance(stored_schedules, str):
+                    self.schedules.update(json.loads(stored_schedules))
+                elif isinstance(stored_schedules, dict):
+                    self.schedules.update(stored_schedules)
+                self.logger.info("Horarios de backup cargados desde la DB.")
+        except Exception as e:
+            self.logger.warning(f"No se pudieron cargar los horarios de backup: {e}")
+
+    def _save_settings(self):
+        """Guarda los horarios en la base de datos."""
+        try:
+            self.db.set_config("backup_schedules", json.dumps(self.schedules), tipo='TEXT', descripcion='Horarios de backups programados')
+            self.logger.info("Horarios de backup guardados en la DB.")
+        except Exception as e:
+            self.logger.error(f"No se pudieron guardar los horarios de backup: {e}")
     
     def get_schedule_for_backup_type(self, backup_type: str) -> Dict:
         return self.schedules.get(backup_type, {})
@@ -38,6 +65,9 @@ class BackupManager:
                 self.schedules[backup_type][key] = value
         
         self.logger.info(f"Schedule actualizado para {backup_type}: {self.schedules[backup_type]}")
+        
+        # Persistir cambios
+        self._save_settings()
         return True
     
     def determine_backup_type(self, current_time: Optional[datetime] = None) -> str:

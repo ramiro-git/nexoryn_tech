@@ -42,6 +42,10 @@ class BackupService:
         sync_dir: Optional[str] = None,
         incremental_dir: Optional[str] = None,
     ):
+        # Calcular directorio raíz del proyecto
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent.parent  # services -> desktop_app -> project
+        
         # Load persisted settings
         settings = _load_settings()
         
@@ -50,14 +54,32 @@ class BackupService:
         if saved_backup_dir and backup_dir == "backups":
             backup_dir = saved_backup_dir
         
-        self.backup_dir = Path(backup_dir)
+        # Convertir a ruta absoluta si es relativa
+        backup_path = Path(backup_dir)
+        if not backup_path.is_absolute():
+            backup_path = project_root / backup_dir
+        
+        self.backup_dir = backup_path
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         self.pg_bin_path = pg_bin_path
-        self.incremental_root = Path(incremental_dir) if incremental_dir else Path("backups_incrementales")
+        
+        # Convertir incremental_dir a absoluta
+        inc_path = Path(incremental_dir) if incremental_dir else Path("backups_incrementales")
+        if not inc_path.is_absolute():
+            inc_path = project_root / inc_path
+        
+        self.incremental_root = inc_path
+        self.incremental_root.mkdir(parents=True, exist_ok=True)
+        
         self.incremental_dirs = {
             "FULL": self.incremental_root / "full",
             "DIFERENCIAL": self.incremental_root / "differential",
             "INCREMENTAL": self.incremental_root / "incremental",
         }
+        
+        # Crear subdirectorios incrementales
+        for d in self.incremental_dirs.values():
+            d.mkdir(parents=True, exist_ok=True)
         
         # Use persisted sync_dir if not overridden
         saved_sync_dir = settings.get("sync_dir")
@@ -68,6 +90,8 @@ class BackupService:
         self.sync_enabled: bool = sync_dir is not None
         self.last_sync_status: Optional[Dict[str, any]] = None
         self._ensure_directories()
+        
+        logger.info(f"BackupService inicializado: backup_dir={self.backup_dir}, incremental_root={self.incremental_root}")
     
     def _ensure_directories(self):
         """Maintain references for legacy and incremental backup folders."""
