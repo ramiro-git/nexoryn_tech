@@ -49,14 +49,17 @@ class SecureAfipSslAdapter(HTTPAdapter):
     
     def __init__(self, production: bool = False):
         super().__init__()
-        self.production = production
+        # Usar variable de instancia con getattr como fallback
+        object.__setattr__(self, 'production', production)
     
     def init_poolmanager(self, *args, **kwargs):
         ctx = ssl.create_default_context()
         
         # En producción: SECLEVEL=2 (stricto)
         # En homologación: SECLEVEL=1 (compatible pero seguro)
-        seclevel = "2" if self.production else "1"
+        # Usar getattr con False como valor por defecto (para compatibilidad con pool reuse)
+        production = getattr(self, 'production', False)
+        seclevel = "2" if production else "1"
         ctx.set_ciphers(f"DEFAULT@SECLEVEL={seclevel}:!aNULL:!eNULL:!MD5:!DES:!3DES")
         
         # Validación obligatoria de certificados y hostname
