@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,25 @@ def _get_app_data_dir() -> Path:
     return Path.home() / f".{app_name}"
 
 
+def _parse_database_url(database_url: str) -> dict:
+    """
+    Parses a DATABASE_URL into its components (host, port, name, user, password).
+    Supports postgresql:// URLs.
+    """
+    parsed = urlparse(database_url)
+    
+    if parsed.scheme not in ("postgresql", "postgres"):
+        raise ValueError(f"Unsupported database URL scheme: {parsed.scheme}")
+    
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": str(parsed.port or 5432),
+        "name": parsed.path.lstrip("/") if parsed.path else "postgres",
+        "user": parsed.username or "postgres",
+        "password": parsed.password or "",
+    }
+
+
 def _build_url_from_components() -> str:
     host = os.getenv("DB_HOST")
     port = os.getenv("DB_PORT", "5432")
@@ -63,6 +83,35 @@ def _build_url_from_components() -> str:
     user_part = quote_plus(user)
     password_part = quote_plus(password)
     return f"postgresql://{user_part}:{password_part}@{host}:{port}/{name}"
+
+
+def get_db_config() -> dict:
+    """
+    Returns database configuration (host, port, name, user, password) as a dictionary.
+    
+    Supports two sources of credentials:
+    1. DATABASE_URL environment variable (recommended)
+    2. Individual DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD variables (fallback)
+    
+    Returns a dict with keys: host, port, name, user, password
+    """
+    database_url = os.getenv("DATABASE_URL")
+    
+    if database_url:
+        # Parse from DATABASE_URL
+        try:
+            return _parse_database_url(database_url)
+        except ValueError as e:
+            raise EnvironmentError(f"Invalid DATABASE_URL format: {e}")
+    
+    # Fallback to individual DB_* variables with defaults
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": os.getenv("DB_PORT", "5432"),
+        "name": os.getenv("DB_NAME", "nexoryn_tech"),
+        "user": os.getenv("DB_USER", "postgres"),
+        "password": os.getenv("DB_PASSWORD", "") or os.environ.get("PGPASSWORD", ""),
+    }
 
 
 def _read_int_env(name: str, default: int, *, min_value: int = 1) -> int:

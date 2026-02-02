@@ -6,6 +6,11 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
+try:
+    from desktop_app.config import get_db_config
+except ImportError:
+    from config import get_db_config
+
 # Configure logger
 logger = logging.getLogger("schema_sync")
 logger.setLevel(logging.INFO)
@@ -103,13 +108,11 @@ class SchemaSync:
             return True
 
     def _get_db_config(self) -> dict:
-        return {
-            "host": os.getenv("DB_HOST", "localhost"),
-            "port": os.getenv("DB_PORT", "5432"),
-            "name": os.getenv("DB_NAME", "nexoryn_tech"),
-            "user": os.getenv("DB_USER", "postgres"),
-            "password": os.getenv("DB_PASSWORD", "") or os.environ.get("PGPASSWORD", ""),
-        }
+        """
+        Returns database configuration from environment variables or DATABASE_URL.
+        Delegates to config.get_db_config() for consistency across all services.
+        """
+        return get_db_config()
         
     def _get_psql_path(self) -> str:
         # Check explicit path

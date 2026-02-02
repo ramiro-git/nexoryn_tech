@@ -5,8 +5,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .backup_incremental_service import BackupIncrementalService, BackupInfo
-from .restore_service import RestoreService
+try:
+    from desktop_app.services.backup_incremental_service import BackupIncrementalService, BackupInfo
+    from desktop_app.services.restore_service import RestoreService
+except ImportError:
+    from backup_incremental_service import BackupIncrementalService, BackupInfo
+    from restore_service import RestoreService
 
 logger = logging.getLogger(__name__)
 

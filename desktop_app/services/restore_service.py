@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass
 
-from .backup_incremental_service import BackupInfo, BackupIncrementalService
+try:
+    from desktop_app.services.backup_incremental_service import BackupInfo, BackupIncrementalService
+    from desktop_app.config import get_db_config
+except ImportError:
+    from backup_incremental_service import BackupInfo, BackupIncrementalService
+    from config import get_db_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +36,11 @@ class RestoreService:
         self.pg_bin_path = pg_bin_path
     
     def _get_db_config(self) -> Dict[str, str]:
-        return {
-            "host": os.getenv("DB_HOST", "localhost"),
-            "port": os.getenv("DB_PORT", "5432"),
-            "name": os.getenv("DB_NAME", "nexoryn_tech"),
-            "user": os.getenv("DB_USER", "postgres"),
-            "password": os.getenv("DB_PASSWORD", "") or os.environ.get("PGPASSWORD", ""),
-        }
+        """
+        Returns database configuration from environment variables or DATABASE_URL.
+        Delegates to config.get_db_config() for consistency across all services.
+        """
+        return get_db_config()
     
     def _get_pg_restore_path(self) -> str:
         if self.pg_bin_path:

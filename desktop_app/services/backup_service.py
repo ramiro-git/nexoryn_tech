@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import shutil
 
+try:
+    from desktop_app.config import get_db_config
+except ImportError:
+    from config import get_db_config
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -272,14 +277,11 @@ class BackupService:
         return "En " + " ".join(parts) if parts else "En <1min"
 
     def _get_db_config(self) -> Dict[str, str]:
-        """Extracts DB config from environment variables."""
-        return {
-            "host": os.getenv("DB_HOST", "localhost"),
-            "port": os.getenv("DB_PORT", "5432"),
-            "name": os.getenv("DB_NAME", "nexoryn_tech"),
-            "user": os.getenv("DB_USER", "postgres"),
-            "password": os.getenv("DB_PASSWORD", "") or os.environ.get("PGPASSWORD", ""),
-        }
+        """
+        Returns database configuration from environment variables or DATABASE_URL.
+        Delegates to config.get_db_config() for consistency across all services.
+        """
+        return get_db_config()
     
     def _get_pg_dump_path(self) -> str:
         """Attempts to find pg_dump executable."""
