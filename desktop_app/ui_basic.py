@@ -6287,6 +6287,10 @@ def main(page: ft.Page) -> None:
     log_conf_progress = ft.ProgressBar(width=400, visible=False)
     log_conf_status = ft.Text("", size=12, italic=True, color="grey", visible=False)
     log_conf_btn_run = ft.ElevatedButton("Ejecutar Archivado Ahora", icon=ft.icons.PLAY_ARROW_ROUNDED)
+    
+    # State control for dialogs
+    _archive_running = False
+    _current_dialog = None
 
     # File Picker setup
     def pick_folder_result(e: ft.FilePickerResultEvent):
@@ -6310,9 +6314,8 @@ def main(page: ft.Page) -> None:
             logs_conf_retencion.value = str(retention)
             logs_conf_dir.value = str(directory)
             logs_conf_retencion.error_text = None
-            log_conf_progress.visible = False
-            log_conf_status.visible = False
-            log_conf_btn_run.disabled = False
+            
+            # Set and open dialog
             page.dialog = log_config_dialog
             log_config_dialog.open = True
             page.update()
@@ -6320,6 +6323,7 @@ def main(page: ft.Page) -> None:
             print(f"Error opening config: {ex}")
 
     def save_log_config(e):
+        nonlocal _current_dialog
         try:
             val_days = int(logs_conf_retencion.value)
             val_dir = logs_conf_dir.value.strip()
@@ -6331,11 +6335,33 @@ def main(page: ft.Page) -> None:
             log_config_dialog.open = False
             page.update()
             
-            # Show toast fallback
-            snack = getattr(page, "snack_bar", None)
-            if snack:
-                snack.content = ft.Text("Configuración guardada")
-                snack.open = True
+            # Close any existing dialog before showing new one
+            if _current_dialog:
+                try:
+                    _current_dialog.open = False
+                except:
+                    pass
+            
+            # Show success message with dialog
+            def close_success_dialog(x=None):
+                nonlocal _current_dialog
+                success_dialog.open = False
+                _current_dialog = None
+                page.update()
+            
+            success_dialog = ft.AlertDialog(
+                title=ft.Text("✓ Configuración Guardada"),
+                content=ft.Column([
+                    ft.Text(f"Días de retención: {val_days}"),
+                    ft.Text(f"Directorio: {val_dir}")
+                ], tight=True),
+                actions=[
+                    ft.TextButton("Aceptar", on_click=close_success_dialog)
+                ]
+            )
+            _current_dialog = success_dialog
+            page.dialog = success_dialog
+            success_dialog.open = True
             page.update()
             
         except ValueError:
@@ -6343,67 +6369,140 @@ def main(page: ft.Page) -> None:
             logs_conf_retencion.update()
 
     def run_archive_now(e):
-        log_conf_progress.visible = True
-        log_conf_status.visible = True
-        log_conf_status.value = "Iniciando..."
-        log_conf_btn_run.disabled = True
-        page.update()
+        """Execute log archiving in background with non-modal progress dialog."""
+        nonlocal _archive_running, _current_dialog
         
-        def _run_thread():
-            try:
-                from pathlib import Path
-                # Resolve app dir safely (fallback to cwd/data)
-                # We assume standard structure if PROJECT_ROOT is missing
-                base_dir = Path.cwd() / "data"
-                
-                from desktop_app.log_archiver import LogArchiver
-                archiver = LogArchiver(db, app_data_dir=str(base_dir))
-                
-                # Callback to update UI
-                def _on_progress(curr, total, msg):
-                    if total > 0:
-                        val = min(curr / total, 1.0)
-                    else:
-                        val = 0 if curr == 0 else 1.0 # Indeterminate if total 0 but finished?
-                    
-                    log_conf_progress.value = val
-                    log_conf_status.value = msg
-                    try:
-                        log_conf_progress.update()
-                        log_conf_status.update()
-                    except: pass
-                
-                result = archiver.archive_old_logs(progress_callback=_on_progress)
-                
-                msg = f"Proceso completado.\n\nArchivados: {result['archived']}\nEliminados: {result['deleted']}"
-                if result['file']:
-                    msg += f"\n\nArchivo generado:\n{result['file']}"
-                if result['error']:
-                    msg = f"Error: {result['error']}"
-                
-                def _on_finish():
-                    log_conf_progress.visible = False
-                    log_conf_status.visible = False
-                    log_conf_btn_run.disabled = False
-                    # Show result alert
-                    page.dialog = ft.AlertDialog(title=ft.Text("Resultado"), content=ft.Text(msg))
-                    page.dialog.open = True
-                    page.update()
-
-                # Basic thread-safe UI update (Flet works fine with closures usually if page is valid)
-                _on_finish()
-                
-            except Exception as ex:
-                print(f"Manual archive error: {ex}")
+        # Prevent concurrent execution
+        if _archive_running:
+            return
+        _archive_running = True
+        
+        try:
+            # Close the config modal first so user can interact
+            log_config_dialog.open = False
+            page.update()
+            
+            # Close any existing dialog before showing new one
+            if _current_dialog:
                 try:
-                    log_conf_status.value = f"Error: {ex}"
-                    log_conf_status.update()
-                except: pass
-        
-        import threading
-        threading.Thread(target=_run_thread, daemon=True).start()
+                    _current_dialog.open = False
+                except:
+                    pass
+            
+            # Create progress dialog (non-modal so user can still interact)
+            progress_dialog = ft.AlertDialog(
+                modal=False,
+                title=ft.Text("Archivando Logs"),
+                content=ft.Column([
+                    ft.Text("Procesando archivado de logs...", size=12, italic=True, color="grey"),
+                    ft.ProgressBar(width=400),
+                    ft.Text("", size=11, italic=True, color="grey")
+                ], tight=True, width=450, spacing=10)
+            )
+            
+            progress_bar = progress_dialog.content.controls[1]
+            status_text = progress_dialog.content.controls[2]
+            
+            _current_dialog = progress_dialog
+            page.dialog = progress_dialog
+            progress_dialog.open = True
+            page.update()
+            
+            def _run_thread():
+                nonlocal _archive_running, _current_dialog
+                try:
+                    from pathlib import Path
+                    import time
+                    
+                    base_dir = Path.cwd() / "data"
+                    from desktop_app.log_archiver import LogArchiver
+                    archiver = LogArchiver(db, app_data_dir=str(base_dir))
+                    
+                    # Callback to update UI (thread-safe)
+                    def _on_progress(curr, total, msg):
+                        try:
+                            if total > 0:
+                                progress_bar.value = min(curr / total, 1.0)
+                            else:
+                                progress_bar.value = 0 if curr == 0 else 1.0
+                            status_text.value = msg
+                            page.update()
+                        except Exception as update_ex:
+                            print(f"UI update error in progress: {update_ex}")
+                    
+                    try:
+                        result = archiver.archive_old_logs(progress_callback=_on_progress)
+                        
+                        msg = f"Proceso completado.\n\nArchivados: {result['archived']}\nEliminados: {result['deleted']}"
+                        if result['file']:
+                            msg += f"\n\nArchivo generado:\n{result['file']}"
+                        if result['error']:
+                            msg = f"Error: {result['error']}"
+                        
+                        success = True
+                        
+                    except Exception as archive_ex:
+                        msg = f"Error durante el archivado:\n{str(archive_ex)}"
+                        success = False
+                    
+                    def _on_finish():
+                        nonlocal _archive_running, _current_dialog
+                        try:
+                            # Close progress dialog
+                            progress_dialog.open = False
+                            page.update()
+                            
+                            # Small delay
+                            time.sleep(0.1)
+                            
+                            # Show result alert
+                            title_text = "Resultado del Archivado" if success else "Error en Archivado"
+                            result_dialog = ft.AlertDialog(
+                                title=ft.Text(title_text), 
+                                content=ft.Column([ft.Text(msg)], tight=True, width=450),
+                                actions=[
+                                    ft.TextButton("Cerrar", on_click=lambda x: _close_result_dialog())
+                                ]
+                            )
+                            
+                            def _close_result_dialog():
+                                nonlocal _current_dialog
+                                result_dialog.open = False
+                                _current_dialog = None
+                                _archive_running = False
+                                page.update()
+                            
+                            _current_dialog = result_dialog
+                            page.dialog = result_dialog
+                            result_dialog.open = True
+                            page.update()
+                        except Exception as finish_ex:
+                            print(f"Error in finish callback: {finish_ex}")
+                            _archive_running = False
+
+                    _on_finish()
+                    
+                except Exception as ex:
+                    print(f"Manual archive error: {ex}")
+                    import traceback
+                    traceback.print_exc()
+                    _archive_running = False
+            
+            import threading
+            threading.Thread(target=_run_thread, daemon=True).start()
+        except Exception as ex:
+            print(f"Error in run_archive_now: {ex}")
+            _archive_running = False
 
     log_conf_btn_run.on_click = run_archive_now
+
+    def close_log_config_dialog(e):
+        """Close the log config dialog safely."""
+        try:
+            log_config_dialog.open = False
+            page.update()
+        except Exception as ex:
+            print(f"Error closing log config dialog: {ex}")
 
     log_config_dialog = ft.AlertDialog(
         modal=True,
@@ -6421,11 +6520,9 @@ def main(page: ft.Page) -> None:
             ft.Text("Ejecución Manual", weight=ft.FontWeight.BOLD),
             ft.Text("Forzar el archivado ahora mismo respetando la configuración actual.", size=12, color="grey"),
             log_conf_btn_run,
-            log_conf_status,
-            log_conf_progress
         ], tight=True, width=500, spacing=10),
         actions=[
-            ft.TextButton("Cancelar", on_click=lambda e: setattr(log_config_dialog, 'open', False) or page.update()),
+            ft.TextButton("Cancelar", on_click=close_log_config_dialog),
             ft.ElevatedButton("Guardar Configuración", on_click=save_log_config),
         ],
     )

@@ -50,6 +50,7 @@ database/csvs/*.csv
 backups/
 backups_incrementales/
 backups_migraciones/
+data/
 
 # IDEs/Editors
 .vscode/
