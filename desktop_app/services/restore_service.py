@@ -271,6 +271,126 @@ class RestoreService:
             logger.error(f"Error inesperado truncando tablas: {e}")
             return False
 
+    def _sync_sequences(self, tables: List[str]) -> bool:
+        """
+        Resincroniza las secuencias de las tablas especificadas después de restaurar datos.
+        Calcula el máximo ID en cada tabla y ajusta el next_value de la secuencia correspondiente.
+        
+        Esto previene errores de "duplicate key" cuando TRUNCATE RESTART IDENTITY deja
+        las secuencias desincronizadas respecto a los IDs restaurados.
+        """
+        if not tables:
+            return True
+        
+        config = self._get_db_config()
+        psql = self._get_psql_path()
+        env = os.environ.copy()
+        env["PGPASSWORD"] = config["password"]
+        
+        # Construir SQL que resincronice todas las secuencias de una sola vez
+        # Para cada tabla, encontramos la columna PK (o columna con secuencia)
+        # y ajustamos la secuencia al MAX(id) + 1
+        sync_sql = ""
+        
+        for table in tables:
+            # SQL para encontrar secuencias relacionadas con esta tabla
+            # y establecer su valor al máximo ID restaurado + 1
+            sync_sql += f"""
+DO $$
+DECLARE
+    v_max_id BIGINT;
+    v_seq_name TEXT;
+    v_col_name TEXT;
+BEGIN
+    -- Encontrar columnas con secuencias en esta tabla
+    FOR v_col_name, v_seq_name IN
+        SELECT a.attname, s.sequencename
+        FROM pg_sequences s
+        JOIN pg_class t ON t.relname = s.tablename
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        JOIN pg_attribute a ON a.attrelid = t.oid
+        WHERE n.nspname || '.' || s.tablename = '{table}'
+          AND a.attname = s.seqname.split('_')[array_length(string_to_array(s.seqname, '_'), 1) - 1]::text
+          OR (s.seqname LIKE '%_' || s.tablename || '_%' OR s.seqname LIKE s.tablename || '_%')
+    LOOP
+        EXECUTE format('SELECT MAX(%I) FROM %I.%I', v_col_name, split_part('{table}', '.', 1), split_part('{table}', '.', 2))
+        INTO v_max_id;
+        
+        IF v_max_id IS NOT NULL THEN
+            EXECUTE format('SELECT setval(%L, %L, true)', v_seq_name, v_max_id);
+            RAISE NOTICE 'Secuencia % ajustada a %', v_seq_name, v_max_id;
+        END IF;
+    END LOOP;
+END $$;
+"""
+        
+        # Alternativa más robusta: usar un enfoque más simple que funcione en PostgreSQL estándar
+        # Vamos a usar una query más directa que busque secuencias conectadas a tablas
+        sync_sql = "DO $$ DECLARE\n"
+        sync_sql += "    v_table RECORD;\n"
+        sync_sql += "    v_sequence RECORD;\n"
+        sync_sql += "    v_col_name TEXT;\n"
+        sync_sql += "    v_max_id BIGINT;\n"
+        sync_sql += "BEGIN\n"
+        
+        for table in tables:
+            schema = table.split('.')[0]
+            table_name = table.split('.')[1]
+            
+            sync_sql += f"""
+    -- Resincronizar secuencias para tabla {table}
+    FOR v_sequence IN
+        SELECT sequence_schema, sequence_name, 
+               (SELECT attname FROM pg_attribute 
+                WHERE attrelid = ('{schema}'::text || '.' || '{table_name}')::regclass 
+                  AND attnum > 0 LIMIT 1) AS col_name
+        FROM information_schema.sequences
+        WHERE sequence_schema = '{schema}' 
+          AND sequence_name LIKE '{table_name}_%'
+    LOOP
+        IF v_sequence.col_name IS NOT NULL THEN
+            EXECUTE format('SELECT COALESCE(MAX(%I), 0) + 1 FROM %I.%I', 
+                          v_sequence.col_name, '{schema}', '{table_name}')
+            INTO v_max_id;
+            
+            EXECUTE format('SELECT setval(%L, %L)', 
+                          v_sequence.sequence_name, v_max_id);
+            RAISE NOTICE 'Secuencia % ajustada a valor %', v_sequence.sequence_name, v_max_id;
+        END IF;
+    END LOOP;
+"""
+        
+        sync_sql += "\nEND $$;\n"
+        
+        cmd = [
+            psql,
+            "-h", config["host"],
+            "-p", config["port"],
+            "-U", config["user"],
+            "-d", config["name"],
+            "-c", sync_sql
+        ]
+        
+        try:
+            logger.info(f"Resincronizando secuencias de {len(tables)} tablas...")
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+            
+            # Log los notices de la ejecución
+            if result.stderr:
+                logger.info(f"Resincronización de secuencias: {result.stderr[:500]}")
+            
+            if result.returncode != 0 and "NOTICE" not in result.stderr:
+                logger.warning(f"Resincronización de secuencias completada con advertencias: {result.stderr[:500]}")
+                # No fallar si es solo un warning
+            
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error resincronizando secuencias: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.error(f"Error inesperado resincronizando secuencias: {e}")
+            return False
+
     def _apply_differential_backup(self, backup_file: Path, lsn_inicio: str) -> RestoreResult:
         logger.info(f"Aplicando backup DIFERENCIAL (Data Only): {backup_file}")
         
@@ -355,6 +475,14 @@ class RestoreService:
             if result.returncode != 0:
                 logger.warning(f"pg_restore DIFERENCIAL completó con warnings (exit code {result.returncode})")
                 logger.warning(f"stderr: {result.stderr[:1000] if result.stderr else 'N/A'}")
+            
+            # --- Fase de Resincronización de Secuencias ---
+            # CRUCIAL: Después de restaurar datos con TRUNCATE RESTART IDENTITY,
+            # las secuencias pueden estar desincronizadas. Esto causa errores de "duplicate key"
+            # en inserciones posteriores. Recalculamos y ajustamos cada secuencia al máximo ID restaurado.
+            if tables_to_truncate:
+                if not self._sync_sequences(tables_to_truncate):
+                    logger.warning("No se pudieron resincronizar todas las secuencias, podría haber problemas en inserciones posteriores.")
             
             return RestoreResult(
                 exitoso=True,

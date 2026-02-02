@@ -844,7 +844,10 @@ def main(page: ft.Page) -> None:
         professional_scheduler = None
         try:
             # Import and initialize professional backup system
-            from services.backup_manager import BackupManager
+            try:
+                from desktop_app.services.backup_manager import BackupManager
+            except ImportError:
+                from services.backup_manager import BackupManager  # type: ignore
             from apscheduler.schedulers.background import BackgroundScheduler as ProScheduler
             from apscheduler.triggers.cron import CronTrigger as ProCronTrigger
 
@@ -914,21 +917,28 @@ def main(page: ft.Page) -> None:
 
         except Exception as e:
             logger.warning(f"No se pudo inicializar sistema profesional de backups: {e}")
-            # Fallback to legacy system
+            # Fallback to legacy system - initialize with basic imports
             professional_scheduler = BackgroundScheduler()
+            from apscheduler.triggers.cron import CronTrigger
 
-            def run_scheduled_backup(btype):
-                try:
-                    logger.info(f"Sistema de backups en fallback: {btype} backup saltado")
-                except Exception as e:
-                    logger.error(f"Backup programado {btype} falló: {e}")
-
-            # Old standard backup system disabled (replaced by Professional system)
-            # professional_scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
-            # professional_scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly")
-            # professional_scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly")
-            # Legacy pruning disabled
-            # professional_scheduler.add_job(lambda: backup_service.prune_backups(), CronTrigger(hour=1, minute=0), id="backup_prune")
+            # Try to use legacy backup service for fallback
+            try:
+                backup_service_fallback = BackupService(pg_bin_path=config.pg_bin_path)
+                
+                def run_scheduled_backup(btype):
+                    try:
+                        logger.info(f"Sistema de backups en fallback: ejecutando backup {btype}")
+                        backup_service_fallback.backup()
+                    except Exception as e:
+                        logger.error(f"Backup programado {btype} falló: {e}")
+                
+                # Fallback jobs using legacy BackupService
+                professional_scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily", max_instances=1, replace_existing=True)
+                professional_scheduler.add_job(lambda: run_scheduled_backup("weekly"), CronTrigger(day_of_week="sun", hour=23, minute=30), id="backup_weekly", max_instances=1, replace_existing=True)
+                professional_scheduler.add_job(lambda: run_scheduled_backup("monthly"), CronTrigger(day=1, hour=0, minute=0), id="backup_monthly", max_instances=1, replace_existing=True)
+                logger.info("Sistema de backups en fallback: jobs programados con BackupService")
+            except Exception as fallback_err:
+                logger.warning(f"No se pudo configurar jobs de fallback: {fallback_err}")
 
             professional_scheduler.start()
 
