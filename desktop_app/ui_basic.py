@@ -472,8 +472,8 @@ def _date_field(*args, **kwargs) -> ft.TextField:
             if hasattr(tf, "on_submit") and tf.on_submit:
                 try:
                     tf.on_submit(None)
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Fallo al llamar on_submit: {e}")
     
     dp = ft.DatePicker(
         on_change=on_date_change,
@@ -650,7 +650,8 @@ def main(page: ft.Page) -> None:
             sidebar_brand_logo.update()
             login_brand_name.update()
             login_brand_logo.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar elementos de marca: {e}")
 
     page.title = system_name
     page.window_width = 1280
@@ -811,11 +812,11 @@ def main(page: ft.Page) -> None:
                 try:
                     resultado = professional_backup_manager.execute_scheduled_backup(backup_type)
                     if resultado['exitoso']:
-                        logger.info(f"Professional {backup_type} backup completed successfully")
+                        logger.info(f"Backup profesional {backup_type} completado exitosamente")
                     else:
-                        logger.error(f"Professional {backup_type} backup failed: {resultado['mensaje']}")
+                        logger.error(f"Backup profesional {backup_type} fallo: {resultado['mensaje']}")
                 except Exception as e:
-                    logger.error(f"Error in professional {backup_type} backup: {e}")
+                    logger.error(f"Error en backup profesional {backup_type}: {e}")
 
             # FULL backup: Día 1 de cada mes a las 00:00
             professional_scheduler.add_job(
@@ -851,9 +852,9 @@ def main(page: ft.Page) -> None:
             def run_backup_validation():
                 try:
                     resultado = professional_backup_manager.validate_all_backups()
-                    logger.info(f"Backup validation completed: {resultado['validos']}/{resultado['total']} valid")
+                    logger.info(f"Validacion de backups completada: {resultado['validos']}/{resultado['total']} valid")
                 except Exception as e:
-                    logger.error(f"Error in backup validation: {e}")
+                    logger.error(f"Error en validación de backups: {e}")
 
             professional_scheduler.add_job(
                 run_backup_validation,
@@ -865,20 +866,18 @@ def main(page: ft.Page) -> None:
             )
 
             professional_scheduler.start()
-            logger.info("Professional backup system scheduler started successfully")
+            logger.info("Planificador del sistema profesional de backups iniciado correctamente")
 
         except Exception as e:
-            logger.warning(f"Could not initialize professional backup system: {e}")
+            logger.warning(f"No se pudo inicializar sistema profesional de backups: {e}")
             # Fallback to legacy system
             professional_scheduler = BackgroundScheduler()
 
             def run_scheduled_backup(btype):
                 try:
-                    backup_service.create_backup(btype)
-                    if db:
-                        backup_service.record_backup_execution(db, btype)
+                    logger.info(f"Sistema de backups en fallback: {btype} backup saltado")
                 except Exception as e:
-                    logger.error(f"Scheduled {btype} backup failed: {e}")
+                    logger.error(f"Backup programado {btype} falló: {e}")
 
             # Old standard backup system disabled (replaced by Professional system)
             # professional_scheduler.add_job(lambda: run_scheduled_backup("daily"), CronTrigger(hour=23, minute=0), id="backup_daily")
@@ -906,7 +905,8 @@ def main(page: ft.Page) -> None:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.connect(("8.8.8.8", 80))
                 local_ip = s.getsockname()[0]
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al determinar IP local: {e}")
         db.current_ip = local_ip  # Set IP for login logging before auth
         
         page.bgcolor = COLOR_BG # Avoid white flashes on background
@@ -1005,16 +1005,26 @@ def main(page: ft.Page) -> None:
         tipos_porcentaje_values = db.fetch_tipos_porcentaje(limit=100)
         
         # Also refresh filter dropdowns if they exist
-        try: refresh_articles_catalogs()
-        except: pass
-        try: refresh_movimientos_catalogs()
-        except: pass
-        try: refresh_remitos_catalogs()
-        except: pass
-        try: refresh_documentos_catalogs()
-        except: pass
-        try: refresh_pagos_catalogs()
-        except: pass
+        try:
+            refresh_articles_catalogs()
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de artículos: {e}")
+        try:
+            refresh_movimientos_catalogs()
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de movimientos: {e}")
+        try:
+            refresh_remitos_catalogs()
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de remitos: {e}")
+        try:
+            refresh_documentos_catalogs()
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de documentos: {e}")
+        try:
+            refresh_pagos_catalogs()
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de pagos: {e}")
 
     # reload_catalogs() will be called at the end of main after all controls are defined
 
@@ -1231,8 +1241,8 @@ def main(page: ft.Page) -> None:
         try:
             if articulos_table:
                 articulos_table.trigger_refresh()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar tabla de artículos: {e}")
 
     def _art_slider_change(e):
         # Update label real-time
@@ -1244,7 +1254,8 @@ def main(page: ft.Page) -> None:
             articulos_advanced_costo_label.update()
             articulos_advanced_costo_min_field.update()
             articulos_advanced_costo_max_field.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar UI de filtro de costo: {e}")
 
     def _reset_cost_filter(ctrl, val):
         s = articulos_advanced_costo_slider
@@ -1258,7 +1269,8 @@ def main(page: ft.Page) -> None:
             articulos_advanced_costo_label.update()
             articulos_advanced_costo_min_field.update()
             articulos_advanced_costo_max_field.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al resetear filtro de costo: {e}")
 
     def _art_costo_manual_change(e):
         try:
@@ -1270,7 +1282,8 @@ def main(page: ft.Page) -> None:
             _art_slider_change(None)
             s.update()
             _art_live(None)
-        except: pass
+        except Exception as e:
+            logger.warning(f"Error en cambio manual de filtro de costo: {e}")
 
     articulos_advanced_costo_min_field = ft.TextField(label="Mín. (Costo)", width=120, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_min_field)
     articulos_advanced_costo_max_field = ft.TextField(label="Máx. (Costo)", width=120, dense=True, on_submit=_art_costo_manual_change); _style_input(articulos_advanced_costo_max_field)
@@ -1339,7 +1352,8 @@ def main(page: ft.Page) -> None:
             articulos_advanced_stock_label.update()
             articulos_advanced_stock_min_field.update()
             articulos_advanced_stock_max_field.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar UI de filtro de stock: {e}")
 
     def _reset_stock_filter(ctrl, val):
         s = articulos_advanced_stock_slider
@@ -1353,7 +1367,8 @@ def main(page: ft.Page) -> None:
             articulos_advanced_stock_label.update()
             articulos_advanced_stock_min_field.update()
             articulos_advanced_stock_max_field.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al resetear filtro de stock: {e}")
 
     def _art_stock_manual_change(e):
         try:
@@ -1365,7 +1380,8 @@ def main(page: ft.Page) -> None:
             _art_stock_slider_change(None)
             s.update()
             _art_live(None)
-        except: pass
+        except Exception as e:
+            logger.warning(f"Error en cambio manual de filtro de stock: {e}")
 
     articulos_advanced_stock_min_field = ft.TextField(label="Mín. (Stock)", width=120, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_min_field)
     articulos_advanced_stock_max_field = ft.TextField(label="Máx. (Stock)", width=120, dense=True, on_submit=_art_stock_manual_change); _style_input(articulos_advanced_stock_max_field)
@@ -1470,15 +1486,16 @@ def main(page: ft.Page) -> None:
             ]:
                 try: 
                     if ctrl.page: ctrl.update()
-                except: pass
+                except Exception as e:
+                    logger.warning(f"Falló al actualizar control de filtro de artículo: {e}")
             
         except Exception as e: 
             print(f"Error refreshing article filters: {e}")
     def _ent_live(e):
         try:
             entidades_table.trigger_refresh()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar tabla de entidades: {e}")
 
     entidades_advanced_cuit = ft.TextField(label="CUIT contiene", width=200, on_change=_ent_live)
     _style_input(entidades_advanced_cuit)
@@ -2218,14 +2235,14 @@ def main(page: ft.Page) -> None:
             try:
                 nueva_entidad_condicion_iva.update()
                 entidades_advanced_iva.update()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Falló al actualizar campos IVA de entidad: {e}")
 
             try:
                 nueva_entidad_provincia.prefetch()
                 nueva_entidad_lista_precio.prefetch()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Falló al precargar dropdowns de entidad: {e}")
         except Exception as e:
             print(f"Error loading entity dropdowns: {e}")
 
@@ -2947,7 +2964,8 @@ def main(page: ft.Page) -> None:
                 )
                 row_cont.price_data = {"lp_id": l["id"]}
                 articulo_precios_container.controls.append(row_cont)
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al llenar precios de artículo: {e}")
 
         open_form(
             "Nuevo artículo",
@@ -3078,8 +3096,10 @@ def main(page: ft.Page) -> None:
         editing_article_id = art_id
         db_conn = get_db_or_toast()
         if db_conn is None: return
-        try: reload_catalogs()
-        except: pass
+        try:
+            reload_catalogs()
+        except Exception as e:
+            logger.warning(f"Falló al recargar catálogos en editar artículo: {e}")
 
         _populate_dropdowns()
 
@@ -4745,8 +4765,8 @@ def main(page: ft.Page) -> None:
                         text_valor_declarado.value = _format_money(new_val)
                         try:
                             text_valor_declarado.update()
-                        except:
-                            pass 
+                        except Exception as e:
+                            logger.warning(f"Falló al actualizar valor declarado: {e}") 
                     page.close(edit_dialog)
                 except Exception as ex:
                     show_toast(f"Error: {ex}", kind="error")
@@ -4888,8 +4908,10 @@ def main(page: ft.Page) -> None:
 
     # Movement filters (Move up to be accessible via reload_catalogs if needed)
     def _mov_live(_=None):
-        try: movimientos_table.trigger_refresh()
-        except: pass
+        try:
+            movimientos_table.trigger_refresh()
+        except Exception as e:
+            logger.warning(f"Falló al actualizar tabla de movimientos: {e}")
 
     def movimientos_data_provider(offset, limit, search, simple, advanced, sorts):
         if not db:
@@ -4934,8 +4956,10 @@ def main(page: ft.Page) -> None:
             for ctrl in [doc_adv_tipo, doc_adv_entidad, pago_adv_entidad]:
                 try:
                     if ctrl.page: ctrl.update()
-                except: pass
-        except: pass
+                except Exception as e:
+                    logger.warning(f"Falló al actualizar control de filtro documento/pago: {e}")
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de documentos: {e}")
 
     def refresh_pagos_catalogs():
         if not db: return
@@ -4945,7 +4969,8 @@ def main(page: ft.Page) -> None:
                 ft.dropdown.Option(str(f["id"]), f["descripcion"]) for f in formas
             ]
             if pago_adv_forma.page: pago_adv_forma.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de pagos: {e}")
 
     def refresh_movimientos_catalogs():
         if not db: return
@@ -4979,15 +5004,17 @@ def main(page: ft.Page) -> None:
                                 f"{missing_art['nombre']} (Cod: {missing_art['id']})",
                             )
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Falló al cargar artículo faltante {selected_art}: {e}")
             mov_adv_art.options = art_options
 
             for ctrl in [mov_adv_tipo, mov_adv_depo, mov_adv_user, mov_adv_art]:
                 try: 
                     if ctrl.page: ctrl.update()
-                except: pass
-        except: pass
+                except Exception as e:
+                    logger.warning(f"Falló al actualizar control de filtro de movimientos: {e}")
+        except Exception as e:
+            logger.warning(f"Falló al actualizar catálogos de movimientos: {e}")
 
     def refresh_remitos_catalogs():
         if not db: return
@@ -4998,7 +5025,8 @@ def main(page: ft.Page) -> None:
             ]
             if rem_adv_deposito.page:
                 rem_adv_deposito.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     # Documents View
     # fetch document types and entities for dropdowns
@@ -5053,7 +5081,8 @@ def main(page: ft.Page) -> None:
     # Range slider for Total
     max_total = 1000000.0
     try: max_total = db.get_max_document_total()
-    except: pass
+    except Exception as e:
+        logger.warning(f"Falló al actualizar: {e}")
     if max_total < 1000: max_total = 1000.0
 
     # Label for Range Slider (Matches inventory style)
@@ -5063,7 +5092,8 @@ def main(page: ft.Page) -> None:
         s = e.control
         range_label.value = f"Total: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
         try: range_label.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     doc_adv_total = ft.RangeSlider(
         min=0, max=max_total,
@@ -5090,7 +5120,8 @@ def main(page: ft.Page) -> None:
         try:
             doc_adv_total.update()
             range_label.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     documentos_summary_table = GenericTable(
         columns=[
@@ -5263,16 +5294,10 @@ def main(page: ft.Page) -> None:
             actions=[]
         )
 
-        def _close_dialog(_=None):
-            try:
-                page.close(dialog)
-            except Exception:
-                pass
-
         def _save_state(_=None):
             selected_state = dropdown.value
             if not selected_state or selected_state == current_state:
-                _close_dialog()
+                page.close(dialog)
                 return
             if not db:
                 show_toast("Base de datos no disponible", kind="error")
@@ -5280,13 +5305,13 @@ def main(page: ft.Page) -> None:
             try:
                 db.update_remito_estado(int(rem_row["id"]), selected_state)
                 show_toast("Estado actualizado", kind="success")
-                remitos_table.refresh()
-                _close_dialog()
+                remitos_table.trigger_refresh()
+                page.close(dialog)
             except Exception as exc:
                 show_toast(f"Error actualizando estado: {exc}", kind="error")
 
         dialog.actions = [
-            _cancel_button("Cancelar", on_click=_close_dialog),
+            _cancel_button("Cancelar", on_click=lambda _: page.close(dialog)),
             ft.ElevatedButton(
                 "Guardar",
                 icon=ft.icons.CHECK,
@@ -5296,7 +5321,9 @@ def main(page: ft.Page) -> None:
                 on_click=_save_state,
             ),
         ]
-        page.open(dialog)
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
 
     def _movimiento_observacion_dialog(observacion: Optional[str]):
         if not observacion:
@@ -5539,7 +5566,8 @@ def main(page: ft.Page) -> None:
     try:
         # We don't have a direct get_max_monto_pago, using a safe default or querying later
         pass
-    except: pass
+    except Exception as e:
+        logger.warning(f"Falló al actualizar: {e}")
     
     monto_range_label = ft.Text(f"Monto: entre $0 y ${max_monto:,.0f}", size=12, weight=ft.FontWeight.BOLD)
     
@@ -5547,7 +5575,8 @@ def main(page: ft.Page) -> None:
         s = e.control
         monto_range_label.value = f"Monto: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
         try: monto_range_label.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     pago_adv_monto = ft.RangeSlider(
         min=0, max=max_monto,
@@ -5573,7 +5602,8 @@ def main(page: ft.Page) -> None:
         try:
             pago_adv_monto.update()
             monto_range_label.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     def show_payment_info(text):
         if not text: return
@@ -5677,7 +5707,8 @@ def main(page: ft.Page) -> None:
             else:
                 pago_monto.value = ""
             try: pago_monto.update()
-            except: pass
+            except Exception as e:
+                logger.warning(f"Falló al actualizar interfaz: {e}")
 
         pago_documento = AsyncSelect(label="Comprobante Pendiente *", loader=pending_doc_loader, width=400, disabled=True, on_change=on_doc_change)
         
@@ -5705,7 +5736,8 @@ def main(page: ft.Page) -> None:
             try:
                 pago_documento.update()
                 pago_monto.update()
-            except: pass
+            except Exception as e:
+                logger.warning(f"Falló al actualizar interfaz: {e}")
 
         pago_entidad.on_change = on_entidad_change
         
@@ -5797,8 +5829,8 @@ def main(page: ft.Page) -> None:
     def _cc_live(e):
         try:
             cuentas_table.trigger_refresh()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar cuentas table: {e}")
 
     cc_adv_tipo = _dropdown("Tipo", [("", "Todos"), ("CLIENTE", "Clientes"), ("PROVEEDOR", "Proveedores")], value="", width=180, on_change=_cc_live)
     cc_adv_estado = _dropdown("Estado", [("", "Todos"), ("DEUDOR", "Deudores"), ("A_FAVOR", "A Favor"), ("AL_DIA", "Al Día")], value="", width=180, on_change=_cc_live)
@@ -6096,7 +6128,8 @@ def main(page: ft.Page) -> None:
             cc_stat_deudores.update()
             cc_stat_cobros.update()
             cc_stat_movs.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     cuentas_view = ft.Column([
         ft.Row([
@@ -6208,7 +6241,8 @@ def main(page: ft.Page) -> None:
         
         try:
             logs_historico_rango.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
         
         if is_historico:
             # Apply current range immediately
@@ -6220,7 +6254,8 @@ def main(page: ft.Page) -> None:
             try:
                 logs_adv_desde.update()
                 logs_adv_hasta.update()
-            except: pass
+            except Exception as e:
+                logger.warning(f"Falló al actualizar interfaz: {e}")
             logs_table.refresh()
 
     def _on_logs_rango_change(e):
@@ -6234,7 +6269,8 @@ def main(page: ft.Page) -> None:
             try:
                 logs_adv_desde.update()
                 logs_adv_hasta.update()
-            except: pass
+            except Exception as e:
+                logger.warning(f"Falló al actualizar interfaz: {e}")
         logs_table.refresh()
 
     logs_historico_toggle.on_change = _on_logs_toggle_change
@@ -6304,7 +6340,8 @@ def main(page: ft.Page) -> None:
     try:
         if file_picker not in page.overlay:
             page.overlay.append(file_picker)
-    except: pass
+    except Exception as e:
+        logger.warning(f"Falló al actualizar interfaz: {e}")
 
     def open_log_config_dialog(e):
         try:
@@ -6339,8 +6376,8 @@ def main(page: ft.Page) -> None:
             if _current_dialog:
                 try:
                     _current_dialog.open = False
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Fallo al llamar on_submit: {e}")
             
             # Show success message with dialog
             def close_success_dialog(x=None):
@@ -6386,8 +6423,8 @@ def main(page: ft.Page) -> None:
             if _current_dialog:
                 try:
                     _current_dialog.open = False
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Fallo al llamar on_submit: {e}")
             
             # Create progress dialog (non-modal so user can still interact)
             progress_dialog = ft.AlertDialog(
@@ -6477,7 +6514,7 @@ def main(page: ft.Page) -> None:
                             result_dialog.open = True
                             page.update()
                         except Exception as finish_ex:
-                            print(f"Error in finish callback: {finish_ex}")
+                            print(f"Error en finish callback: {finish_ex}")
                             _archive_running = False
 
                     _on_finish()
@@ -6491,7 +6528,7 @@ def main(page: ft.Page) -> None:
             import threading
             threading.Thread(target=_run_thread, daemon=True).start()
         except Exception as ex:
-            print(f"Error in run_archive_now: {ex}")
+            print(f"Error en run_archive_now: {ex}")
             _archive_running = False
 
     log_conf_btn_run.on_click = run_archive_now
@@ -6915,8 +6952,8 @@ def main(page: ft.Page) -> None:
             # Apply visibility to the actual control and update immediately
             try:
                 table.set_export_visibility(should_show_export)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to set export visibility: {e}")
 
             # 1.1 Enforcement of Interactive Controls for non-admins
             # (EMPLEADO should only see data, not edit/delete mass)
@@ -6949,8 +6986,8 @@ def main(page: ft.Page) -> None:
         # 5. Commit all visibility changes to the page
         try:
             page.update()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar page with visibility changes: {e}")
     
     login_email = ft.TextField(
         label="Email o Usuario",
@@ -7283,7 +7320,8 @@ def main(page: ft.Page) -> None:
                                     try:
                                         usuarios_table.refresh()
                                         sesiones_table.refresh()
-                                    except: pass
+                                    except Exception as e:
+                                        logger.warning(f"Falló al actualizar: {e}")
                                 elif key == "logs":
                                     logs_table.refresh(silent=True)
                                 elif key == "dashboard":
@@ -7477,7 +7515,8 @@ def main(page: ft.Page) -> None:
             content_holder.content = ensure_masivos_view()
             try:
                 content_holder.content.load_catalogs()
-            except: pass
+            except Exception as e:
+                logger.warning(f"Operacion fallo: {e}")
         else:
             content_holder.content = articulos_view
         
@@ -7536,7 +7575,7 @@ def main(page: ft.Page) -> None:
             try:
                 on_config_tab_change(None)
             except Exception as e:
-                print(f"Error initializing config tabs: {e}")
+                print(f"Error enitializing config tabs: {e}")
             
             try:
                 refresh_loc_provs()
@@ -7613,7 +7652,8 @@ def main(page: ft.Page) -> None:
                     icon.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                     text.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                     text.weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
-                except: pass
+                except Exception as e:
+                    logger.warning(f"Operacion fallo: {e}")
                 
                 new_controls.append(item)
                 
@@ -7634,7 +7674,8 @@ def main(page: ft.Page) -> None:
                     icon.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                     text.color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                     text.weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
-                except: pass
+                except Exception as e:
+                    logger.warning(f"Operacion fallo: {e}")
                 
                 new_controls.append(item)
 
@@ -7671,7 +7712,8 @@ def main(page: ft.Page) -> None:
                     row.controls[0].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                     row.controls[1].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                     row.controls[1].weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
-                except: pass
+                except Exception as e:
+                    logger.warning(f"Operacion fallo: {e}")
                 new_controls.append(item)
             
             # Admin Only Items
@@ -7689,7 +7731,8 @@ def main(page: ft.Page) -> None:
                             row.controls[0].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                             row.controls[1].color = COLOR_SIDEBAR_ACTIVE if selected else COLOR_SIDEBAR_TEXT
                             row.controls[1].weight = ft.FontWeight.BOLD if selected else ft.FontWeight.W_500
-                        except: pass
+                        except Exception as e:
+                            logger.warning(f"Operacion fallo: {e}")
                         new_controls.append(item)
 
         # Apply new controls to ListView
@@ -7699,7 +7742,8 @@ def main(page: ft.Page) -> None:
         # Also update sidebar container just in case
         try:
             sidebar.update()
-        except: pass
+        except Exception as e:
+            logger.warning(f"Falló al actualizar interfaz: {e}")
 
     # User info display (updated after login)
     sidebar_user_name = ft.Text("Usuario", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
@@ -8138,7 +8182,8 @@ def main(page: ft.Page) -> None:
                         prices = db.fetch_article_prices(int(art_id))
                         for p in prices:
                             prices_map[str(p["id_lista_precio"])] = p.get("precio", 0)
-                    except: pass
+                    except Exception as e:
+                        logger.warning(f"Operacion fallo: {e}")
                 
                 items = []
                 for r in active_rows:
@@ -8239,7 +8284,8 @@ def main(page: ft.Page) -> None:
                         stock_text.weight = ft.FontWeight.NORMAL
                     if stock_text.page:
                         stock_text.update()
-                except: pass
+                except Exception as e:
+                    logger.warning(f"Falló al actualizar interfaz: {e}")
 
             def _on_art_change(e):
                 # Recargar opciones para actualizar los precios en los labels (ej: "Lista X ($500)")
@@ -8609,7 +8655,7 @@ def main(page: ft.Page) -> None:
         try:
             reload_catalogs()
         except Exception as exc:
-            print(f"Error initial reload: {exc}")
+            print(f"Error enitial reload: {exc}")
         
         # Start log archiver in background (archives old logs after 30s delay)
         try:
