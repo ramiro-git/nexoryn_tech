@@ -17,7 +17,7 @@ Es necesario habilitar los siguientes servicios en "Administrador de Relaciones 
 1.  Ingresar a "Gestión de Puntos de Venta y Comprobantes".
 2.  Agregar nuevo Punto de Venta.
 3.  **Importante**: El sistema debe ser **"RECE para aplicativo y web services"**.
-4.  Anotar el número (Ej: 0002).
+4.  Anotar el número (Ej: 3).
 
 ### 1.3. Generación del Certificado (Homologación/Producción)
 1.  **Generar Clave Privada (`.key`)**: Se hace localmente (Nexoryn lo hará con OpenSSL).
@@ -90,3 +90,6 @@ Actualizar el motor de reportes para:
 
 > [!TIP]
 > **Recomendación**: Empezar con Factura C (Monotributo) si el cliente es pequeño, o Factura B (Responsable Inscripto a Consumidor Final) por ser las más comunes.
+
+> [!TIP]
+> **OpenSSL en Windows**: La aplicación gestiona automáticamente la variable `MSYS_NO_PATHCONV`. Si utiliza Git Bash, no es necesario configurar nada adicional para que las rutas de los certificados sean procesadas correctamente.
