@@ -23,6 +23,9 @@ except ImportError:
     print("ERROR: pandas is required. Install with: pip install pandas")
     sys.exit(1)
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from desktop_app.enums import DocumentoEstado
+
 # Constants
 MAX_BIGINT = 9223372036854775807
 MIN_BIGINT = -9223372036854775808
@@ -1033,9 +1036,9 @@ def import_ventcab(conn: psycopg2.extensions.connection, cache: LookupCache) -> 
 
     # Determine status from CSV Paga/Anul columns
     def determine_status(row):
-        if str(row.get('anul')) == '1': return 'ANULADO'
-        if str(row.get('paga')) == '1': return 'PAGADO'
-        return 'CONFIRMADO'
+        if str(row.get('anul')) == '1': return DocumentoEstado.ANULADO.value
+        if str(row.get('paga')) == '1': return DocumentoEstado.PAGADO.value
+        return DocumentoEstado.CONFIRMADO.value
     
     final_df['estado'] = df.apply(determine_status, axis=1)
     final_df['total'] = pd.to_numeric(df['tventa'], errors='coerce').fillna(0)

@@ -5,12 +5,12 @@ import json
 
 try:
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
+    from desktop_app.components.button_styles import cancel_button
+    from desktop_app.enums import BackupEstado
 except ImportError:
     from components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
-try:
-    from desktop_app.components.button_styles import cancel_button
-except ImportError:
     from components.button_styles import cancel_button
+    from enums import BackupEstado
 
 
 class BackupProfessionalView:
@@ -206,7 +206,7 @@ class BackupProfessionalView:
                     key="estado",
                     label="Estado",
                     width=100,
-                    renderer=lambda row: self._get_status_badge(row.get('estado', 'PENDIENTE'))
+                    renderer=lambda row: self._get_status_badge(row.get('estado', BackupEstado.PENDIENTE.value))
                 ),
                 ColumnConfig(
                     key="_actions",
@@ -639,10 +639,10 @@ class BackupProfessionalView:
     
     def _get_status_badge(self, estado: str) -> ft.Container:
         colors = {
-            'COMPLETADO': self.COLOR_SUCCESS,
-            'EN_PROGRESO': self.COLOR_INFO,
-            'FALLIDO': self.COLOR_ERROR,
-            'PENDIENTE': self.COLOR_WARNING
+            BackupEstado.COMPLETADO.value: self.COLOR_SUCCESS,
+            BackupEstado.EN_PROGRESO.value: self.COLOR_INFO,
+            BackupEstado.FALLIDO.value: self.COLOR_ERROR,
+            BackupEstado.PENDIENTE.value: self.COLOR_WARNING
         }
         
         color = colors.get(estado, self.COLOR_TEXT_MUTED)

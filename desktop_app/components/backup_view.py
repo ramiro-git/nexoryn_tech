@@ -12,14 +12,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 try:
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
+    from desktop_app.components.button_styles import cancel_button
+    from desktop_app.enums import BackupEstado
 except ImportError:
     # Adjust import based on environment
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
-
-try:
-    from desktop_app.components.button_styles import cancel_button
-except ImportError:
     from components.button_styles import cancel_button
+    from enums import BackupEstado
 
 class BackupView:
     def __init__(self, page: ft.Page, backup_service, show_message_callback: Callable, set_connection_callback: Callable):
@@ -524,10 +523,10 @@ class BackupView:
 
     def _get_status_badge(self, estado: str) -> ft.Container:
         colors = {
-            'COMPLETADO': self.COLOR_SUCCESS,
-            'EN_PROGRESO': self.COLOR_INFO,
-            'FALLIDO': self.COLOR_ERROR,
-            'PENDIENTE': self.COLOR_WARNING
+            BackupEstado.COMPLETADO.value: self.COLOR_SUCCESS,
+            BackupEstado.EN_PROGRESO.value: self.COLOR_INFO,
+            BackupEstado.FALLIDO.value: self.COLOR_ERROR,
+            BackupEstado.PENDIENTE.value: self.COLOR_WARNING
         }
 
         color = colors.get(estado, self.COLOR_TEXT_MUTED)

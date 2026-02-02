@@ -11,6 +11,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from psycopg.errors import ForeignKeyViolation, IntegrityError
 from psycopg_pool import ConnectionPool
 
+from enums import (
+    DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
+    DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES, DOCUMENTO_ESTADOS_ACTIVOS
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -800,7 +805,7 @@ class Database:
                     SUM(total) as total_ventas,
                     COUNT(*) as cantidad_ventas
                 FROM app.v_documento_resumen
-                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                WHERE clase = %s AND estado IN (%s, %s)
                   AND fecha >= current_date
                 GROUP BY 1
                 ORDER BY 1 ASC
@@ -814,7 +819,7 @@ class Database:
                     SUM(total) as total_ventas,
                     COUNT(*) as cantidad_ventas
                 FROM app.v_documento_resumen
-                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                WHERE clase = %s AND estado IN (%s, %s)
                   AND fecha >= date_trunc('week', now())
                 GROUP BY 1, date_trunc('day', fecha)
                 ORDER BY date_trunc('day', fecha) ASC
@@ -828,7 +833,7 @@ class Database:
                     SUM(total) as total_ventas,
                     COUNT(*) as cantidad_ventas
                 FROM app.v_documento_resumen
-                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                WHERE clase = %s AND estado IN (%s, %s)
                   AND fecha >= date_trunc('month', now())
                 GROUP BY 1, date_trunc('day', fecha)
                 ORDER BY date_trunc('day', fecha) ASC
@@ -842,7 +847,7 @@ class Database:
                     SUM(total) as total_ventas,
                     COUNT(*) as cantidad_ventas
                 FROM app.v_documento_resumen
-                WHERE clase = 'VENTA' AND estado IN ('CONFIRMADO', 'PAGADO')
+                WHERE clase = %s AND estado IN (%s, %s)
                   AND fecha >= date_trunc('year', now())
                 GROUP BY 1, date_trunc('month', fecha)
                 ORDER BY date_trunc('month', fecha) ASC
@@ -852,9 +857,11 @@ class Database:
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 if period not in ("Hoy", "Semana", "Mes"):
-                     cur.execute(query, (limit,))
+                     cur.execute(query, (ClaseDocumento.VENTA.value, DocumentoEstado.CONFIRMADO.value, 
+                                       DocumentoEstado.PAGADO.value, limit))
                 else:
-                     cur.execute(query)
+                     cur.execute(query, (ClaseDocumento.VENTA.value, DocumentoEstado.CONFIRMADO.value, 
+                                       DocumentoEstado.PAGADO.value))
                 
                 rows = cur.fetchall()
                 # Map to list of dicts. Note: "mes" key used by dashboard_view for label
@@ -952,15 +959,16 @@ class Database:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT SUM(total) FROM app.v_documento_resumen 
-                    WHERE clase = 'VENTA' AND fecha >= date_trunc('month', now())
-                """)
+                    WHERE clase = %s AND fecha >= date_trunc('month', now())
+                """, (ClaseDocumento.VENTA.value,))
                 ventas = cur.fetchone()[0] or 0
                 cur.execute("""
                     SELECT SUM(total) FROM app.v_documento_resumen 
-                    WHERE clase = 'COMPRA' AND fecha >= date_trunc('month', now())
-                """)
+                    WHERE clase = %s AND fecha >= date_trunc('month', now())
+                """, (ClaseDocumento.COMPRA.value,))
                 compras = cur.fetchone()[0] or 0
-                cur.execute("SELECT COUNT(*) FROM app.documento WHERE estado IN ('BORRADOR', 'CONFIRMADO')")
+                cur.execute("SELECT COUNT(*) FROM app.documento WHERE estado IN (%s, %s)", 
+                           (DocumentoEstado.BORRADOR.value, DocumentoEstado.CONFIRMADO.value))
                 pend = cur.fetchone()[0]
                 return {"ventas_mes": float(ventas), "compras_mes": float(compras), "pendientes": pend}
 

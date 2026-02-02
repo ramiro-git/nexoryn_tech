@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fpdf import FPDF
 
+from desktop_app.enums import DocumentoEstado, RemotoEstado
+
 logger = logging.getLogger(__name__)
 
 # Color constants for consistent styling

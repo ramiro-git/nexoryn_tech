@@ -1895,8 +1895,8 @@ class GenericTable:
                 label=col.label,
                 value=str(current_val).lower() if current_val is not None else "false",
                 options=[
-                    ft.dropdown.Option("true", "Sí"),
-                    ft.dropdown.Option("false", "No")
+                    ft.dropdown.Option("true", "Verdadero"),
+                    ft.dropdown.Option("false", "Falso")
                 ],
                 filled=True,
                 bgcolor="#F8FAFC",

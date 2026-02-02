@@ -68,6 +68,10 @@ try:
     from desktop_app.services.print_service import generate_pdf_and_open
     from desktop_app.components.async_select import AsyncSelect
     from desktop_app.components.button_styles import cancel_button
+    from desktop_app.enums import (
+        DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
+        DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES
+    )
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
@@ -85,9 +89,10 @@ except ImportError:
     from components.mass_update_view import MassUpdateView # type: ignore
     from services.print_service import generate_pdf_and_open # type: ignore
     from components.button_styles import cancel_button # type: ignore
-except ImportError:
-    from config import load_config  # type: ignore
-    from database import Database  # type: ignore
+    from enums import (  # type: ignore
+        DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
+        DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES
+    )
     from services.afip_service import AfipService # type: ignore
     from services.backup_service import BackupService # type: ignore
     from services.print_service import generate_pdf_and_open # type: ignore
@@ -118,10 +123,10 @@ COLOR_WARNING = "#EA580C"  # Deep Orange 600 (definitely not yellow)
 COLOR_INFO = "#3B82F6"     # Blue 500
 
 REMITO_ESTADOS = [
-    ("PENDIENTE", "Pendiente"),
-    ("DESPACHADO", "Despachado"),
-    ("ENTREGADO", "Entregado"),
-    ("ANULADO", "Anulado"),
+    (RemotoEstado.PENDIENTE.value, "Pendiente"),
+    (RemotoEstado.DESPACHADO.value, "Despachado"),
+    (RemotoEstado.ENTREGADO.value, "Entregado"),
+    (RemotoEstado.ANULADO.value, "Anulado"),
 ]
 
 class SafeDataTable(ft.DataTable):
@@ -186,7 +191,7 @@ def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
 def _format_bool(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
     if value is None:
         return "—"
-    return "Sí" if bool(value) else "No"
+    return "Verdadero" if bool(value) else "Falso"
 
 
 def _bool_pill(value: Any) -> ft.Control:
@@ -207,15 +212,15 @@ def _status_pill(value: Any, row: Optional[Dict[str, Any]] = None) -> ft.Control
     status = str(value or "").upper()
     
     # Check if 'CONFIRMADO' should be 'FACTURADO'
-    if status == "CONFIRMADO" and row and row.get("cae"):
+    if status == DocumentoEstado.CONFIRMADO.value and row and row.get("cae"):
         status = "FACTURADO"
 
     colors = {
-        "PAGADO": ("#DCFCE7", "#166534"),
-        "CONFIRMADO": ("#E0F2FE", "#075985"),
+        DocumentoEstado.PAGADO.value: ("#DCFCE7", "#166534"),
+        DocumentoEstado.CONFIRMADO.value: ("#E0F2FE", "#075985"),
         "FACTURADO": ("#CCFBF1", "#0F766E"), # Teal colors for FACTURADO
-        "BORRADOR": ("#F1F5F9", "#475569"),
-        "ANULADO": ("#FEE2E2", "#991B1B"),
+        DocumentoEstado.BORRADOR.value: ("#F1F5F9", "#475569"),
+        DocumentoEstado.ANULADO.value: ("#FEE2E2", "#991B1B"),
     }
     bg, fg = colors.get(status, ("#F3F4F6", "#374151"))
     return ft.Container(
@@ -229,10 +234,10 @@ def _status_pill(value: Any, row: Optional[Dict[str, Any]] = None) -> ft.Control
 def _remito_status_pill(value: Any) -> ft.Control:
     status = str(value or "").upper()
     colors = {
-        "PENDIENTE": ("#FEF3C7", "#92400E"),
-        "DESPACHADO": ("#DBEAFE", "#1D4ED8"),
-        "ENTREGADO": ("#DCFCE7", "#166534"),
-        "ANULADO": ("#FEE2E2", "#991B1B"),
+        RemotoEstado.PENDIENTE.value: ("#FEF3C7", "#92400E"),
+        RemotoEstado.DESPACHADO.value: ("#DBEAFE", "#1D4ED8"),
+        RemotoEstado.ENTREGADO.value: ("#DCFCE7", "#166534"),
+        RemotoEstado.ANULADO.value: ("#FEE2E2", "#991B1B"),
     }
     bg, fg = colors.get(status, ("#F3F4F6", "#374151"))
     return ft.Container(
@@ -2280,10 +2285,12 @@ def main(page: ft.Page) -> None:
             entidades_advanced_iva.options = [ft.dropdown.Option("", "Todos")] + [ft.dropdown.Option(c["nombre"], c["nombre"]) for c in condiciones]
             
             try:
-                nueva_entidad_condicion_iva.update()
-                entidades_advanced_iva.update()
+                # Only attempt to update if controls are added to a page
+                if nueva_entidad_condicion_iva.page and entidades_advanced_iva.page:
+                    nueva_entidad_condicion_iva.update()
+                    entidades_advanced_iva.update()
             except Exception as e:
-                logger.warning(f"Falló al actualizar campos IVA de entidad: {e}")
+                logger.debug(f"No se pudieron actualizar campos IVA (controles no agregados a la página): {e}")
 
             try:
                 nueva_entidad_provincia.prefetch()
@@ -4207,7 +4214,7 @@ def main(page: ft.Page) -> None:
     # Documents View
     def _can_authorize_afip(doc_row: Dict[str, Any]) -> bool:
         estado = str(doc_row.get("estado") or "").upper()
-        return estado in ("CONFIRMADO", "PAGADO") and doc_row.get("codigo_afip") and not doc_row.get("cae")
+        return estado in (DocumentoEstado.CONFIRMADO.value, DocumentoEstado.PAGADO.value) and doc_row.get("codigo_afip") and not doc_row.get("cae")
 
     def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
         if not _can_authorize_afip(doc_row):
@@ -4407,7 +4414,7 @@ def main(page: ft.Page) -> None:
     # Documents View
     def _can_authorize_afip(doc_row: Dict[str, Any]) -> bool:
         estado = str(doc_row.get("estado") or "").upper()
-        return estado in ("CONFIRMADO", "PAGADO") and doc_row.get("codigo_afip") and not doc_row.get("cae")
+        return estado in (DocumentoEstado.CONFIRMADO.value, DocumentoEstado.PAGADO.value) and doc_row.get("codigo_afip") and not doc_row.get("cae")
 
     def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
         if not _can_authorize_afip(doc_row):
@@ -4633,7 +4640,7 @@ def main(page: ft.Page) -> None:
                                 weight=ft.FontWeight.BOLD, 
                                 color="#FFFFFF"
                             ),
-                            bgcolor=COLOR_SUCCESS if doc_row.get("estado") == "PAGADO" else (COLOR_ERROR if doc_row.get("estado") == "ANULADO" else COLOR_INFO),
+                            bgcolor=COLOR_SUCCESS if doc_row.get("estado") == DocumentoEstado.PAGADO.value else (COLOR_ERROR if doc_row.get("estado") == DocumentoEstado.ANULADO.value else COLOR_INFO),
                             padding=ft.padding.symmetric(horizontal=10, vertical=4),
                             border_radius=20
                         )
@@ -4754,7 +4761,7 @@ def main(page: ft.Page) -> None:
             )
             
             actions = [_cancel_button("Cerrar", on_click=close_form)]
-            if estado == "BORRADOR":
+            if estado == DocumentoEstado.BORRADOR.value:
                 actions.insert(0, ft.ElevatedButton(
                     "Confirmar Comprobante",
                     icon=ft.icons.CHECK_CIRCLE,
@@ -5104,10 +5111,10 @@ def main(page: ft.Page) -> None:
         width=140, 
         options=[
             ft.dropdown.Option("Todos", "Todos"),
-            ft.dropdown.Option("BORRADOR", "Borrador"),
-            ft.dropdown.Option("CONFIRMADO", "Confirmado"),
-            ft.dropdown.Option("ANULADO", "Anulado"),
-            ft.dropdown.Option("PAGADO", "Pagado"),
+            ft.dropdown.Option(DocumentoEstado.BORRADOR.value, "Borrador"),
+            ft.dropdown.Option(DocumentoEstado.CONFIRMADO.value, "Confirmado"),
+            ft.dropdown.Option(DocumentoEstado.ANULADO.value, "Anulado"),
+            ft.dropdown.Option(DocumentoEstado.PAGADO.value, "Pagado"),
         ],
         value="Todos"
     ); _style_input(doc_adv_estado)
@@ -5184,7 +5191,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_confirm", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    row.get("estado") == "BORRADOR" and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
+                    row.get("estado") == DocumentoEstado.BORRADOR.value and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     icon=ft.icons.CHECK_CIRCLE,
                     tooltip="Confirmar comprobante",
                     icon_color=COLOR_SUCCESS,
@@ -5203,7 +5210,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_edit", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    row.get("estado") == "BORRADOR" and not row.get("cae") and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
+                    row.get("estado") == DocumentoEstado.BORRADOR.value and not row.get("cae") and (CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]),
                     icon=ft.icons.EDIT_ROUNDED,
                     tooltip="Editar borrador",
                     icon_color=COLOR_ACCENT,
@@ -5259,7 +5266,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(
                 key="_nc", label="", sortable=False, width=40,
                 renderer=lambda row: _icon_button_or_spacer(
-                    row.get("estado") == "CONFIRMADO" and row.get("cae"),
+                    row.get("estado") == DocumentoEstado.CONFIRMADO.value and row.get("cae"),
                     icon=ft.icons.RECEIPT_LONG_OUTLINED,
                     tooltip="Generar Nota de Crédito",
                     icon_color=COLOR_WARNING,
@@ -5319,7 +5326,7 @@ def main(page: ft.Page) -> None:
         if not rem_row:
             return
 
-        current_state = rem_row.get("estado") or "PENDIENTE"
+        current_state = rem_row.get("estado") or RemotoEstado.PENDIENTE.value
         dropdown = ft.Dropdown(
             label="Estado",
             value=current_state,
@@ -5406,10 +5413,10 @@ def main(page: ft.Page) -> None:
         label="Estado",
         options=[
             ft.dropdown.Option("", "Todos"),
-            ft.dropdown.Option("PENDIENTE", "Pendiente"),
-            ft.dropdown.Option("DESPACHADO", "Despachado"),
-            ft.dropdown.Option("ENTREGADO", "Entregado"),
-            ft.dropdown.Option("ANULADO", "Anulado"),
+            ft.dropdown.Option(RemotoEstado.PENDIENTE.value, "Pendiente"),
+            ft.dropdown.Option(RemotoEstado.DESPACHADO.value, "Despachado"),
+            ft.dropdown.Option(RemotoEstado.ENTREGADO.value, "Entregado"),
+            ft.dropdown.Option(RemotoEstado.ANULADO.value, "Anulado"),
         ],
         width=200,
         value="",
