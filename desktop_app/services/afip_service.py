@@ -35,11 +35,34 @@ class AfipToken:
     expires_at: dt.datetime
 
 
-class LegacySslAdapter(HTTPAdapter):
+class SecureAfipSslAdapter(HTTPAdapter):
+    """
+    Adaptador SSL seguro para AFIP WSAA/WSFE.
+    
+    - PRODUCCIÓN: SECLEVEL=2 (ciphers modernos y seguros)
+    - HOMOLOGACIÓN: SECLEVEL=1 (mayor compatibilidad, ciphers seguros)
+    - Siempre valida hostname y certificados
+    - Usa certificados CA del sistema
+    
+    Seguridad: Previene MITM, ciphers débiles y downgrade attacks.
+    """
+    
+    def __init__(self, production: bool = False):
+        super().__init__()
+        self.production = production
+    
     def init_poolmanager(self, *args, **kwargs):
         ctx = ssl.create_default_context()
-        ctx.set_ciphers("DEFAULT@SECLEVEL=0")
-        ctx.check_hostname = False
+        
+        # En producción: SECLEVEL=2 (stricto)
+        # En homologación: SECLEVEL=1 (compatible pero seguro)
+        seclevel = "2" if self.production else "1"
+        ctx.set_ciphers(f"DEFAULT@SECLEVEL={seclevel}:!aNULL:!eNULL:!MD5:!DES:!3DES")
+        
+        # Validación obligatoria de certificados y hostname
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        
         kwargs["ssl_context"] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
@@ -112,7 +135,7 @@ class AfipService:
         self._ta_cache_path: Optional[Path] = None
 
         self._session = requests.Session()
-        adapter = LegacySslAdapter()
+        adapter = SecureAfipSslAdapter(production=self.production)
         self._session.mount("https://", adapter)
         self._transport = Transport(session=self._session, timeout=30)
         self._settings = Settings(strict=False, xml_huge_tree=True)
