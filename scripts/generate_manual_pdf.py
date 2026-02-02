@@ -50,7 +50,7 @@ class ManualPDF(FPDF):
         self.set_draw_color(239, 68, 68)  # Red 500
         self.set_text_color(153, 27, 27) # Red 800
         self.set_font('helvetica', 'B', 11)
-        self.cell(0, 8, f" ALERT: {title}", border='TLR', ln=True, fill=True)
+        self.cell(0, 8, f" ALERTA: {title}", border='TLR', ln=True, fill=True)
         self.set_font('helvetica', '', 10)
         self.multi_cell(0, 6, text, border='BLR', fill=True)
         self.ln(5)
