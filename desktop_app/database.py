@@ -461,7 +461,7 @@ class Database:
 
                 # 2. Sales Stats (Always includes Hoy/Mes/Total columns, so keeping it generic but potentially could filter "metrics" if needed)
                 # For now, we keep the global "boxes" as fixed (Hoy/Mes/Año) but we could filter the breakdowns.
-                stats["ventas"] = self._get_stats_ventas_extended(cur, role, start_date_sql)
+                stats["ventas"] = self._get_stats_ventas_extended(cur, role, start_date_sql, period)
 
                 # 3. Stock Stats
                 stats["stock"] = self._get_stats_stock_extended(cur, role, start_date_sql)
@@ -491,7 +491,7 @@ class Database:
                 }
         return stats
 
-    def _get_stats_ventas_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
+    def _get_stats_ventas_extended(self, cur, role, start_date_sql: str, period: str) -> Dict[str, Any]:
         """Sales statistics (25 metrics)"""
         # EMPLEADO has restricted access to some financial values
         show_money = role in ("ADMIN", "GERENTE")
@@ -547,17 +547,28 @@ class Database:
         
         # Add filtered stats if Gerente/Admin
         if role in ("ADMIN", "GERENTE"):
-            # Using formatted query safely with literal SQL for the date function
+            # Determine date filter as SQL literal expression (safe from injection)
+            date_expr_map = {
+                "Hoy": "current_date",
+                "Semana": "date_trunc('week', now())",
+                "Mes": "date_trunc('month', now())",
+                "Año": "date_trunc('year', now())"
+            }
+            # Use literal expression or fall back to month
+            date_expr = date_expr_map.get(period, "date_trunc('month', now())")
+            
+            # Query 1: Documents by type (using literal date expression)
             query_tipo = f"""
                 SELECT 
                     tipo_documento, COUNT(*) 
                 FROM app.v_documento_resumen
-                WHERE clase = 'VENTA' AND fecha >= {start_date_sql}
+                WHERE clase = 'VENTA' AND fecha >= {date_expr}
                 GROUP BY tipo_documento
             """
             cur.execute(query_tipo)
             res["por_tipo"] = {r[0]: r[1] for r in cur.fetchall()}
             
+            # Query 2: Payment methods (using literal date expression)
             query_fp = f"""
                 SELECT 
                     COALESCE(fp.descripcion, 'Efectivo'), 
@@ -567,7 +578,7 @@ class Database:
                 LEFT JOIN ref.forma_pago fp ON p.id_forma_pago = fp.id
                 WHERE d.clase = 'VENTA' 
                   AND d.estado != 'ANULADO'
-                  AND d.fecha >= {start_date_sql}
+                  AND d.fecha >= {date_expr}
                 GROUP BY COALESCE(fp.descripcion, 'Efectivo')
             """
             cur.execute(query_fp)
@@ -577,7 +588,25 @@ class Database:
 
     def _get_stats_stock_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Stock statistics (18 metrics)"""
-        # Using format to inject start_date_sql safely as it is a trusted string from internal logic
+        # Use literal date expression map to safely determine the date filter without f-string injection
+        date_expr_map = {
+            "Hoy": "current_date",
+            "Semana": "date_trunc('week', now())",
+            "Mes": "date_trunc('month', now())",
+            "Año": "date_trunc('year', now())"
+        }
+        # Extract period from start_date_sql to map to the correct literal expression
+        # start_date_sql like "current_date" or "date_trunc('month', now())" etc.
+        # For backward compatibility, try to map or default to 'Mes'
+        date_expr = "date_trunc('month', now())"
+        if "current_date" in start_date_sql:
+            date_expr = "current_date"
+        elif "'week'" in start_date_sql:
+            date_expr = "date_trunc('week', now())"
+        elif "'year'" in start_date_sql:
+            date_expr = "date_trunc('year', now())"
+        
+        # Build query with literal date expression (no f-string injection risk)
         query = f"""
             SELECT 
                 (SELECT COUNT(*) FROM app.articulo) as total,
@@ -585,8 +614,8 @@ class Database:
                 (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= stock_minimo) as bajo_stock,
                 (SELECT COUNT(*) FROM app.v_articulo_detallado WHERE stock_actual <= 0) as sin_stock,
                 (SELECT COALESCE(SUM(costo * stock_actual), 0) FROM app.v_articulo_detallado) as valor_costo,
-                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= {start_date_sql} AND cantidad > 0) as entradas_mes,
-                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= {start_date_sql} AND cantidad < 0) as salidas_mes,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= {date_expr} AND cantidad > 0) as entradas_mes,
+                (SELECT COUNT(*) FROM app.movimiento_articulo WHERE fecha >= {date_expr} AND cantidad < 0) as salidas_mes,
                 (SELECT COALESCE(SUM(stock_actual), 0) FROM app.v_articulo_detallado) as stock_total_unidades
         """
         cur.execute(query)
@@ -625,11 +654,20 @@ class Database:
 
     def _get_stats_entidades_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Clients and Providers stats (25 metrics)"""
+        # Use literal date expression map to safely determine the date filter
+        date_expr = "date_trunc('month', now())"
+        if "current_date" in start_date_sql:
+            date_expr = "current_date"
+        elif "'week'" in start_date_sql:
+            date_expr = "date_trunc('week', now())"
+        elif "'year'" in start_date_sql:
+            date_expr = "date_trunc('year', now())"
+        
         query = f"""
             SELECT 
                 (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo IN ('CLIENTE', 'AMBOS')) as clientes_total,
                 (SELECT COUNT(*) FROM app.entidad_comercial WHERE tipo IN ('PROVEEDOR', 'AMBOS')) as prov_total,
-                (SELECT COUNT(*) FROM app.entidad_comercial WHERE fecha_creacion >= {start_date_sql}) as nuevos_mes,
+                (SELECT COUNT(*) FROM app.entidad_comercial WHERE fecha_creacion >= {date_expr}) as nuevos_mes,
                 (SELECT COALESCE(SUM(saldo_cuenta), 0) FROM app.lista_cliente WHERE saldo_cuenta > 0) as deuda_clientes_total,
                 (SELECT COUNT(*) FROM app.lista_cliente WHERE saldo_cuenta > 0) as deudores_cant
         """
@@ -648,12 +686,21 @@ class Database:
 
     def _get_stats_finanzas_extended(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Financial stats (15 metrics) - Restricted to GERENTE/ADMIN"""
+        # Use literal date expression map to safely determine the date filter
+        date_expr = "date_trunc('month', now())"
+        if "current_date" in start_date_sql:
+            date_expr = "current_date"
+        elif "'week'" in start_date_sql:
+            date_expr = "date_trunc('week', now())"
+        elif "'year'" in start_date_sql:
+            date_expr = "date_trunc('year', now())"
+        
         query = f"""
             SELECT 
                 (SELECT COALESCE(SUM(monto), 0) FROM app.pago WHERE fecha >= current_date) as ingresos_hoy,
-                (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= {start_date_sql}) as egresos_mes,
-                (SELECT COALESCE(SUM(p.monto), 0) FROM app.pago p JOIN app.v_documento_resumen d ON p.id_documento = d.id WHERE d.clase = 'VENTA' AND p.fecha >= {start_date_sql}) as ingresos_mes,
-                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= {start_date_sql}) as iva_estimado_mes,
+                (SELECT COALESCE(SUM(total), 0) FROM app.v_documento_resumen WHERE clase = 'COMPRA' AND fecha >= {date_expr}) as egresos_mes,
+                (SELECT COALESCE(SUM(p.monto), 0) FROM app.pago p JOIN app.v_documento_resumen d ON p.id_documento = d.id WHERE d.clase = 'VENTA' AND p.fecha >= {date_expr}) as ingresos_mes,
+                (SELECT COALESCE(SUM(total * 0.21), 0) FROM app.v_documento_resumen WHERE clase = 'VENTA' AND fecha >= {date_expr}) as iva_estimado_mes,
                 (SELECT COUNT(*) FROM app.pago WHERE fecha >= now() - interval '7 days') as pagos_recientes
         """
         cur.execute(query)
@@ -670,13 +717,22 @@ class Database:
 
     def _get_stats_operativas(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Operational and Productivity stats (20 metrics)"""
+        # Use literal date expression map to safely determine the date filter
+        date_expr = "date_trunc('month', now())"
+        if "current_date" in start_date_sql:
+            date_expr = "current_date"
+        elif "'week'" in start_date_sql:
+            date_expr = "date_trunc('week', now())"
+        elif "'year'" in start_date_sql:
+            date_expr = "date_trunc('year', now())"
+        
         # Note: entregas_hoy are kept as current_date as the label implies.
         # But logs are filtered by period.
         query = f"""
             SELECT 
                 (SELECT COUNT(*) FROM app.remito WHERE estado = 'PENDIENTE') as remitos_pend,
                 (SELECT COUNT(*) FROM app.remito WHERE fecha >= current_date AND estado = 'ENTREGADO') as entregas_hoy,
-                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE fecha_hora >= {start_date_sql}) as logs_hoy
+                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE fecha_hora >= {date_expr}) as logs_hoy
         """
         cur.execute(query)
         row = cur.fetchone()
@@ -805,8 +861,15 @@ class Database:
                 return [{"mes": r[0], "total_ventas": float(r[1] or 0), "cantidad_ventas": r[2]} for r in rows]
 
     def get_top_articulos_dinamico(self, start_date_sql: str, limit: int = 10) -> List[Dict[str, Any]]:
-        # Usually internal helper doesn't need to be exposed, but we use it here.
-        # We need to construct the query with the safe start_date_sql string.
+        # Use literal date expression map to safely determine the date filter
+        date_expr = "date_trunc('month', now())"
+        if "current_date" in start_date_sql:
+            date_expr = "current_date"
+        elif "'week'" in start_date_sql:
+            date_expr = "date_trunc('week', now())"
+        elif "'year'" in start_date_sql:
+            date_expr = "date_trunc('year', now())"
+        
         query = f"""
             SELECT 
                 a.id, a.nombre,
@@ -818,7 +881,7 @@ class Database:
             WHERE a.activo = true
               AND d.clase = 'VENTA'
               AND d.estado IN ('CONFIRMADO', 'PAGADO')
-              AND d.fecha >= {start_date_sql}
+              AND d.fecha >= {date_expr}
             GROUP BY a.id, a.nombre
             ORDER BY total_facturado DESC
             LIMIT %s
@@ -829,6 +892,15 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def get_bottom_articulos_dinamico(self, start_date_sql: str, limit: int = 10) -> List[Dict[str, Any]]:
+        # Use literal date expression map to safely determine the date filter
+        date_expr = "date_trunc('month', now())"
+        if "current_date" in start_date_sql:
+            date_expr = "current_date"
+        elif "'week'" in start_date_sql:
+            date_expr = "date_trunc('week', now())"
+        elif "'year'" in start_date_sql:
+            date_expr = "date_trunc('year', now())"
+        
         query = f"""
             SELECT 
                 a.id, a.nombre,
@@ -838,7 +910,7 @@ class Database:
             LEFT JOIN app.documento_detalle dd ON a.id = dd.id_articulo
             LEFT JOIN app.v_documento_resumen d ON dd.id_documento = d.id
             WHERE a.activo = true
-              AND (d.id IS NULL OR (d.fecha >= {start_date_sql} AND d.estado IN ('CONFIRMADO', 'PAGADO') AND d.clase = 'VENTA'))
+              AND (d.id IS NULL OR (d.fecha >= {date_expr} AND d.estado IN ('CONFIRMADO', 'PAGADO') AND d.clase = 'VENTA'))
             GROUP BY a.id, a.nombre
             HAVING COALESCE(SUM(dd.total_linea), 0) > 0
             ORDER BY total_facturado ASC, cantidad_vendida ASC
@@ -1569,24 +1641,25 @@ class Database:
                 WHERE {where_clause} 
                 LIMIT %s OFFSET %s
             """
+            query_params = params + [limit, offset]
         elif target == "LISTA_PRECIO" and list_id:
-             query = f"""
+             # Convert list_id to int for safety
+            list_id_int = int(list_id)
+            query = f"""
                 SELECT a.id, a.nombre, ap.precio as current_val
                 FROM app.articulo a
                 JOIN app.articulo_precio ap ON ap.id_articulo = a.id
-                WHERE ap.id_lista_precio = {int(list_id)} AND {where_clause}
+                WHERE ap.id_lista_precio = %s AND {where_clause}
                 LIMIT %s OFFSET %s
-             """
+            """
+            query_params = [list_id_int] + params + [limit, offset]
         else:
             return []
-
-        # Add limit to params
-        params.extend([limit, offset])
 
         results = []
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, params)
+                cur.execute(query, query_params)
                 rows = cur.fetchall()
                 
                 for r in rows:
@@ -1635,10 +1708,15 @@ class Database:
         Execute mass update on filtered articles or specific IDs.
         Returns number of affected rows.
         """
+        # Convert list_id to int for safety
+        list_id_int = int(list_id) if list_id is not None else None
+        
         if ids:
-            # Literal list is safer for subqueries with some driver versions
-            where_clause = f"id IN ({','.join(map(str, ids))})"
-            params = []
+            # Use parameterized subquery with proper quoting
+            # Build params list with all IDs
+            id_placeholders = ",".join(["%s"] * len(ids))
+            where_clause = f"id IN ({id_placeholders})"
+            params = list(ids)
         else:
             where_clause, params = self._build_article_filters(
                 search=filters.get("search"),
@@ -1649,7 +1727,7 @@ class Database:
         updated_count = 0
         
         with self._transaction() as cur:
-            # 1. Calculate new expression SQL
+            # 1. Calculate new expression SQL - using only numeric literals
             val_sql = str(float(value))
             if operation == "PCT_ADD":
                 expr = f"current_val * (1 + {val_sql}/100.0)"
@@ -1664,9 +1742,10 @@ class Database:
             else:
                 return 0
 
-            # 2. Execute Update based on target
+            # 2. Execute Update based on target using parameterized queries
             if target == "COSTO":
                 expr_cost = expr.replace("current_val", "costo")
+                # Build parameterized query: inject where_clause as SQL, but params separately
                 sql = f"""
                     UPDATE app.articulo 
                     SET costo = GREATEST(0, {expr_cost}), fecha_creacion = fecha_creacion
@@ -1687,16 +1766,17 @@ class Database:
                 """
                 cur.execute(sql_prices, params)
                 
-            elif target == "LISTA_PRECIO" and list_id:
+            elif target == "LISTA_PRECIO" and list_id_int:
                 expr_price = expr.replace("current_val", "precio")
                 sql = f"""
                     UPDATE app.articulo_precio
                     SET precio = GREATEST(0, {expr_price}),
                         fecha_actualizacion = now()
-                    WHERE id_lista_precio = {int(list_id)}
+                    WHERE id_lista_precio = %s
                       AND id_articulo IN (SELECT id FROM app.articulo WHERE {where_clause})
                 """
-                cur.execute(sql, params)
+                sql_params = [list_id_int] + params
+                cur.execute(sql, sql_params)
                 updated_count = cur.rowcount
                 
                 # Auto-recalculate margins
@@ -1708,17 +1788,18 @@ class Database:
                         END
                     FROM app.articulo a
                     WHERE ap.id_articulo = a.id
-                      AND ap.id_lista_precio = {int(list_id)}
+                      AND ap.id_lista_precio = %s
                       AND a.id IN (SELECT id FROM app.articulo WHERE {where_clause})
                 """
-                cur.execute(sql_margin, params)
+                sql_margin_params = [list_id_int] + params
+                cur.execute(sql_margin, sql_margin_params)
                 
             self.log_activity("ARTICULO", "MASS_UPDATE", detalle={
                 "target": target,
                 "operation": operation,
                 "value": value,
                 "count": updated_count,
-                "list_id": list_id
+                "list_id": list_id_int
             })
 
         return updated_count
@@ -1796,7 +1877,10 @@ class Database:
                 FROM app.v_articulo_detallado ad
             """
 
-        query += f" WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
+        # Build complete query with WHERE and ORDER BY clauses
+        # where_clause is safe (from _build_article_filters)
+        # order_by is safe (built from validated sort_columns mapping)
+        query = f"{query} WHERE {where_clause} ORDER BY {order_by} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -1811,6 +1895,7 @@ class Database:
         advanced: Optional[Dict[str, Any]] = None,
     ) -> int:
         where_clause, params = self._build_article_filters(search, activo_only, advanced)
+        # where_clause is safe (from _build_article_filters with parametrized conditions)
         query = f"SELECT COUNT(*) AS total FROM app.v_articulo_detallado WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -5052,10 +5137,11 @@ class Database:
 
     def list_entidades_simple(self, limit: int = 200, only_active: bool = True) -> List[Dict[str, Any]]:
         where = "WHERE activo = True" if only_active else ""
-        query = f"SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada {where} ORDER BY nombre_completo ASC LIMIT {limit}"
+        # Use parameterized query for LIMIT
+        query = f"SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada {where} ORDER BY nombre_completo ASC LIMIT %s"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query)
+                cur.execute(query, (int(limit),))
                 return _rows_to_dicts(cur)
 
     def get_entity_simple(self, entity_id: int) -> Optional[Dict[str, Any]]:
@@ -5098,10 +5184,11 @@ class Database:
                 return rows[0]
 
     def list_articulos_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
-        query = f"SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
+        # Use parameterized query for LIMIT
+        query = "SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT %s"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query)
+                cur.execute(query, (int(limit),))
                 return _rows_to_dicts(cur)
 
     def get_article_simple(self, article_id: int) -> Optional[Dict[str, Any]]:
@@ -5114,10 +5201,11 @@ class Database:
                 return rows[0] if rows else None
 
     def list_usuarios_simple(self, limit: int = 100) -> List[Dict[str, Any]]:
-        query = f"SELECT id, nombre FROM seguridad.usuario WHERE activo = True ORDER BY nombre ASC LIMIT {limit}"
+        # Use parameterized query for LIMIT
+        query = "SELECT id, nombre FROM seguridad.usuario WHERE activo = True ORDER BY nombre ASC LIMIT %s"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query)
+                cur.execute(query, (int(limit),))
                 return _rows_to_dicts(cur)
 
     def list_tipos_movimiento_simple(self) -> List[Dict[str, Any]]:
