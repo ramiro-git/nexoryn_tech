@@ -62,6 +62,32 @@ Al inicializar `Database`, se aplican migraciones seguras en caliente:
 - `app.movimiento_articulo.stock_resultante` se agrega si falta.
 - Se actualiza el trigger `app.fn_sync_stock_resumen` para persistir `stock_resultante`.
 
+## RLS y contexto de sesión
+El esquema habilita RLS en tablas núcleo:
+- `app.documento`
+- `app.entidad_comercial`
+- `app.movimiento_articulo`
+
+**Regla operativa:** las operaciones de escritura requieren que la sesión tenga `app.user_id` seteado (policies con `WITH CHECK (current_setting('app.user_id', true) IS NOT NULL)`).  
+Si no está definido, las escrituras pueden fallar o dejar auditoría sin usuario. Las lecturas no filtran datos en este escenario (policies con `USING (true)`).
+
+**Cómo lo gestiona la app:** en conexiones normales la app setea el contexto con `set_config('app.user_id', ...)` al abrir cada transacción.
+
+### Restore y mantenimiento
+Para tareas manuales o herramientas de PostgreSQL (`psql`, `pg_dump`, `pg_restore`) se debe setear `app.user_id` por sesión. Ejemplos:
+
+```bash
+PGOPTIONS="-c app.user_id=1" psql -h localhost -U postgres -d nexoryn_tech
+PGOPTIONS="-c app.user_id=1" pg_restore -h localhost -U postgres -d nexoryn_tech backup.dump
+```
+
+Dentro de una sesión `psql`:
+```sql
+SET app.user_id = 1;
+```
+
+Los servicios de backup/restore toman `DB_MAINTENANCE_USER_ID` y lo convierten en `PGOPTIONS` automáticamente para evitar bloqueos por RLS.
+
 ## Logs de Auditoría (particionado y archivado)
 
 ### Particionado automático
@@ -82,6 +108,7 @@ La UI avanzada usa polling cada 5 segundos sobre `seguridad.log_actividad` media
 
 ## Variables de Entorno Relevantes
 - `DATABASE_URL` o `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+- `DB_MAINTENANCE_USER_ID` debe ser un `seguridad.usuario.id` existente; se usa para setear `app.user_id` en restores/mantenimiento.
 - `PG_BIN_PATH` para localizar `psql`, `pg_dump`, `pg_restore`.
 - `DB_POOL_MIN` y `DB_POOL_MAX` para el pool de conexiones.
 
