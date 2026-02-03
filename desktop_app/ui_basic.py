@@ -7440,8 +7440,7 @@ def main(page: ft.Page) -> None:
         db.set_context(user["id"], local_ip)
         
         # Update sidebar info
-        sidebar_user_name.value = user.get("nombre") or "Usuario"
-        sidebar_user_role.value = f"Rol: {CURRENT_USER_ROLE}"
+        set_sidebar_session_state(True, user)
         apply_role_permissions()
         
         def start_background_monitor():
@@ -7550,10 +7549,12 @@ def main(page: ft.Page) -> None:
         current_user = {}
         CURRENT_USER_ROLE = "EMPLEADO"
         apply_role_permissions()
-        
+
+        if db:
+            db.set_context(None, None)
+
         # Reset sidebar info
-        sidebar_user_name.value = "Usuario"
-        sidebar_user_role.value = "Sesión inactiva"
+        set_sidebar_session_state(False)
         
         # Reset login fields
         login_email.value = ""
@@ -7919,8 +7920,53 @@ def main(page: ft.Page) -> None:
         _safe_update_control(sidebar)
 
     # User info display (updated after login)
-    sidebar_user_name = ft.Text("Usuario", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
-    sidebar_user_role = ft.Text("Sesión inactiva", size=10, color=COLOR_SIDEBAR_TEXT)
+    sidebar_user_name = ft.Text("", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
+    sidebar_user_role = ft.Text("", size=10, color=COLOR_SIDEBAR_TEXT)
+
+    sidebar_user_block = ft.Container(
+        content=ft.Row([
+            ft.Container(
+                width=36, height=36,
+                bgcolor="#4F46E5",
+                border_radius=18,
+                alignment=ft.alignment.center,
+                content=ft.Icon(ft.icons.PERSON_ROUNDED, color="#FFFFFF", size=20),
+            ),
+            ft.Column([
+                sidebar_user_name,
+                sidebar_user_role,
+            ], spacing=0, expand=True),
+            ft.IconButton(
+                ft.icons.LOGOUT_ROUNDED,
+                icon_color="#EF4444",
+                icon_size=22,
+                tooltip="Cerrar Sesión",
+                on_click=do_logout,
+            ),
+        ], spacing=10),
+        padding=ft.padding.symmetric(horizontal=5, vertical=8),
+        border_radius=12,
+        bgcolor="#1E293B",
+        visible=False,
+    )
+
+    def set_sidebar_session_state(logged_in: bool, user: Optional[Dict[str, Any]] = None) -> None:
+        if logged_in:
+            user = user or {}
+            display_name = (user.get("nombre") or "").strip()
+            if not display_name:
+                display_name = (user.get("email") or "").strip()
+            if not display_name and user.get("id"):
+                display_name = f"ID {user.get('id')}"
+            sidebar_user_name.value = display_name
+            sidebar_user_role.value = f"Rol: {CURRENT_USER_ROLE or 'EMPLEADO'}"
+            sidebar_user_block.visible = True
+        else:
+            sidebar_user_name.value = ""
+            sidebar_user_role.value = ""
+            sidebar_user_block.visible = False
+
+        _safe_update_multiple(sidebar_user_name, sidebar_user_role, sidebar_user_block)
 
     sidebar_list_view = ft.ListView(
         controls=[
@@ -7981,31 +8027,7 @@ def main(page: ft.Page) -> None:
                     content=ft.Column([
                         ft.Divider(color="#334155", height=1),
                         ft.Container(height=10),
-                        ft.Container(
-                            content=ft.Row([
-                                ft.Container(
-                                    width=36, height=36,
-                                    bgcolor="#4F46E5",
-                                    border_radius=18,
-                                    alignment=ft.alignment.center,
-                                    content=ft.Icon(ft.icons.PERSON_ROUNDED, color="#FFFFFF", size=20),
-                                ),
-                                ft.Column([
-                                    sidebar_user_name,
-                                    sidebar_user_role,
-                                ], spacing=0, expand=True),
-                                ft.IconButton(
-                                    ft.icons.LOGOUT_ROUNDED,
-                                    icon_color="#EF4444",
-                                    icon_size=22,
-                                    tooltip="Cerrar Sesión",
-                                    on_click=do_logout,
-                                ),
-                            ], spacing=10),
-                            padding=ft.padding.symmetric(horizontal=5, vertical=8),
-                            border_radius=12,
-                            bgcolor="#1E293B",
-                        ),
+                        sidebar_user_block,
                     ]),
                     padding=ft.padding.only(top=10),
                 ),
