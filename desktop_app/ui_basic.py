@@ -816,6 +816,41 @@ def main(page: ft.Page) -> None:
     window_is_closing = False
     logout_logged = False
 
+    def _run_on_ui(fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+        if window_is_closing or page is None:
+            return
+        try:
+            if hasattr(page, "run_task"):
+                async def _do() -> None:
+                    try:
+                        fn(*args, **kwargs)
+                    except Exception as exc:
+                        logger.debug(f"UI task error: {exc}")
+                page.run_task(_do)
+                return
+        except Exception as exc:
+            logger.debug(f"UI scheduling error: {exc}")
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:
+            logger.debug(f"UI update error: {exc}")
+
+    def _run_in_background(fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+        if window_is_closing:
+            return
+        try:
+            if hasattr(page, "run_thread"):
+                if kwargs:
+                    def _wrapped() -> None:
+                        fn(*args, **kwargs)
+                    page.run_thread(_wrapped)
+                else:
+                    page.run_thread(fn, *args)
+                return
+        except Exception as exc:
+            logger.debug(f"Background scheduling error: {exc}")
+        threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
+
     # Session state
     current_user: Dict[str, Any] = {}
     
@@ -5087,8 +5122,7 @@ def main(page: ft.Page) -> None:
             rem_adv_deposito.options = [ft.dropdown.Option("", "Todos")] + [
                 ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos
             ]
-            if rem_adv_deposito.page:
-                rem_adv_deposito.update()
+            _safe_update_control(rem_adv_deposito)
         except Exception as e:
             logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -5155,9 +5189,7 @@ def main(page: ft.Page) -> None:
     def on_range_change(e):
         s = e.control
         range_label.value = f"Total: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
-        try: _safe_update_control(range_label)
-        except Exception as e:
-            logger.warning(f"Falló al actualizar interfaz: {e}")
+        _safe_update_control(range_label)
 
     doc_adv_total = ft.RangeSlider(
         min=0, max=max_total,
@@ -5181,10 +5213,7 @@ def main(page: ft.Page) -> None:
         doc_adv_total.start_value = 0
         doc_adv_total.end_value = max_total
         range_label.value = f"Total: entre $0 y ${max_total:,.0f}"
-        try:
-            _safe_update_multiple(doc_adv_total, range_label)
-        except Exception as e:
-            logger.warning(f"Falló al actualizar interfaz: {e}")
+        _safe_update_multiple(doc_adv_total, range_label)
 
     documentos_summary_table = GenericTable(
         columns=[
@@ -5637,9 +5666,7 @@ def main(page: ft.Page) -> None:
     def on_pago_monto_change(e):
         s = e.control
         monto_range_label.value = f"Monto: entre {_format_money(s.start_value)} y {_format_money(s.end_value)}"
-        try: _safe_update_control(monto_range_label)
-        except Exception as e:
-            logger.warning(f"Falló al actualizar interfaz: {e}")
+        _safe_update_control(monto_range_label)
 
     pago_adv_monto = ft.RangeSlider(
         min=0, max=max_monto,
@@ -5662,10 +5689,7 @@ def main(page: ft.Page) -> None:
         pago_adv_monto.start_value = 0
         pago_adv_monto.end_value = max_monto
         monto_range_label.value = f"Monto: entre $0 y ${max_monto:,.0f}"
-        try:
-            _safe_update_multiple(pago_adv_monto, monto_range_label)
-        except Exception as e:
-            logger.warning(f"Falló al actualizar interfaz: {e}")
+        _safe_update_multiple(pago_adv_monto, monto_range_label)
 
     def show_payment_info(text):
         if not text: return
@@ -5768,9 +5792,7 @@ def main(page: ft.Page) -> None:
                 pago_monto.value = str(doc_totals[str(val)]).replace(".", ",")
             else:
                 pago_monto.value = ""
-            try: _safe_update_control(pago_monto)
-            except Exception as e:
-                logger.warning(f"Falló al actualizar interfaz: {e}")
+            _safe_update_control(pago_monto)
 
         pago_documento = AsyncSelect(label="Comprobante Pendiente *", loader=pending_doc_loader, width=400, disabled=True, on_change=on_doc_change)
         
@@ -5789,16 +5811,13 @@ def main(page: ft.Page) -> None:
             pago_monto.value = ""
             if val:
                 pago_documento.set_busy(True)
-                pago_documento.prefetch(on_done=lambda: (pago_documento.set_busy(False), pago_documento.update()))
+                pago_documento.prefetch(on_done=lambda: (pago_documento.set_busy(False), _safe_update_control(pago_documento)))
                 pago_documento.disabled = False
             else:
                 pago_documento.set_busy(False)
                 pago_documento.disabled = True
             
-            try:
-                _safe_update_multiple(pago_documento, pago_monto)
-            except Exception as e:
-                logger.warning(f"Falló al actualizar interfaz: {e}")
+            _safe_update_multiple(pago_documento, pago_monto)
 
         pago_entidad.on_change = on_entidad_change
         
@@ -6185,10 +6204,7 @@ def main(page: ft.Page) -> None:
             cc_stat_deudores.value = str(stats.get("clientes_deudores", 0))
             cc_stat_cobros.value = _format_money(stats.get("cobros_hoy", 0))
             cc_stat_movs.value = str(stats.get("movimientos_hoy", 0))
-            cc_stat_deuda.update()
-            cc_stat_deudores.update()
-            cc_stat_cobros.update()
-            cc_stat_movs.update()
+            _safe_update_multiple(cc_stat_deuda, cc_stat_deudores, cc_stat_cobros, cc_stat_movs)
         except Exception as e:
             logger.warning(f"Falló al actualizar interfaz: {e}")
 
@@ -6300,10 +6316,7 @@ def main(page: ft.Page) -> None:
         logs_historico_rango.visible = is_historico
         logs_state["solo_hoy"] = not is_historico
         
-        try:
-            logs_historico_rango.update()
-        except Exception as e:
-            logger.warning(f"Falló al actualizar interfaz: {e}")
+        _safe_update_control(logs_historico_rango)
         
         if is_historico:
             # Apply current range immediately
@@ -6312,11 +6325,7 @@ def main(page: ft.Page) -> None:
             # Clear dates so solo_hoy logic works
             logs_adv_desde.value = ""
             logs_adv_hasta.value = ""
-            try:
-                logs_adv_desde.update()
-                logs_adv_hasta.update()
-            except Exception as e:
-                logger.warning(f"Falló al actualizar interfaz: {e}")
+            _safe_update_multiple(logs_adv_desde, logs_adv_hasta)
             logs_table.refresh()
 
     def _on_logs_rango_change(e):
@@ -6327,11 +6336,7 @@ def main(page: ft.Page) -> None:
             desde_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
             logs_adv_desde.value = desde_date
             logs_adv_hasta.value = ""
-            try:
-                logs_adv_desde.update()
-                logs_adv_hasta.update()
-            except Exception as e:
-                logger.warning(f"Falló al actualizar interfaz: {e}")
+            _safe_update_multiple(logs_adv_desde, logs_adv_hasta)
         logs_table.refresh()
 
     logs_historico_toggle.on_change = _on_logs_toggle_change
@@ -6393,7 +6398,7 @@ def main(page: ft.Page) -> None:
     def pick_folder_result(e: ft.FilePickerResultEvent):
         if e.path:
             logs_conf_dir.value = e.path
-            logs_conf_dir.update()
+            _safe_update_control(logs_conf_dir)
 
     file_picker = ft.FilePicker(on_result=pick_folder_result)
     # We need to add file_picker to page.overlay, but page might not be fully ready?
@@ -6518,15 +6523,17 @@ def main(page: ft.Page) -> None:
                     
                     # Callback to update UI (thread-safe)
                     def _on_progress(curr, total, msg):
-                        try:
-                            if total > 0:
-                                progress_bar.value = min(curr / total, 1.0)
-                            else:
-                                progress_bar.value = 0 if curr == 0 else 1.0
-                            status_text.value = msg
-                            page.update()
-                        except Exception as update_ex:
-                            print(f"UI update error in progress: {update_ex}")
+                        def _apply_progress():
+                            try:
+                                if total > 0:
+                                    progress_bar.value = min(curr / total, 1.0)
+                                else:
+                                    progress_bar.value = 0 if curr == 0 else 1.0
+                                status_text.value = msg
+                                page.update()
+                            except Exception as update_ex:
+                                print(f"UI update error in progress: {update_ex}")
+                        _run_on_ui(_apply_progress)
                     
                     try:
                         result = archiver.archive_old_logs(progress_callback=_on_progress)
@@ -6546,34 +6553,38 @@ def main(page: ft.Page) -> None:
                     def _on_finish():
                         nonlocal _archive_running, _current_dialog
                         try:
-                            # Close progress dialog
-                            progress_dialog.open = False
-                            page.update()
-                            
+                            def _close_progress():
+                                progress_dialog.open = False
+                                page.update()
+                            _run_on_ui(_close_progress)
+
                             # Small delay
                             time.sleep(0.1)
-                            
-                            # Show result alert
-                            title_text = "Resultado del Archivado" if success else "Error en Archivado"
-                            result_dialog = ft.AlertDialog(
-                                title=ft.Text(title_text), 
-                                content=ft.Column([ft.Text(msg)], tight=True, width=450),
-                                actions=[
-                                    ft.TextButton("Cerrar", on_click=lambda x: _close_result_dialog())
-                                ]
-                            )
-                            
-                            def _close_result_dialog():
-                                nonlocal _current_dialog
-                                result_dialog.open = False
-                                _current_dialog = None
-                                _archive_running = False
+
+                            def _show_result():
+                                # Show result alert
+                                title_text = "Resultado del Archivado" if success else "Error en Archivado"
+                                result_dialog = ft.AlertDialog(
+                                    title=ft.Text(title_text), 
+                                    content=ft.Column([ft.Text(msg)], tight=True, width=450),
+                                    actions=[
+                                        ft.TextButton("Cerrar", on_click=lambda x: _close_result_dialog())
+                                    ]
+                                )
+                                
+                                def _close_result_dialog():
+                                    nonlocal _current_dialog
+                                    result_dialog.open = False
+                                    _current_dialog = None
+                                    _archive_running = False
+                                    page.update()
+                                
+                                _current_dialog = result_dialog
+                                page.dialog = result_dialog
+                                result_dialog.open = True
                                 page.update()
-                            
-                            _current_dialog = result_dialog
-                            page.dialog = result_dialog
-                            result_dialog.open = True
-                            page.update()
+
+                            _run_on_ui(_show_result)
                         except Exception as finish_ex:
                             print(f"Error en finish callback: {finish_ex}")
                             _archive_running = False
@@ -6586,8 +6597,7 @@ def main(page: ft.Page) -> None:
                     traceback.print_exc()
                     _archive_running = False
             
-            import threading
-            threading.Thread(target=_run_thread, daemon=True).start()
+            _run_in_background(_run_thread)
         except Exception as ex:
             print(f"Error en run_archive_now: {ex}")
             _archive_running = False
@@ -6664,8 +6674,7 @@ def main(page: ft.Page) -> None:
             if idx == 0:
                 load_sistema_config()
             elif idx in tab_to_table:
-                import threading
-                threading.Thread(target=tab_to_table[idx].refresh, daemon=True).start()
+                _run_in_background(_run_on_ui, tab_to_table[idx].refresh)
     
     config_tabs = ft.Tabs(
         scrollable=True,
@@ -6903,60 +6912,75 @@ def main(page: ft.Page) -> None:
             try:
                 # Fetch all stats in one go using the new role-based method
                 stats = db.get_full_dashboard_stats(CURRENT_USER_ROLE, force_refresh=True)
-                
-                # Entidades
-                se = stats.get("entidades", {})
-                if "entidades_clientes" in card_registry: card_registry["entidades_clientes"].value = f"{se.get('clientes_total', 0):,}"
-                if "entidades_proveedores" in card_registry: card_registry["entidades_proveedores"].value = f"{se.get('proveedores_total', 0):,}"
-                if "entidades_activos" in card_registry: card_registry["entidades_activos"].value = f"{se.get('clientes_total', 0) + se.get('proveedores_total', 0):,}"
-                
-                # Articulos
-                sa = stats.get("stock", {})
-                if "articulos_total" in card_registry: card_registry["articulos_total"].value = f"{sa.get('total', 0):,}"
-                if "articulos_bajo_stock" in card_registry: card_registry["articulos_bajo_stock"].value = f"{sa.get('bajo_stock', 0):,}"
-                
-                val_inventario = sa.get('valor_inventario', 0)
-                if "articulos_valor" in card_registry: 
-                    card_registry["articulos_valor"].value = _format_money(val_inventario)
-                
-                # Facturacion / Ventas
-                sv = stats.get("ventas", {})
-                v_mes = sv.get('mes_total', 0)
-                if "docs_ventas" in card_registry: 
-                    card_registry["docs_ventas"].value = _format_money(v_mes) if isinstance(v_mes, (int, float)) else v_mes
-                if "docs_pendientes" in card_registry: 
-                    card_registry["docs_pendientes"].value = f"{sv.get('docs_pendientes', 0):,}"
-                
-                # Finanzas (if available)
-                if "finanzas" in stats:
-                    sf = stats["finanzas"]
-                    if "docs_compras" in card_registry: card_registry["docs_compras"].value = _format_money(sf.get('egresos_mes', 0))
-                    if "pagos_hoy" in card_registry: card_registry["pagos_hoy"].value = _format_money(sf.get('ingresos_hoy', 0))
-                    if "pagos_recientes" in card_registry: card_registry["pagos_recientes"].value = f"{sf.get('pagos_recientes', 0):,}"
-                
-                # Usuarios
-                so = stats.get("sistema", {})
-                if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{so.get('usuarios_activos', 0):,}"
-                if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = so.get('ultimo_login', "N/A")
-                
-                # Movimientos
-                sm = stats.get("movimientos", {})
-                if "movs_ingresos" in card_registry: card_registry["movs_ingresos"].value = f"{sm.get('ingresos', 0):,}"
-                if "movs_salidas" in card_registry: card_registry["movs_salidas"].value = f"{sm.get('salidas', 0):,}"
-                if "movs_ajustes" in card_registry: card_registry["movs_ajustes"].value = f"{sm.get('ajustes', 0):,}"
 
+                se = stats.get("entidades", {})
+                sa = stats.get("stock", {})
+                sv = stats.get("ventas", {})
+                so = stats.get("sistema", {})
+                sm = stats.get("movimientos", {})
                 soper = stats.get("operativas", {})
-                if "remitos_pend" in card_registry: card_registry["remitos_pend"].value = f"{soper.get('remitos_pend', 0):,}"
-                if "remitos_entregas" in card_registry: card_registry["remitos_entregas"].value = f"{soper.get('entregas_hoy', 0):,}"
+                sf = stats.get("finanzas", {}) if "finanzas" in stats else {}
+
+                v_mes = sv.get('mes_total', 0)
+                val_inventario = sa.get('valor_inventario', 0)
+
+                rem_total: Optional[int] = None
                 if "remitos_total" in card_registry:
                     try:
                         rem_total = db.count_remitos()
-                        card_registry["remitos_total"].value = f"{rem_total:,}"
                     except Exception:
-                        pass
+                        rem_total = None
 
-                if not window_is_closing:
-                    page.update()
+                def _apply_stats():
+                    try:
+                        # Entidades
+                        if "entidades_clientes" in card_registry: card_registry["entidades_clientes"].value = f"{se.get('clientes_total', 0):,}"
+                        if "entidades_proveedores" in card_registry: card_registry["entidades_proveedores"].value = f"{se.get('proveedores_total', 0):,}"
+                        if "entidades_activos" in card_registry: card_registry["entidades_activos"].value = f"{se.get('clientes_total', 0) + se.get('proveedores_total', 0):,}"
+
+                        # Articulos
+                        if "articulos_total" in card_registry: card_registry["articulos_total"].value = f"{sa.get('total', 0):,}"
+                        if "articulos_bajo_stock" in card_registry: card_registry["articulos_bajo_stock"].value = f"{sa.get('bajo_stock', 0):,}"
+                        if "articulos_valor" in card_registry:
+                            card_registry["articulos_valor"].value = _format_money(val_inventario)
+
+                        # Facturacion / Ventas
+                        if "docs_ventas" in card_registry:
+                            card_registry["docs_ventas"].value = _format_money(v_mes) if isinstance(v_mes, (int, float)) else v_mes
+                        if "docs_pendientes" in card_registry:
+                            card_registry["docs_pendientes"].value = f"{sv.get('docs_pendientes', 0):,}"
+
+                        # Finanzas (if available)
+                        if sf:
+                            if "docs_compras" in card_registry: card_registry["docs_compras"].value = _format_money(sf.get('egresos_mes', 0))
+                            if "pagos_hoy" in card_registry: card_registry["pagos_hoy"].value = _format_money(sf.get('ingresos_hoy', 0))
+                            if "pagos_recientes" in card_registry: card_registry["pagos_recientes"].value = f"{sf.get('pagos_recientes', 0):,}"
+
+                        # Usuarios
+                        if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{so.get('usuarios_activos', 0):,}"
+                        if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = so.get('ultimo_login', "N/A")
+
+                        # Movimientos
+                        if "movs_ingresos" in card_registry: card_registry["movs_ingresos"].value = f"{sm.get('ingresos', 0):,}"
+                        if "movs_salidas" in card_registry: card_registry["movs_salidas"].value = f"{sm.get('salidas', 0):,}"
+                        if "movs_ajustes" in card_registry: card_registry["movs_ajustes"].value = f"{sm.get('ajustes', 0):,}"
+
+                        if "remitos_pend" in card_registry: card_registry["remitos_pend"].value = f"{soper.get('remitos_pend', 0):,}"
+                        if "remitos_entregas" in card_registry: card_registry["remitos_entregas"].value = f"{soper.get('entregas_hoy', 0):,}"
+                        if rem_total is not None and "remitos_total" in card_registry:
+                            card_registry["remitos_total"].value = f"{rem_total:,}"
+
+                        if not window_is_closing:
+                            page.update()
+                    except (Exception, RuntimeError) as e:
+                        if not window_is_closing and db and not db.is_closing:
+                            err_msg = str(e).lower()
+                            if "'nonetype' object has no attribute 'connection'" in err_msg:
+                                return
+                            if "content must be visible" not in err_msg and "page is not visible" not in err_msg:
+                                print(f"Error refreshing stats: {e}")
+
+                _run_on_ui(_apply_stats)
             except (Exception, RuntimeError) as e:
                 # Suppress transient Flet errors like "content must be visible" during transitions
                 if not window_is_closing and db and not db.is_closing:
@@ -6970,7 +6994,7 @@ def main(page: ft.Page) -> None:
                 stats_refresh_lock.release()
 
         # Run in a background thread to avoid UI lag on tab switches
-        threading.Thread(target=_bg_work, daemon=True).start()
+        _run_in_background(_bg_work)
 
     # Re-declare refresh_all_stats for set_view to use
 
@@ -7169,7 +7193,8 @@ def main(page: ft.Page) -> None:
             label = backup_type.upper()
             if status == "running":
                 progress = (current - 1) / max(total, 1)
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Ejecutando respaldos pendientes...",
                     f"{label} en progreso",
                     progress=progress,
@@ -7178,7 +7203,8 @@ def main(page: ft.Page) -> None:
                 )
             elif status == "completed":
                 progress = current / max(total, 1)
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Ejecutando respaldos pendientes...",
                     f"{label} completado",
                     progress=progress,
@@ -7187,7 +7213,8 @@ def main(page: ft.Page) -> None:
                 )
             elif status == "failed":
                 progress = current / max(total, 1)
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Error en respaldos",
                     f"{label} fallido",
                     progress=progress,
@@ -7198,7 +7225,8 @@ def main(page: ft.Page) -> None:
         def _schema_progress(payload: Dict[str, Any]) -> None:
             phase = payload.get("phase")
             if phase in {"extensions", "schemas"}:
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Actualizando esquema...",
                     payload.get("message", "Sincronizando..."),
                     progress=None,
@@ -7210,7 +7238,8 @@ def main(page: ft.Page) -> None:
                 current = int(payload.get("current", 0))
                 total = int(payload.get("total", 1)) or 1
                 progress = current / total if total else 0
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Actualizando esquema...",
                     payload.get("message", "Sincronizando..."),
                     progress=progress,
@@ -7221,7 +7250,8 @@ def main(page: ft.Page) -> None:
 
         def _run() -> None:
             try:
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Preparando sistema...",
                     "Verificando respaldos y esquema...",
                     progress=None,
@@ -7252,7 +7282,8 @@ def main(page: ft.Page) -> None:
                         progress_callback=_backup_progress,
                     )
                     if not results or not all(results.values()):
-                        _set_overlay_state(
+                        _run_on_ui(
+                            _set_overlay_state,
                             "Error en respaldos",
                             "Revisa el log antes de continuar.",
                             progress=1.0,
@@ -7265,14 +7296,18 @@ def main(page: ft.Page) -> None:
                 # to prevent deadlocks with open DB connections.
 
 
-                _hide_overlay()
-                login_container.disabled = False
-                login_container.visible = False
-                main_app_container.visible = True
-                page.update()
-                on_success()
+                def _finalize():
+                    _hide_overlay()
+                    login_container.disabled = False
+                    login_container.visible = False
+                    main_app_container.visible = True
+                    page.update()
+                    on_success()
+
+                _run_on_ui(_finalize)
             except Exception as exc:
-                _set_overlay_state(
+                _run_on_ui(
+                    _set_overlay_state,
                     "Error de mantenimiento",
                     str(exc),
                     progress=1.0,
@@ -7280,7 +7315,7 @@ def main(page: ft.Page) -> None:
                     badge_color=COLOR_ERROR,
                 )
 
-        threading.Thread(target=_run, daemon=True).start()
+        _run_in_background(_run)
 
     def do_login(_=None):
         nonlocal CURRENT_USER_ROLE, current_user, logout_logged
@@ -7340,7 +7375,7 @@ def main(page: ft.Page) -> None:
                                 # Log timeout and logout
                                 if db:
                                     db.log_activity("SISTEMA", "TIMEOUT_INACTIVIDAD", detalle={"timeout_seg": INACTIVITY_TIMEOUT})
-                                do_logout()
+                                _run_on_ui(do_logout)
                                 continue # Skip remainder of this loop cycle after logout
 
                         # Only refresh if logged in
@@ -7360,35 +7395,35 @@ def main(page: ft.Page) -> None:
                                 key = current_view.get("key")
                                 # Route refresh to current active table/view in Basic UI
                                 if key == "entidades":
-                                    entidades_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, entidades_table.refresh, silent=True)
                                 elif key == "articulos":
-                                    articulos_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, articulos_table.refresh, silent=True)
                                 elif key == "cuentas":
-                                    cuentas_table.refresh(silent=True)
-                                    refresh_cc_stats()
+                                    _run_in_background(_run_on_ui, cuentas_table.refresh, silent=True)
+                                    _run_in_background(_run_on_ui, refresh_cc_stats)
                                 elif key == "documentos":
-                                    documentos_summary_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, documentos_summary_table.refresh, silent=True)
                                 elif key == "remitos":
-                                    remitos_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, remitos_table.refresh, silent=True)
                                 elif key == "movimientos":
-                                    movimientos_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, movimientos_table.refresh, silent=True)
                                 elif key == "pagos":
-                                    pagos_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, pagos_table.refresh, silent=True)
                                 elif key == "precios":
                                     if hasattr(globals().get("precios_table"), "refresh"):
-                                        globals()["precios_table"].refresh(silent=True)
+                                        _run_in_background(_run_on_ui, globals()["precios_table"].refresh, silent=True)
                                 elif key == "usuarios":
                                     try:
-                                        usuarios_table.refresh()
-                                        sesiones_table.refresh()
+                                        _run_in_background(_run_on_ui, usuarios_table.refresh)
+                                        _run_in_background(_run_on_ui, sesiones_table.refresh)
                                     except Exception as e:
                                         logger.warning(f"Falló al actualizar: {e}")
                                 elif key == "logs":
-                                    logs_table.refresh(silent=True)
+                                    _run_in_background(_run_on_ui, logs_table.refresh, silent=True)
                                 elif key == "dashboard":
                                     # Dashboard view has its own load_data in Basic UI component
                                     if dashboard_view_component:
-                                        dashboard_view_component.load_data()
+                                        _run_in_background(dashboard_view_component.load_data)
                             
                     except Exception:
                         pass
@@ -7585,12 +7620,9 @@ def main(page: ft.Page) -> None:
 
         def delayed_update():
             time.sleep(0.1)  # 100ms de retraso
-            try:
-                page.update()
-            except Exception:
-                pass
+            _run_on_ui(page.update)
         
-        threading.Thread(target=delayed_update, daemon=True).start()
+        _run_in_background(delayed_update)
         
         # Trigger refresh on the target table
         table_map = {
@@ -7610,27 +7642,27 @@ def main(page: ft.Page) -> None:
             try:
                 time.sleep(0.2)  # Retraso adicional para tablas
                 if hasattr(tab, "refresh"):
-                    tab.refresh()
+                    _run_on_ui(tab.refresh)
                 elif hasattr(tab, "load_data"):
-                    tab.load_data()
+                    _run_on_ui(tab.load_data)
             except (RuntimeError, Exception):
                 pass
 
         if key == "usuarios":
             def safe_refresh():
                 try:
-                    usuarios_table.refresh()
-                    sesiones_table.refresh()
+                    _run_on_ui(usuarios_table.refresh)
+                    _run_on_ui(sesiones_table.refresh)
                 except (RuntimeError, Exception):
                     pass
-            threading.Thread(target=safe_refresh, daemon=True).start()
+            _run_in_background(safe_refresh)
         elif key == "dashboard":
             if dashboard_view_component:
                 dashboard_view_component.role = CURRENT_USER_ROLE
                 dashboard_view_component.on_navigate = lambda x: set_view(x)
                 dashboard_view_component.load_data()
         elif key in table_map:
-            threading.Thread(target=safe_table_refresh, args=(table_map[key],), daemon=True).start()
+            _run_in_background(safe_table_refresh, table_map[key])
         elif key == "config":
             # Initial load for the selected tab only
             try:
@@ -7798,13 +7830,10 @@ def main(page: ft.Page) -> None:
 
         # Apply new controls to ListView
         sidebar_list_view.controls = new_controls
-        sidebar_list_view.update()
+        _safe_update_control(sidebar_list_view)
         
         # Also update sidebar container just in case
-        try:
-            sidebar.update()
-        except Exception as e:
-            logger.warning(f"Falló al actualizar interfaz: {e}")
+        _safe_update_control(sidebar)
 
     # User info display (updated after login)
     sidebar_user_name = ft.Text("Usuario", size=12, color=COLOR_SIDEBAR_TEXT, weight=ft.FontWeight.W_500)
@@ -8343,8 +8372,7 @@ def main(page: ft.Page) -> None:
                     else:
                         stock_text.color = ft.Colors.GREEN_600
                         stock_text.weight = ft.FontWeight.NORMAL
-                    if stock_text.page:
-                        stock_text.update()
+                    _safe_update_control(stock_text)
                 except Exception as e:
                     logger.warning(f"Falló al actualizar interfaz: {e}")
 
