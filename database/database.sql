@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS seguridad.rol (
 CREATE TABLE IF NOT EXISTS seguridad.usuario (
   id                   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   nombre               VARCHAR(100) NOT NULL,
-  email                VARCHAR(150) NOT NULL UNIQUE,
+  email                VARCHAR(150) NOT NULL,
   contrasena_hash      VARCHAR(255) NOT NULL,
   id_rol               BIGINT NOT NULL REFERENCES seguridad.rol(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   activo               BOOLEAN NOT NULL DEFAULT TRUE,
@@ -936,6 +936,9 @@ INSERT INTO ref.lista_precio(nombre, activa, orden) VALUES
   ('Lista Gremio', TRUE, 8)
 ON CONFLICT (nombre) DO NOTHING;
 
+-- Create case-insensitive UNIQUE INDEX on email BEFORE INSERT to enable ON CONFLICT
+CREATE UNIQUE INDEX IF NOT EXISTS uq_idx_usuario_email_lower ON seguridad.usuario (lower(email));
+
 -- Default admin user
 INSERT INTO seguridad.usuario(nombre, id_rol, activo, contrasena_hash, email)
 SELECT
@@ -946,7 +949,7 @@ SELECT
   'admin@nexoryn.com'
 FROM seguridad.rol r
 WHERE r.nombre = 'ADMIN'
-ON CONFLICT (email) DO NOTHING;
+ON CONFLICT (lower(email)) DO NOTHING;
 
 -- Default backup config
 INSERT INTO seguridad.backup_config(frecuencia, hora, retencion_dias)
@@ -1055,7 +1058,6 @@ CREATE POLICY "Audit required for modification movimiento" ON app.movimiento_art
 
 -- Case-insensitive lookup/search optimization
 CREATE INDEX IF NOT EXISTS idx_entidad_email_lower ON app.entidad_comercial (lower(email));
-CREATE INDEX IF NOT EXISTS idx_usuario_email_lower ON seguridad.usuario (lower(email));
 CREATE INDEX IF NOT EXISTS idx_usuario_nombre_lower_trgm ON seguridad.usuario USING gin (lower(nombre) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_usuario_email_lower_trgm ON seguridad.usuario USING gin (lower(email) gin_trgm_ops);
 

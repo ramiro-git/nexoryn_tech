@@ -1016,27 +1016,47 @@ class Database:
         """
         if not email_or_username or not password:
             return None
-        
-        query = """
-            SELECT 
-                u.id, 
-                u.nombre, 
-                u.email, 
-                u.activo,
-                r.nombre AS rol,
-                u.contrasena_hash
-            FROM seguridad.usuario u
-            JOIN seguridad.rol r ON r.id = u.id_rol
-            WHERE lower(u.email) = lower(%s) OR lower(u.nombre) = lower(%s)
-        """
+        identifier = email_or_username.strip()
+        if not identifier:
+            return None
+
+        # Email login must match case exactly; username remains case-insensitive.
+        if "@" in identifier:
+            query = """
+                SELECT 
+                    u.id, 
+                    u.nombre, 
+                    u.email, 
+                    u.activo,
+                    r.nombre AS rol,
+                    u.contrasena_hash
+                FROM seguridad.usuario u
+                JOIN seguridad.rol r ON r.id = u.id_rol
+                WHERE u.email = %s
+            """
+            params = (identifier,)
+        else:
+            query = """
+                SELECT 
+                    u.id, 
+                    u.nombre, 
+                    u.email, 
+                    u.activo,
+                    r.nombre AS rol,
+                    u.contrasena_hash
+                FROM seguridad.usuario u
+                JOIN seguridad.rol r ON r.id = u.id_rol
+                WHERE lower(u.nombre) = lower(%s)
+            """
+            params = (identifier,)
         try:
             with self.pool.connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(query, (email_or_username.strip(), email_or_username.strip()))
+                    cur.execute(query, params)
                     row = cur.fetchone()
                     
                     if not row:
-                        self._log_login_attempt(None, email_or_username, False)
+                        self._log_login_attempt(None, identifier, False)
                         return None
                     
                     # Extract user data - handle both dict and tuple
@@ -1052,7 +1072,7 @@ class Database:
                     
                     # Check if user is active
                     if not activo:
-                        self._log_login_attempt(user_id, email_or_username, False, "Usuario inactivo")
+                        self._log_login_attempt(user_id, identifier, False, "Usuario inactivo")
                         return None
                     
                     # Verify password using bcrypt via PostgreSQL
@@ -1064,7 +1084,7 @@ class Database:
                     is_valid = result.get("valid") if isinstance(result, dict) else result[0]
                     
                     if not is_valid:
-                        self._log_login_attempt(user_id, email_or_username, False, "Contraseña incorrecta")
+                        self._log_login_attempt(user_id, identifier, False, "Contraseña incorrecta")
                         return None
                     
                     # Update ultimo_login
@@ -1075,7 +1095,7 @@ class Database:
                     conn.commit()
                     
                     # Log successful login
-                    self._log_login_attempt(user_id, email_or_username, True)
+                    self._log_login_attempt(user_id, identifier, True)
                     
                     return {
                         "id": user_id,
