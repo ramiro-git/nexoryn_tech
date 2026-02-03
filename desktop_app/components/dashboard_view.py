@@ -156,8 +156,10 @@ class DashboardView(ft.Container):
         self._start_refresh_thread()
 
     def _handle_mount(self, e):
+        self._stop_event.clear()
         self.load_data()
-        self._start_refresh_thread()
+        if not self._refresh_thread or not self._refresh_thread.is_alive():
+            self._start_refresh_thread()
 
     def _handle_unmount(self, e):
         self._stop_event.set()

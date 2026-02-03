@@ -911,13 +911,15 @@ def main(page: ft.Page) -> None:
     INACTIVITY_TIMEOUT = 300
     last_activity_time = time.time()
 
-    def reset_inactivity_timer(e=None):
+    def mark_activity(e=None):
         nonlocal last_activity_time
         # Only track activity if a user is logged in
         if current_user and current_user.get("id"):
             last_activity_time = time.time()
 
-    page.on_event = reset_inactivity_timer
+    # Best-effort fallback; real input events are wired below.
+    page.on_event = mark_activity
+    page.on_keyboard_event = mark_activity
     
     db_error: Optional[str] = None
     local_ip = "127.0.0.1"
@@ -7434,6 +7436,7 @@ def main(page: ft.Page) -> None:
         current_user = user
         CURRENT_USER_ROLE = user.get("rol") or "EMPLEADO"
         logout_logged = False
+        mark_activity()
         db.set_context(user["id"], local_ip)
         
         # Update sidebar info
@@ -8035,16 +8038,25 @@ def main(page: ft.Page) -> None:
     main_app_container.content = main_app_content
 
     # Add both login and main containers to page
-    page.add(
-        ft.Stack(
-            [
-                main_app_container,
-                login_container,
-                backup_overlay,
-            ],
-            expand=True,
-        )
+    root_stack = ft.Stack(
+        [
+            main_app_container,
+            login_container,
+            backup_overlay,
+        ],
+        expand=True,
     )
+    activity_detector = ft.GestureDetector(
+        content=root_stack,
+        on_hover=mark_activity,
+        on_tap=mark_activity,
+        on_pan_update=mark_activity,
+        on_scroll=mark_activity,
+        hover_interval=500,
+        drag_interval=500,
+        expand=True,
+    )
+    page.add(activity_detector)
     def open_nuevo_comprobante(edit_doc_id=None, copy_doc_id=None):
         db = get_db_or_toast()
         if not db: return
