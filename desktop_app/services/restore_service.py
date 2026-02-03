@@ -6,8 +6,11 @@ import tempfile
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Set
 from dataclasses import dataclass
+
+import psycopg
+from psycopg import sql
 
 try:
     from desktop_app.services.backup_incremental_service import BackupInfo, BackupIncrementalService
@@ -132,6 +135,111 @@ class RestoreService:
             )
 
         return env
+
+    def _open_restore_connection(self) -> psycopg.Connection:
+        config = self._get_db_config()
+        try:
+            conn = psycopg.connect(
+                host=config["host"],
+                port=config["port"],
+                dbname=config["name"],
+                user=config["user"],
+                password=config["password"],
+            )
+        except Exception as e:
+            logger.error(f"No se pudo abrir conexión para restore: {e}")
+            raise
+
+        conn.autocommit = True
+        maintenance_user_id = self._get_maintenance_user_id()
+        try:
+            with conn.cursor() as cur:
+                if maintenance_user_id:
+                    cur.execute("SELECT set_config('app.user_id', %s, true)", (str(maintenance_user_id),))
+                else:
+                    logger.warning(
+                        "DB_MAINTENANCE_USER_ID no definido y sin current_user_id; RLS puede bloquear restores."
+                    )
+        except Exception as e:
+            logger.warning(f"No se pudo configurar app.user_id en la sesión de restore: {e}")
+
+        return conn
+
+    def _resolve_tables(
+        self,
+        tables: List[str],
+        *,
+        conn: Optional[psycopg.Connection] = None,
+    ) -> List[Tuple[str, str]]:
+        if not tables:
+            return []
+
+        def _strip_quotes(value: str) -> str:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                return value[1:-1].replace('""', '"')
+            return value
+
+        close_conn = False
+        if conn is None:
+            conn = self._open_restore_connection()
+            close_conn = True
+
+        resolved: List[Tuple[str, str]] = []
+        seen: Set[Tuple[str, str]] = set()
+
+        try:
+            with conn.cursor() as cur:
+                for raw in tables:
+                    if raw is None:
+                        logger.warning("Nombre de tabla inválido en backup: %r", raw)
+                        continue
+                    raw_str = str(raw).strip()
+                    if not raw_str or "." not in raw_str:
+                        logger.warning("Nombre de tabla inválido en backup: %r", raw)
+                        continue
+                    parts = raw_str.split(".")
+                    if len(parts) != 2:
+                        logger.warning("Nombre de tabla inválido en backup: %r", raw)
+                        continue
+
+                    schema = _strip_quotes(parts[0])
+                    table = _strip_quotes(parts[1])
+                    if not schema or not table:
+                        logger.warning("Nombre de tabla inválido en backup: %r", raw)
+                        continue
+
+                    if schema.startswith("pg_") or schema == "information_schema":
+                        continue
+
+                    key = (schema, table)
+                    if key in seen:
+                        continue
+
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = %s
+                          AND c.relname = %s
+                          AND c.relkind IN ('r', 'p')
+                        """,
+                        (schema, table),
+                    )
+                    if cur.fetchone():
+                        resolved.append(key)
+                        seen.add(key)
+                    else:
+                        logger.warning("Tabla no encontrada o no es tabla/partición: %s.%s", schema, table)
+        finally:
+            if close_conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        return resolved
     
     def _verify_checksum(self, file_path: Path, expected_checksum: str) -> bool:
         sha256_hash = hashlib.sha256()
@@ -282,34 +390,32 @@ class RestoreService:
         """
         if not tables:
             return True
-            
-        config = self._get_db_config()
-        psql = self._get_psql_path()
-        
-        # Construir comando SQL
-        truncate_sql = f"TRUNCATE TABLE {', '.join(tables)} RESTART IDENTITY CASCADE;"
-        
-        env = self._build_pg_env(config["password"])
-        
-        cmd = [
-            psql,
-            "-h", config["host"],
-            "-p", config["port"],
-            "-U", config["user"],
-            "-d", config["name"],
-            "-c", truncate_sql
-        ]
-        
+
+        conn: Optional[psycopg.Connection] = None
         try:
-            logger.info(f"Truncando {len(tables)} tablas antes de restauración parcial...")
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            conn = self._open_restore_connection()
+            resolved = self._resolve_tables(tables, conn=conn)
+            if not resolved:
+                logger.warning("No se encontraron tablas válidas para truncar.")
+                return False
+
+            truncate_sql = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+                sql.SQL(", ").join(sql.Identifier(schema, table) for schema, table in resolved)
+            )
+
+            logger.info(f"Truncando {len(resolved)} tablas antes de restauración parcial...")
+            with conn.cursor() as cur:
+                cur.execute(truncate_sql)
             return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error truncando tablas: {e.stderr}")
-            return False
         except Exception as e:
-            logger.error(f"Error inesperado truncando tablas: {e}")
+            logger.error(f"Error truncando tablas: {e}")
             return False
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def _sync_sequences(self, tables: List[str]) -> bool:
         """
@@ -321,114 +427,96 @@ class RestoreService:
         """
         if not tables:
             return True
-        
-        config = self._get_db_config()
-        psql = self._get_psql_path()
-        env = self._build_pg_env(config["password"])
-        
-        # Construir SQL que resincronice todas las secuencias de una sola vez
-        # Para cada tabla, encontramos la columna PK (o columna con secuencia)
-        # y ajustamos la secuencia al MAX(id) + 1
-        sync_sql = ""
-        
-        for table in tables:
-            # SQL para encontrar secuencias relacionadas con esta tabla
-            # y establecer su valor al máximo ID restaurado + 1
-            sync_sql += f"""
-DO $$
-DECLARE
-    v_max_id BIGINT;
-    v_seq_name TEXT;
-    v_col_name TEXT;
-BEGIN
-    -- Encontrar columnas con secuencias en esta tabla
-    FOR v_col_name, v_seq_name IN
-        SELECT a.attname, s.sequencename
-        FROM pg_sequences s
-        JOIN pg_class t ON t.relname = s.tablename
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        JOIN pg_attribute a ON a.attrelid = t.oid
-        WHERE n.nspname || '.' || s.tablename = '{table}'
-          AND a.attname = s.seqname.split('_')[array_length(string_to_array(s.seqname, '_'), 1) - 1]::text
-          OR (s.seqname LIKE '%_' || s.tablename || '_%' OR s.seqname LIKE s.tablename || '_%')
-    LOOP
-        EXECUTE format('SELECT MAX(%I) FROM %I.%I', v_col_name, split_part('{table}', '.', 1), split_part('{table}', '.', 2))
-        INTO v_max_id;
-        
-        IF v_max_id IS NOT NULL THEN
-            EXECUTE format('SELECT setval(%L, %L, true)', v_seq_name, v_max_id);
-            RAISE NOTICE 'Secuencia % ajustada a %', v_seq_name, v_max_id;
-        END IF;
-    END LOOP;
-END $$;
-"""
-        
-        # Alternativa más robusta: usar un enfoque más simple que funcione en PostgreSQL estándar
-        # Vamos a usar una query más directa que busque secuencias conectadas a tablas
-        sync_sql = "DO $$ DECLARE\n"
-        sync_sql += "    v_table RECORD;\n"
-        sync_sql += "    v_sequence RECORD;\n"
-        sync_sql += "    v_col_name TEXT;\n"
-        sync_sql += "    v_max_id BIGINT;\n"
-        sync_sql += "BEGIN\n"
-        
-        for table in tables:
-            schema = table.split('.')[0]
-            table_name = table.split('.')[1]
-            
-            sync_sql += f"""
-    -- Resincronizar secuencias para tabla {table}
-    FOR v_sequence IN
-        SELECT sequence_schema, sequence_name, 
-               (SELECT attname FROM pg_attribute 
-                WHERE attrelid = ('{schema}'::text || '.' || '{table_name}')::regclass 
-                  AND attnum > 0 LIMIT 1) AS col_name
-        FROM information_schema.sequences
-        WHERE sequence_schema = '{schema}' 
-          AND sequence_name LIKE '{table_name}_%'
-    LOOP
-        IF v_sequence.col_name IS NOT NULL THEN
-            EXECUTE format('SELECT COALESCE(MAX(%I), 0) + 1 FROM %I.%I', 
-                          v_sequence.col_name, '{schema}', '{table_name}')
-            INTO v_max_id;
-            
-            EXECUTE format('SELECT setval(%L, %L)', 
-                          v_sequence.sequence_name, v_max_id);
-            RAISE NOTICE 'Secuencia % ajustada a valor %', v_sequence.sequence_name, v_max_id;
-        END IF;
-    END LOOP;
-"""
-        
-        sync_sql += "\nEND $$;\n"
-        
-        cmd = [
-            psql,
-            "-h", config["host"],
-            "-p", config["port"],
-            "-U", config["user"],
-            "-d", config["name"],
-            "-c", sync_sql
-        ]
-        
+
+        conn: Optional[psycopg.Connection] = None
         try:
-            logger.info(f"Resincronizando secuencias de {len(tables)} tablas...")
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
-            
-            # Log los notices de la ejecución
-            if result.stderr:
-                logger.info(f"Resincronización de secuencias: {result.stderr[:500]}")
-            
-            if result.returncode != 0 and "NOTICE" not in result.stderr:
-                logger.warning(f"Resincronización de secuencias completada con advertencias: {result.stderr[:500]}")
-                # No fallar si es solo un warning
-            
+            conn = self._open_restore_connection()
+            resolved = self._resolve_tables(tables, conn=conn)
+            if not resolved:
+                logger.warning("No se encontraron tablas válidas para resincronizar secuencias.")
+                return False
+
+            logger.info(f"Resincronizando secuencias de {len(resolved)} tablas...")
+            total_sequences = 0
+            seen_sequences: Set[str] = set()
+
+            with conn.cursor() as cur:
+                for schema, table in resolved:
+                    table_qual = f"{schema}.{table}"
+                    cur.execute(
+                        """
+                        SELECT a.attname,
+                               pg_get_serial_sequence(%s, a.attname) AS seq_name
+                        FROM pg_attribute a
+                        JOIN pg_class c ON c.oid = a.attrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = %s
+                          AND c.relname = %s
+                          AND a.attnum > 0
+                          AND NOT a.attisdropped
+                        """,
+                        (table_qual, schema, table),
+                    )
+                    rows = cur.fetchall()
+                    sequences = []
+                    for row in rows:
+                        col_name = row[0]
+                        seq_name = row[1]
+                        if seq_name:
+                            sequences.append((col_name, seq_name))
+
+                    if not sequences:
+                        logger.warning("No se encontraron secuencias owned para %s.%s", schema, table)
+                        continue
+
+                    for col_name, seq_name in sequences:
+                        if seq_name in seen_sequences:
+                            continue
+                        seen_sequences.add(seq_name)
+
+                        cur.execute(
+                            sql.SQL("SELECT MAX({col}) FROM {schema}.{table}").format(
+                                col=sql.Identifier(col_name),
+                                schema=sql.Identifier(schema),
+                                table=sql.Identifier(table),
+                            )
+                        )
+                        max_val = cur.fetchone()[0]
+
+                        if max_val is None:
+                            cur.execute(
+                                "SELECT seqstart FROM pg_sequence WHERE seqrelid = %s::regclass",
+                                (seq_name,),
+                            )
+                            seq_row = cur.fetchone()
+                            if seq_row:
+                                seq_start = seq_row[0]
+                            else:
+                                seq_start = 1
+                                logger.warning("No se pudo encontrar seqstart para %s, usando 1", seq_name)
+
+                            cur.execute("SELECT setval(%s, %s, false)", (seq_name, seq_start))
+                            logger.info(
+                                "Secuencia %s ajustada a %s (tabla vacía)", seq_name, seq_start
+                            )
+                        else:
+                            cur.execute("SELECT setval(%s, %s, true)", (seq_name, max_val))
+                            logger.info("Secuencia %s ajustada a %s", seq_name, max_val)
+                        total_sequences += 1
+
+            if total_sequences == 0:
+                logger.warning("No se encontraron secuencias owned para resincronizar.")
+
             return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error resincronizando secuencias: {e.stderr}")
-            return False
         except Exception as e:
-            logger.error(f"Error inesperado resincronizando secuencias: {e}")
+            logger.error(f"Error resincronizando secuencias: {e}")
             return False
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def _apply_differential_backup(self, backup_file: Path, lsn_inicio: str) -> RestoreResult:
         logger.info(f"Aplicando backup DIFERENCIAL (Data Only): {backup_file}")

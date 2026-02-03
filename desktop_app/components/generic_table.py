@@ -5,6 +5,7 @@ from math import ceil
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import flet as ft
+import logging
 import csv
 import os
 import threading
@@ -13,6 +14,8 @@ from datetime import datetime
 import time
 from desktop_app.services.export_service import ExportService
 from desktop_app.components.button_styles import cancel_button
+
+logger = logging.getLogger(__name__)
 
 SortSpec = List[Tuple[str, str]]  # [(key, "asc"|"desc")] in order
 
@@ -692,8 +695,10 @@ class GenericTable:
                         
                     val = row.get(col.key)
                     if col.formatter:
-                        try: val = col.formatter(val, row)
-                        except: pass
+                        try:
+                            val = col.formatter(val, row)
+                        except Exception as exc:
+                            logger.debug("Error aplicando formatter en columna %s: %s", col.key, exc)
                     
                     # Store as is, ExportService._format_value will handle the final string representation
                     clean_row[col.label] = val
@@ -1335,12 +1340,17 @@ class GenericTable:
                 self.root.page.update()
             else:
                 self.root.update()
-        except (Exception, AssertionError):
-            pass
+        except AssertionError as exc:
+            logger.debug("GenericTable update skipped: %s", exc)
+        except Exception:
+            logger.exception("GenericTable update failed")
 
     def _safe_table_update(self) -> None:
         """Defensive update for the DataTable to prevent TypeErrors in Python 3.14"""
         if not self.table:
+            return
+        # Avoid update calls before the control is attached to a page
+        if getattr(self.table, "page", None) is None:
             return
         try:
             # Ensure sort_column_index is NOT a string before updating
@@ -1353,13 +1363,20 @@ class GenericTable:
                         self.table.sort_column_index = None
                 
             self.table.update()
-        except Exception:
+        except AssertionError as exc:
+            # Flet raises when control isn't on a page yet; ignore quietly
+            logger.debug("GenericTable table update skipped: %s", exc)
+            return
+        except Exception as exc:
             # If it still fails, try one last time with a nuked sort index
+            logger.debug("GenericTable table update failed, retrying without sort index: %s", exc)
             try:
                 self.table.sort_column_index = None
                 self.table.update()
-            except:
-                pass
+            except AssertionError as exc:
+                logger.debug("GenericTable table update skipped after retry: %s", exc)
+            except Exception:
+                logger.exception("GenericTable table update failed after retry")
 
     def _build_rows(self, rows: List[Dict[str, Any]]) -> List[ft.DataRow]:
         result: List[ft.DataRow] = []
@@ -1458,14 +1475,16 @@ class GenericTable:
                     self.selection_bar.visible = False
 
             try: self.select_all_checkbox.update()
-            except: pass
+            except Exception as exc:
+                logger.debug("Error actualizando select_all_checkbox: %s", exc)
             
         # Update row checkboxes visual state if they exist on the page
         for rid, cb in self._row_selection_controls.items():
             try:
                 cb.value = rid in self.selected_ids
                 cb.update()
-            except: pass
+            except Exception as exc:
+                logger.debug("Error actualizando checkbox de fila %s: %s", rid, exc)
             
         self._set_status("")
 
@@ -1483,7 +1502,7 @@ class GenericTable:
         try:
             self.select_all_checkbox.update()
         except Exception:
-            pass
+            logger.debug("Error actualizando select_all_checkbox en _sync_select_all_checkbox")
 
     def _toggle_select_all(self, checked: bool) -> None:
         if not self._current_page_ids:
@@ -1806,7 +1825,7 @@ class GenericTable:
                 self._edit_dialog.open = False
                 self.update()
             except:
-                pass
+                logger.debug("Error cerrando diálogo de edición")
 
             try:
                 if self.inline_edit_callback:
@@ -1826,8 +1845,10 @@ class GenericTable:
             except:
                 # Fallback manual
                 self._edit_dialog.open = False
-                try: self.update()
-                except: pass
+                try:
+                    self.update()
+                except Exception:
+                    logger.debug("Error actualizando UI tras cerrar diálogo (fallback)")
 
         # Build Input - Use inline_editor if available
         input_control: ft.Control
@@ -1854,7 +1875,7 @@ class GenericTable:
                         elif self.page: pg = self.page
                         if pg: pg.update()
                     except:
-                        pass
+                        logger.debug("Error cerrando diálogo de AsyncSelect en inline edit")
 
                     # Auto-save when AsyncSelect value is selected
                     try:
@@ -1954,4 +1975,5 @@ class GenericTable:
             try:
                 if self.export_button.page:
                     self.export_button.update()
-            except: pass
+            except Exception as exc:
+                logger.debug("Error actualizando visibilidad del botón export: %s", exc)

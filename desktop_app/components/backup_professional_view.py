@@ -2,6 +2,7 @@ import flet as ft
 from typing import List, Dict, Any, Optional, Callable, Tuple
 from datetime import datetime, timedelta
 import json
+import logging
 
 try:
     from desktop_app.components.generic_table import GenericTable, ColumnConfig, SimpleFilterConfig, AdvancedFilterControl
@@ -27,6 +28,7 @@ class BackupProfessionalView:
         self.show_message = show_message
         self.ask_confirm = ask_confirm
         self.pg_bin_path = pg_bin_path
+        self.logger = logging.getLogger(__name__)
         
         # Colores
         self.COLOR_PRIMARY = "#4F46E5"
@@ -57,6 +59,9 @@ class BackupProfessionalView:
         self.data_loaded = False
         
         self._setup_view()
+
+    def _log_suppressed(self, context: str, exc: Exception) -> None:
+        self.logger.debug("%s: %s", context, exc)
     
     @property
     def backup_manager(self):
@@ -558,7 +563,8 @@ class BackupProfessionalView:
         try:
             if self.db:
                 self.db.log_activity("BACKUP", "VIEW")
-        except: pass
+        except Exception as e:
+            self._log_suppressed("log_activity BACKUP VIEW", e)
         self.backups_table.refresh()
         # Ensure metrics are updated whenever table is refreshed
         import threading
@@ -668,7 +674,8 @@ class BackupProfessionalView:
                 # Log intent
                 try:
                     self.db.log_activity("BACKUP", f"EXEC_INIT_{backup_type}", detalle={"tipo": backup_type})
-                except: pass
+                except Exception as e:
+                    self._log_suppressed(f"log_activity EXEC_INIT_{backup_type}", e)
 
                 resultado = self.backup_manager.execute_scheduled_backup(backup_type)
                 
@@ -681,7 +688,8 @@ class BackupProfessionalView:
                             resultado="OK",
                             detalle={"mensaje": f"Backup {backup_type} completado", "duracion": resultado.get('duracion_segundos')}
                         )
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed(f"log_activity BACKUP_{backup_type} OK", e)
 
                     self.show_message(
                         f"Backup {backup_type} creado exitosamente en {resultado['duracion_segundos']:.2f}s",
@@ -696,7 +704,8 @@ class BackupProfessionalView:
                             resultado="FAIL",
                             detalle={"error": resultado.get('mensaje')}
                         )
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed(f"log_activity BACKUP_{backup_type} FAIL", e)
                     self.show_message(f"Error en backup {backup_type}: {resultado['mensaje']}", "error")
                     
             except Exception as e:
@@ -712,7 +721,8 @@ class BackupProfessionalView:
                 # Log intent
                 try:
                     self.db.log_activity("BACKUP", "VALIDATE_INIT", id_entidad=backup['id'])
-                except: pass
+                except Exception as e:
+                    self._log_suppressed("log_activity VALIDATE_INIT", e)
 
                 result = self.backup_manager.restore_service.validate_backup_chain(backup['id'])
                 
@@ -720,18 +730,21 @@ class BackupProfessionalView:
                     self.show_message("Backup validado correctamente", "success")
                     try:
                         self.db.log_activity("BACKUP", "VALIDATE_OK", id_entidad=backup['id'])
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed("log_activity VALIDATE_OK", e)
                 else:
                     self.show_message(f"Backup inválido: {result['mensaje']}", "warning")
                     try:
                         self.db.log_activity("BACKUP", "VALIDATE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed("log_activity VALIDATE_FAIL", e)
                     
             except Exception as e:
                 self.show_message(f"Error validando backup: {str(e)}", "error")
                 try:
                     self.db.log_activity("BACKUP", "VALIDATE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
-                except: pass
+                except Exception as exc:
+                    self._log_suppressed("log_activity VALIDATE_ERROR", exc)
         
         import threading
         threading.Thread(target=run_validation, daemon=True).start()
@@ -745,7 +758,8 @@ class BackupProfessionalView:
             try:
                 try:
                     self.db.log_activity("BACKUP", "UPLOAD_INIT", id_entidad=backup['id'], detalle={"provider": provider})
-                except: pass
+                except Exception as e:
+                    self._log_suppressed("log_activity UPLOAD_INIT", e)
 
                 from pathlib import Path
                 backup_file = Path(backup['archivo'])
@@ -761,7 +775,8 @@ class BackupProfessionalView:
                         self.show_message("Error: Debes especificar la carpeta de sincronización para LOCAL", "error")
                         try:
                             self.db.log_activity("BACKUP", "UPLOAD_CONFIG_MISSING", id_entidad=backup['id'], resultado="FAIL", detalle={"error": "sync_dir not configured"})
-                        except: pass
+                        except Exception as e:
+                            self._log_suppressed("log_activity UPLOAD_CONFIG_MISSING", e)
                         return
                 
                 self.db.set_config("backup_cloud_config", json.dumps(cloud_config), tipo='TEXT', descripcion='Configuración de sincronización en la nube')
@@ -778,18 +793,21 @@ class BackupProfessionalView:
                     self.show_message("Backup subido a la nube exitosamente", "success")
                     try:
                         self.db.log_activity("BACKUP", "UPLOAD_OK", id_entidad=backup['id'], detalle={"url": result.url, "tiempo_segundos": result.tiempo_segundos})
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed("log_activity UPLOAD_OK", e)
                 else:
                     self.show_message(f"Error subiendo a la nube: {result.mensaje}", "error")
                     try:
                         self.db.log_activity("BACKUP", "UPLOAD_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result.mensaje})
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed("log_activity UPLOAD_FAIL", e)
                     
             except Exception as e:
                 self.show_message(f"Error subiendo a la nube: {str(e)}", "error")
                 try:
                     self.db.log_activity("BACKUP", "UPLOAD_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
-                except: pass
+                except Exception as exc:
+                    self._log_suppressed("log_activity UPLOAD_ERROR", exc)
         
         import threading
         threading.Thread(target=run_upload, daemon=True).start()
@@ -800,7 +818,8 @@ class BackupProfessionalView:
         # Log intent
         try:
             self.db.log_activity("BACKUP", "RESTORE_INIT", id_entidad=backup['id'], detalle={"tipo": backup['tipo'], "fecha": str(backup['fecha_inicio'])})
-        except: pass
+        except Exception as e:
+            self._log_suppressed("log_activity RESTORE_INIT", e)
 
         def on_confirm():
             def run_restore():
@@ -808,7 +827,8 @@ class BackupProfessionalView:
                     # Log execution
                     try:
                         self.db.log_activity("BACKUP", "RESTORE_EXEC", id_entidad=backup['id'])
-                    except: pass
+                    except Exception as e:
+                        self._log_suppressed("log_activity RESTORE_EXEC", e)
 
                     self.show_message("Iniciando restauración... Esto puede tomar varios minutos.", "info")
                     result = self.backup_manager.restore_from_backup_id(backup['id'])
@@ -816,17 +836,20 @@ class BackupProfessionalView:
                         self.show_message(f"Restauración completada: {result['mensaje']}", "success")
                         try:
                             self.db.log_activity("BACKUP", "RESTORE_OK", id_entidad=backup['id'])
-                        except: pass
+                        except Exception as e:
+                            self._log_suppressed("log_activity RESTORE_OK", e)
                     else:
                         self.show_message(f"Error en restauración: {result['mensaje']}", "error")
                         try:
                             self.db.log_activity("BACKUP", "RESTORE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
-                        except: pass
+                        except Exception as e:
+                            self._log_suppressed("log_activity RESTORE_FAIL", e)
                 except Exception as e:
                     self.show_message(f"Error crítico en restauración: {str(e)}", "error")
                     try:
                         self.db.log_activity("BACKUP", "RESTORE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
-                    except: pass
+                    except Exception as exc:
+                        self._log_suppressed("log_activity RESTORE_ERROR", exc)
             
             import threading
             threading.Thread(target=run_restore, daemon=True).start()
@@ -978,7 +1001,8 @@ class BackupProfessionalView:
                 # Log intent
                 try:
                     self.db.log_activity("BACKUP", "DELETE_EXEC", id_entidad=backup['id'], detalle={"archivo": backup['archivo']})
-                except: pass
+                except Exception as e:
+                    self._log_suppressed("log_activity DELETE_EXEC", e)
 
                 # 1. Eliminar archivo físico
                 path = Path(backup['archivo'])
@@ -998,12 +1022,14 @@ class BackupProfessionalView:
                 self.backups_table.refresh()
                 try:
                     self.db.log_activity("BACKUP", "DELETE_OK", id_entidad=backup['id'])
-                except: pass
+                except Exception as e:
+                    self._log_suppressed("log_activity DELETE_OK", e)
             except Exception as e:
                 self.show_message(f"Error eliminando backup: {str(e)}", "error")
                 try:
                     self.db.log_activity("BACKUP", "DELETE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
-                except: pass
+                except Exception as exc:
+                    self._log_suppressed("log_activity DELETE_ERROR", exc)
 
         if self.ask_confirm:
             self.ask_confirm(
@@ -1071,7 +1097,8 @@ class BackupProfessionalView:
             self.show_message("Horarios de backups actualizados correctamente", "success")
             try:
                 self.db.log_activity("BACKUP", "UPDATE_SCHEDULE", detalle={"FULL": self.full_schedule_day.value, "DIF": self.dif_schedule_weekday.value})
-            except: pass
+            except Exception as e:
+                self._log_suppressed("log_activity UPDATE_SCHEDULE", e)
             
         except Exception as e:
             self.show_message(f"Error guardando horarios: {str(e)}", "error")
@@ -1087,7 +1114,8 @@ class BackupProfessionalView:
             self.show_message("Política de retención guardada correctamente", "success")
             try:
                 self.db.log_activity("BACKUP", "UPDATE_RETENTION", detalle=retention_config)
-            except: pass
+            except Exception as e:
+                self._log_suppressed("log_activity UPDATE_RETENTION", e)
         except Exception as e:
             self.show_message(f"Error guardando retención: {str(e)}", "error")
 
@@ -1119,7 +1147,8 @@ class BackupProfessionalView:
             
             try:
                 self.db.log_activity("BACKUP", "UPDATE_CLOUD_CONFIG", detalle=cloud_config)
-            except: pass
+            except Exception as e:
+                self._log_suppressed("log_activity UPDATE_CLOUD_CONFIG", e)
 
         except Exception as e:
             self.show_message(f"Error guardando configuración de nube: {str(e)}", "error")

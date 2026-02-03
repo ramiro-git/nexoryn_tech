@@ -12,11 +12,13 @@ Características:
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import flet as ft
 
 Option = Dict[str, Any]
+logger = logging.getLogger(__name__)
 
 
 class AsyncSelect(ft.Column):
@@ -178,8 +180,7 @@ class AsyncSelect(ft.Column):
         self._disabled = bool(v)
         if hasattr(self, '_trigger') and self._trigger:
             self._trigger.disabled = self._disabled
-            try: self._trigger.update()
-            except: pass
+            self._safe_update(self._trigger, "disabled_trigger")
 
     @property
     def value(self):
@@ -193,9 +194,7 @@ class AsyncSelect(ft.Column):
             self._trigger.content.controls[0].value = self._selected_label or self.placeholder
             self._trigger.content.controls[0].color = self.text_color if self._selected_label else self.placeholder_color
             self._trigger.content.controls[0].weight = self.text_weight if self._selected_label else self.placeholder_weight
-        try:
-            self.update()
-        except: pass
+        self._safe_update(self, "value_update")
 
     def update(self):
         try:
@@ -209,6 +208,22 @@ class AsyncSelect(ft.Column):
         self._offset = 0
         self._has_more = True
 
+    def _safe_update(self, control: Optional[ft.Control], context: str) -> None:
+        if not control:
+            return
+        try:
+            control.update()
+        except AssertionError as exc:
+            logger.debug("AsyncSelect update skipped (%s): %s", context, exc)
+        except Exception:
+            logger.exception("AsyncSelect update failed (%s)", context)
+
+    def _safe_callback(self, callback: Callable[[], None], context: str) -> None:
+        try:
+            callback()
+        except Exception:
+            logger.exception("AsyncSelect callback failed (%s)", context)
+
     def set_busy(self, loading: bool) -> None:
         self._update_trigger_icon(loading)
         if loading:
@@ -218,10 +233,7 @@ class AsyncSelect(ft.Column):
         page = self._get_page()
         if not page:
             if on_done:
-                try:
-                    on_done()
-                except Exception:
-                    pass
+                self._safe_callback(on_done, "prefetch_on_done_no_page")
             return
 
         async def _do():
@@ -229,10 +241,7 @@ class AsyncSelect(ft.Column):
                 await self._load_items(query, 0, is_search=True)
             finally:
                 if on_done:
-                    try:
-                        on_done()
-                    except Exception:
-                        pass
+                    self._safe_callback(on_done, "prefetch_on_done")
 
         page.run_task(_do)
 
@@ -249,8 +258,7 @@ class AsyncSelect(ft.Column):
         self._items = items
         self._cache.clear()
         self._update_selected_label()
-        try: self.update()
-        except: pass
+        self._safe_update(self, "options_update")
 
     def _update_selected_label(self):
         if self._value is None:
@@ -331,8 +339,7 @@ class AsyncSelect(ft.Column):
             icon.size = 24
             icon.color = "#475569"
             icon.icon = ft.icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.icons.ARROW_DROP_DOWN
-            try: self._trigger.update()
-            except: pass
+            self._safe_update(self._trigger, "trigger_icon")
 
     def _on_search_change(self, e):
         new_query = e.control.value
@@ -375,9 +382,8 @@ class AsyncSelect(ft.Column):
             text_field.value = self._selected_label
             text_field.color = self.text_color
             text_field.weight = self.text_weight
-        
-        try: self.update()
-        except: pass
+
+        self._safe_update(self, "option_click")
 
     def _on_retry(self, _e):
         self._cache.clear()
@@ -423,7 +429,8 @@ class AsyncSelect(ft.Column):
                 try:
                     page.dialog.open = False
                     page.dialog = None
-                except: pass
+                except Exception as exc:
+                    logger.debug("AsyncSelect no pudo limpiar dialog previo: %s", exc)
 
             # Ensure it's in overlay and ALWAYS at the end (to be on top of other modals)
             if self._dialog in page.overlay:
@@ -465,8 +472,10 @@ class AsyncSelect(ft.Column):
             self._dialog.visible = False
             try:
                 page = self._get_page()
-                if page: page.update()
-            except: pass
+                if page:
+                    self._safe_update(page, "close_dialog")
+            except Exception as exc:
+                logger.debug("AsyncSelect no pudo actualizar página al cerrar dialog: %s", exc)
 
     def did_mount(self):
         # Store page reference for later use
@@ -478,8 +487,7 @@ class AsyncSelect(ft.Column):
             self._build_dialog()
         
         self._update_selected_label()
-        try: self.update()
-        except: pass
+        self._safe_update(self, "did_mount")
 
     def _build_dialog(self):
         self._search_field = ft.TextField(
@@ -589,8 +597,7 @@ class AsyncSelect(ft.Column):
         
         page = self._get_page()
         if page:
-            try: page.update()
-            except: pass
+            self._safe_update(page, "dialog_update")
 
     def _build_option_item(self, option):
         is_selected = str(option.get("value")) == str(self._value)
