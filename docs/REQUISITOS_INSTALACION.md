@@ -48,14 +48,24 @@ AFIP_PRODUCCION=False  # también soporta AFIP_PRODUCTION
 AFIP_PUNTO_VENTA=3
 
 # Homologación (default si AFIP_PRODUCCION=False)
+# También soporta *_HOMOLOGACION
 AFIP_CUIT=20XXXXXXXX9
 AFIP_CERT_PATH="C:/Nexoryn/Certs/empresa_homo.crt"
 AFIP_KEY_PATH="C:/Nexoryn/Certs/empresa_homo.key"
+# Alternativas homologación:
+# AFIP_CUIT_HOMOLOGACION=20XXXXXXXX9
+# AFIP_CERT_PATH_HOMOLOGACION="C:/Nexoryn/Certs/empresa_homo.crt"
+# AFIP_KEY_PATH_HOMOLOGACION="C:/Nexoryn/Certs/empresa_homo.key"
 
 # Producción (si AFIP_PRODUCCION=True)
+# También soporta *_PRODUCTION
 AFIP_CUIT_PRODUCCION=20YYYYYYYY9
 AFIP_CERT_PATH_PRODUCCION="C:/Nexoryn/Certs/empresa_prod.crt"
 AFIP_KEY_PATH_PRODUCCION="C:/Nexoryn/Certs/empresa_prod.key"
+# Alternativas producción:
+# AFIP_CUIT_PRODUCTION=20YYYYYYYY9
+# AFIP_CERT_PATH_PRODUCTION="C:/Nexoryn/Certs/empresa_prod.crt"
+# AFIP_KEY_PATH_PRODUCTION="C:/Nexoryn/Certs/empresa_prod.key"
 
 # UI (opcional)
 NEXORYN_UI=basic  # o advanced

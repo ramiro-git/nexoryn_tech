@@ -18,25 +18,39 @@ La integración está implementada en `desktop_app/services/afip_service.py` y s
 
 ## Configuración (.env)
 
-La app soporta homologación y producción. El flag `AFIP_PRODUCCION` define qué credenciales usar.
+La app soporta homologación y producción. El flag `AFIP_PRODUCCION` (o `AFIP_PRODUCTION`) define qué credenciales usar.
 
 ```env
 # Flag de entorno (acepta AFIP_PRODUCCION o AFIP_PRODUCTION)
 AFIP_PRODUCCION=False
 
 # Credenciales Homologación (default si AFIP_PRODUCCION=False)
+# También soporta *_HOMOLOGACION
 AFIP_CUIT=20XXXXXXXX9
 AFIP_CERT_PATH=certs/empresa_homo.crt
 AFIP_KEY_PATH=certs/empresa_homo.key
+# Alternativas homologación:
+# AFIP_CUIT_HOMOLOGACION=20XXXXXXXX9
+# AFIP_CERT_PATH_HOMOLOGACION=certs/empresa_homo.crt
+# AFIP_KEY_PATH_HOMOLOGACION=certs/empresa_homo.key
 
 # Credenciales Producción (se usan si AFIP_PRODUCCION=True)
+# También soporta *_PRODUCTION
 AFIP_CUIT_PRODUCCION=20YYYYYYYY9
 AFIP_CERT_PATH_PRODUCCION=certs/empresa_prod.crt
 AFIP_KEY_PATH_PRODUCCION=certs/empresa_prod.key
+# Alternativas producción:
+# AFIP_CUIT_PRODUCTION=20YYYYYYYY9
+# AFIP_CERT_PATH_PRODUCTION=certs/empresa_prod.crt
+# AFIP_KEY_PATH_PRODUCTION=certs/empresa_prod.key
 
 # Punto de venta
 AFIP_PUNTO_VENTA=3
 ```
+
+**Resolución de credenciales:**
+- Homologación: usa `AFIP_CUIT/AFIP_CERT_PATH/AFIP_KEY_PATH` y, si existen, prioriza `*_HOMOLOGACION`.
+- Producción: usa `*_PRODUCCION` y, si no existen, toma `*_PRODUCTION`.
 
 **Resolución de rutas:**
 - Si las rutas son relativas, se resuelven respecto al directorio de configuración.
@@ -66,7 +80,7 @@ AFIP_PUNTO_VENTA=3
 
 ### `WSAA/WSFE error`
 - Verificar que el certificado corresponda al CUIT configurado
-- Confirmar `AFIP_PRODUCCION` vs homologación
+- Confirmar `AFIP_PRODUCCION`/`AFIP_PRODUCTION` vs homologación
 
 ## Seguridad
 

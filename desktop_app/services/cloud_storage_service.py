@@ -149,81 +149,31 @@ class CloudStorageService:
     
     def _upload_to_google_drive(self, backup_file: Path, backup_id: int) -> CloudUploadResult:
         inicio = datetime.now()
-        
-        # Google Drive no está implementado. Usar carpeta de sincronización LOCAL como fallback
-        sync_dir = self.config.get('sync_dir')
-        
-        if not sync_dir or not str(sync_dir).strip():
-            # CRÍTICO: No marcar como exitoso si no hay destino configurado
-            mensaje = (
-                "ERROR DE SEGURIDAD: Google Drive no está implementado y no hay carpeta de sincronización configurada. "
-                "Configura 'sync_dir' en la configuración de nube antes de hacer backups."
-            )
-            self.logger.error(mensaje)
-            fin = datetime.now()
-            return CloudUploadResult(
-                exitoso=False,
-                url=None,
-                mensaje=mensaje,
-                tiempo_segundos=(fin - inicio).total_seconds(),
-                tamaño_bytes=0
-            )
-        
-        # Use LOCAL copy as fallback
-        try:
-            result = self._copy_to_local_folder(backup_file, backup_id)
-            # Change the message to indicate it was copied to sync folder
-            result.mensaje = f"Backup copiado a carpeta de sincronización: {sync_dir} (Google Drive no está implementado)"
-            return result
-        except Exception as e:
-            fin = datetime.now()
-            self.logger.error(f"Error subiendo a Google Drive (fallback LOCAL): {e}", exc_info=True)
-            return CloudUploadResult(
-                exitoso=False,
-                url=None,
-                mensaje=f"Error subiendo a Google Drive: {str(e)}",
-                tiempo_segundos=(fin - inicio).total_seconds(),
-                tamaño_bytes=0
-            )
+        mensaje = "Google Drive no está implementado"
+        self.logger.error(mensaje)
+        fin = datetime.now()
+        tamaño_bytes = backup_file.stat().st_size if backup_file.exists() else 0
+        return CloudUploadResult(
+            exitoso=False,
+            url=None,
+            mensaje=mensaje,
+            tiempo_segundos=(fin - inicio).total_seconds(),
+            tamaño_bytes=tamaño_bytes
+        )
     
     def _upload_to_s3(self, backup_file: Path, backup_id: int) -> CloudUploadResult:
         inicio = datetime.now()
-        
-        # S3 no está implementado. Usar carpeta de sincronización LOCAL como fallback
-        sync_dir = self.config.get('sync_dir')
-        
-        if not sync_dir or not str(sync_dir).strip():
-            # CRÍTICO: No marcar como exitoso si no hay destino configurado
-            mensaje = (
-                "ERROR DE SEGURIDAD: S3 no está implementado y no hay carpeta de sincronización configurada. "
-                "Configura 'sync_dir' en la configuración de nube antes de hacer backups."
-            )
-            self.logger.error(mensaje)
-            fin = datetime.now()
-            return CloudUploadResult(
-                exitoso=False,
-                url=None,
-                mensaje=mensaje,
-                tiempo_segundos=(fin - inicio).total_seconds(),
-                tamaño_bytes=0
-            )
-        
-        # Use LOCAL copy as fallback
-        try:
-            result = self._copy_to_local_folder(backup_file, backup_id)
-            # Change the message to indicate it was copied to sync folder
-            result.mensaje = f"Backup copiado a carpeta de sincronización: {sync_dir} (S3 no está implementado)"
-            return result
-        except Exception as e:
-            fin = datetime.now()
-            self.logger.error(f"Error subiendo a S3 (fallback LOCAL): {e}", exc_info=True)
-            return CloudUploadResult(
-                exitoso=False,
-                url=None,
-                mensaje=f"Error subiendo a S3: {str(e)}",
-                tiempo_segundos=(fin - inicio).total_seconds(),
-                tamaño_bytes=0
-            )
+        mensaje = "S3 no está implementado"
+        self.logger.error(mensaje)
+        fin = datetime.now()
+        tamaño_bytes = backup_file.stat().st_size if backup_file.exists() else 0
+        return CloudUploadResult(
+            exitoso=False,
+            url=None,
+            mensaje=mensaje,
+            tiempo_segundos=(fin - inicio).total_seconds(),
+            tamaño_bytes=tamaño_bytes
+        )
     
     def _update_backup_cloud_status(self, backup_id: int, subido: bool, url: Optional[str], proveedor: str):
         query = """

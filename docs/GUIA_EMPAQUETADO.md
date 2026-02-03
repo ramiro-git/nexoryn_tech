@@ -50,11 +50,14 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/nexoryn_tech
 PG_BIN_PATH="C:\Program Files\PostgreSQL\16\bin"
 
 # AFIP (homologación por defecto)
-AFIP_PRODUCCION=False
+AFIP_PRODUCCION=False  # también soporta AFIP_PRODUCTION
 AFIP_PUNTO_VENTA=3
 AFIP_CUIT=20XXXXXXXX9
 AFIP_CERT_PATH=certs/mi_certificado.crt
 AFIP_KEY_PATH=certs/mi_llave.key
+# Variantes soportadas:
+# - Homologación: AFIP_CUIT_HOMOLOGACION / AFIP_CERT_PATH_HOMOLOGACION / AFIP_KEY_PATH_HOMOLOGACION
+# - Producción: AFIP_CUIT_PRODUCCION o AFIP_CUIT_PRODUCTION (y equivalentes para CERT/KEY)
 
 # UI (opcional)
 NEXORYN_UI=basic  # o advanced

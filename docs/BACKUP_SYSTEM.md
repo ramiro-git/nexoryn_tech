@@ -132,7 +132,7 @@ No valida contenido lógico ni dependencias externas.
 
 El sistema soporta **sincronización a carpeta local** mediante `CloudStorageService`:
 - `provider=LOCAL` copia el archivo a `sync_dir`.
-- `provider=GOOGLE_DRIVE` y `provider=S3` están **reservados**; hoy hacen fallback a carpeta local si `sync_dir` existe.
+- `provider=GOOGLE_DRIVE` y `provider=S3` están **reservados**; hoy devuelven error **no implementado** y no marcan `nube_subido`.
 
 La configuración se guarda en `backup_cloud_config`.
 
