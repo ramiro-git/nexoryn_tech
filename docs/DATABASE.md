@@ -26,7 +26,7 @@ Script para crear el esquema y opcionalmente importar CSVs.
   python database/init_db.py --dry-run
   ```
 
-> Nota: el script usa por defecto `--db-name nexoryn` si no se especifica.
+> Nota: el script usa por defecto `--db-name nexoryn_tech` si no se especifica.
 
 ### 2. `kill_sessions.py` (Terminador de Sesiones)
 Utilidad para cerrar conexiones activas cuando PostgreSQL bloquea operaciones de mantenimiento.

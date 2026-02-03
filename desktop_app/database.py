@@ -317,7 +317,14 @@ class Database:
                     ))
                     conn.commit()
         except Exception:
-            pass # Silent failure for logs
+            logger.exception(
+                "Error logging activity (entidad=%s, accion=%s, id_entidad=%s, resultado=%s, detalle_present=%s)",
+                entidad,
+                accion,
+                id_entidad,
+                resultado,
+                bool(detalle),
+            )
 
     def log_logout(self, motivo: str, usuario: Optional[str] = None, *, use_pool: bool = True) -> bool:
         """Log a logout event, bypassing is_closing and falling back to direct connection."""

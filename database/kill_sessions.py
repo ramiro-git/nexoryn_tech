@@ -74,7 +74,7 @@ def main():
     load_dotenv(dotenv_path=env_path)
     
     parser = argparse.ArgumentParser(description="Kill all active DB sessions")
-    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "nexoryn"), help="Target database name")
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "nexoryn_tech"), help="Target database name")
     parser.add_argument("--host", default=os.getenv("DB_HOST", "localhost"), help="Database host")
     parser.add_argument("--port", type=int, default=int(os.getenv("DB_PORT", 5432)), help="Database port")
     parser.add_argument("--user", default=os.getenv("DB_USER", "postgres"), help="Database user")

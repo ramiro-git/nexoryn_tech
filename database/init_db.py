@@ -106,7 +106,7 @@ Examples:
     )
     parser.add_argument("--host", default="localhost", help="Database host")
     parser.add_argument("--port", type=int, default=5432, help="Database port")
-    parser.add_argument("--db-name", default="nexoryn", help="Database name")
+    parser.add_argument("--db-name", default=os.getenv("DB_NAME", "nexoryn_tech"), help="Database name")
     parser.add_argument("--user", default="postgres", help="Database user")
     parser.add_argument("--password", default="", help="Database password (or use PGPASSWORD env)")
     parser.add_argument("--reset", action="store_true", help="Drop and recreate all schemas")

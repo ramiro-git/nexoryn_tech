@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 import json
-...
+
 class BackupManager:
     def __init__(self, db, backup_dir: str = "backups_incrementales", pg_bin_path: Optional[str] = None):
         self.db = db
