@@ -1,68 +1,88 @@
 # Gestión de Base de Datos - Nexoryn Tech
 
-Este directorio contiene herramientas críticas para la inicialización, mantenimiento y gestión de la base de datos PostgreSQL del sistema.
+Este documento describe los scripts de base de datos, el flujo de sincronización automática del esquema y el mantenimiento de logs en el sistema actual.
 
 ## Scripts Principales
 
 ### 1. `init_db.py` (Inicializador)
-Este es el script principal para configurar la base de datos desde cero.
-- **Acciones**: Crea el esquema (`database.sql`), importa datos desde la carpeta `csvs/` y puede resetear la base de datos.
-- **Dependencias**: `pandas`, `psycopg[binary]`.
+Script para crear el esquema y opcionalmente importar CSVs.
+- **Acciones**: Crea el esquema desde `database.sql`, importa datos desde `database/csvs/` y puede resetear esquemas.
+- **Dependencias**: `pandas`, `psycopg2-binary`.
 - **Ejecución**:
   ```bash
   # Inicialización normal (Esquema + Importación)
-  python init_db.py
+  python database/init_db.py
 
   # Reset completo (Borra esquemas existentes y recrea todo)
-  python init_db.py --reset
+  python database/init_db.py --reset
 
   # Solo esquema (Sin importar CSVs)
-  python init_db.py --skip-csv
+  python database/init_db.py --skip-csv
+
+  # Usar otra base de datos
+  python database/init_db.py --db-name nexoryn_tech
+
+  # Modo simulación (no ejecuta cambios)
+  python database/init_db.py --dry-run
   ```
 
+> Nota: el script usa por defecto `--db-name nexoryn` si no se especifica.
+
 ### 2. `kill_sessions.py` (Terminador de Sesiones)
-Utilidad para forzar el cierre de todas las conexiones activas a la base de datos.
-- **Uso**: Útil cuando PostgreSQL bloquea operaciones de mantenimiento (como `DROP DATABASE`) porque hay procesos conectados.
+Utilidad para cerrar conexiones activas cuando PostgreSQL bloquea operaciones de mantenimiento.
+- **Dependencias**: `psycopg`.
 - **Ejecución**:
   ```bash
-  python kill_sessions.py
+  python database/kill_sessions.py --db-name nexoryn_tech
   ```
 
 ### 3. `db_conn.py`
-Módulo de utilidad que centraliza la lógica de conexión para los scripts de este directorio. Raramente se ejecuta directamente.
+Módulo de utilidad que centraliza la conexión para scripts. Usa `.env` si existe y soporta `DATABASE_URL` o variables `DB_*`.
 
-## Sincronizacion automatica desde `database.sql`
+## Sincronización Automática del Esquema (SchemaSync)
 
-El esquema se sincroniza leyendo `database/database.sql` y aplicando solo cambios seguros.
-No se re-ejecuta el archivo completo ni se borra informacion existente.
+La app ejecuta una sincronización **temprana** del esquema antes de abrir el pool de conexiones.
 
-- **Fuente**: `database/database.sql`.
-- **Control de cambios**: hash guardado en `seguridad.config_sistema` (clave `schema_hash`).
-- **Aplicacion**: automatico al iniciar el ejecutable, sin comandos manuales.
-- **Operaciones permitidas**:
-  - `CREATE EXTENSION IF NOT EXISTS`
-  - `CREATE SCHEMA IF NOT EXISTS`
-  - `CREATE TABLE` si la tabla no existe
-  - `ADD COLUMN` solo si es compatible (nullable o con default, sin PK/UNIQUE/CHECK)
-  - `CREATE INDEX` si no existe
-- **Operaciones ignoradas**:
-  - cambios destructivos (drop, truncate, alter incompatible)
-  - DML masivo (insert/update/delete) para evitar duplicados
+**Cómo funciona:**
+- Lee la versión del encabezado de `database/database.sql` (`-- Version: X.X`).
+- Consulta `seguridad.config_sistema` (clave `db_version`) mediante `psql`.
+- Si la versión no coincide, ejecuta `psql -f database.sql` con `ON_ERROR_STOP=1`.
 
-## Prevención de Bloqueos (Deadlocks)
+**Requisitos:**
+- `psql` en el `PATH` o definido en `PG_BIN_PATH`.
 
-Al iniciar, la aplicación realiza un **Early Schema Sync**:
-1.  Compara la versión en el encabezado de `database.sql` con el valor `db_version` en `seguridad.config_sistema`.
-2.  Si hay una discrepancia, utiliza directamente la herramienta `psql` mediante un subproceso antes de abrir el pool de conexiones principal.
-3.  Esto asegura que la actualización del esquema no compita por conexiones ni genere bloqueos con la aplicación en ejecución.
+**Importante:**
+- No aplica un diff por hashes. Re-ejecuta el archivo completo.
+- El SQL está diseñado para ser idempotente (`CREATE IF NOT EXISTS`, `CREATE OR REPLACE`), pero **cambios destructivos deben manejarse en un flujo separado**.
+- El esquema usa `pg_advisory_lock` al inicio del archivo para evitar concurrencia entre instancias.
 
-**Requisito**: Es fundamental que la ruta a los binarios de PostgreSQL esté en el `PATH` o configurada en `PG_BIN_PATH` dentro del `.env`.
+## Migraciones en Runtime (Database._run_migrations)
+Al inicializar `Database`, se aplican migraciones seguras en caliente:
+- `app.pago.id_documento` se vuelve nullable (para pagos de cuenta corriente).
+- `app.movimiento_articulo.stock_resultante` se agrega si falta.
+- Se actualiza el trigger `app.fn_sync_stock_resumen` para persistir `stock_resultante`.
 
-## Actualizaciones en Tiempo Real
+## Logs de Auditoría (particionado y archivado)
 
-El sistema utiliza un mecanismo de polling optimizado para detectar cambios realizados por otras instancias de la aplicación:
-- **Detección**: Consulta la tabla `seguridad.log_actividad` cada pocos segundos para identificar cambios recientes en entidades clave (artículos, facturas, clientes, etc.).
-- **Sincronización**: Cuando se detecta un cambio, la UI actualiza automáticamente la vista activa sin necesidad de recargar manualmente.
-- **GenericTable**: El componente de tabla genérica integra esta funcionalidad para mantener los datos siempre frescos en entornos multi-usuario.
+### Particionado automático
+En el arranque de la UI básica se ejecuta `migrate_to_partitioned_logs(db)` para:
+- Convertir `seguridad.log_actividad` en tabla particionada por semana.
+- Migrar datos históricos si existía una tabla no particionada.
 
-> Nota: si se requiere un cambio riesgoso, debe hacerse en un flujo aparte con backup y confirmacion.
+### Archivado automático
+Se inicia un `LogArchiver` en segundo plano:
+- **Retención**: `log_retencion_dias` en `seguridad.config_sistema` (default 90).
+- **Directorio**: `log_directorio_archivo` (default `logs_archive`).
+- **Ruta final**: `<PROJECT_ROOT>/data/<log_directorio_archivo>`.
+- Archiva a `.jsonl.gz` y luego elimina los registros antiguos.
+- Ejecuta `seguridad.mantener_particiones_log()` si la función existe.
+
+## Actualizaciones en Tiempo Real (solo UI avanzada)
+La UI avanzada usa polling cada 5 segundos sobre `seguridad.log_actividad` mediante `Database.check_recent_activity()` para refrescar la vista activa.
+
+## Variables de Entorno Relevantes
+- `DATABASE_URL` o `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+- `PG_BIN_PATH` para localizar `psql`, `pg_dump`, `pg_restore`.
+- `DB_POOL_MIN` y `DB_POOL_MAX` para el pool de conexiones.
+
+> Nota: si se requieren cambios riesgosos, ejecutar un flujo de migración controlado con backup previo.

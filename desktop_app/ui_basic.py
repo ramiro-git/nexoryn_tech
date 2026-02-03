@@ -826,7 +826,15 @@ def main(page: ft.Page) -> None:
                         fn(*args, **kwargs)
                     except Exception as exc:
                         logger.debug(f"UI task error: {exc}")
-                page.run_task(_do)
+                task = _do()
+                try:
+                    page.run_task(task)
+                except TypeError:
+                    task.close()
+                    page.run_task(_do)
+                except Exception:
+                    task.close()
+                    raise
                 return
         except Exception as exc:
             logger.debug(f"UI scheduling error: {exc}")
@@ -886,7 +894,7 @@ def main(page: ft.Page) -> None:
             from apscheduler.schedulers.background import BackgroundScheduler as ProScheduler
             from apscheduler.triggers.cron import CronTrigger as ProCronTrigger
 
-            professional_backup_manager = BackupManager(db)
+            professional_backup_manager = BackupManager(db, pg_bin_path=config.pg_bin_path)
             professional_scheduler = ProScheduler(timezone='America/Argentina/Buenos_Aires')
 
             # Schedule professional backups: FULL, DIFERENCIAL, INCREMENTAL
@@ -4245,7 +4253,13 @@ def main(page: ft.Page) -> None:
         # Actually, let's reuse the logic that exists if we can, or just print log.
         pass
 
-    backup_view_component = BackupProfessionalView(page, db, show_toast, ask_confirm)
+    backup_view_component = BackupProfessionalView(
+        page,
+        db,
+        show_toast,
+        ask_confirm,
+        pg_bin_path=config.pg_bin_path,
+    )
     
     # Wrap in a container to match layout expectations
     backups_view = ft.Container(
@@ -4445,7 +4459,13 @@ def main(page: ft.Page) -> None:
         # Actually, let's reuse the logic that exists if we can, or just print log.
         pass
 
-    backup_view_component = BackupProfessionalView(page, db, show_toast, ask_confirm)
+    backup_view_component = BackupProfessionalView(
+        page,
+        db,
+        show_toast,
+        ask_confirm,
+        pg_bin_path=config.pg_bin_path,
+    )
     
     # Wrap in a container to match layout expectations
     backups_view = ft.Container(

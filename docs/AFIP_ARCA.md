@@ -1,95 +1,79 @@
-# Plan Maestro: Integración Facturación Electrónica ARCA (AFIP)
+# Integración AFIP / ARCA (Implementada)
 
-Este documento detalla el plan integral paso a paso para habilitar y automatizar la facturación electrónica en **Nexoryn Tech**.
+Este documento describe la integración técnica actual con AFIP/ARCA para facturación electrónica en Nexoryn Tech.
 
----
+## Estado Actual
 
-## Fase 1: Trámites Administrativos (Portal AFIP)
+La integración está implementada en `desktop_app/services/afip_service.py` y se usa desde la UI básica.
+- WSAA: obtención de Token/Sign
+- WSFEv1: autorización de comprobantes y obtención de CAE
+- Firma CMS con OpenSSL
+- Caché del Token en `logs/afip_ta_wsfe_{homo|prod}.xml`
 
-Antes de tocar una línea de código, se debe configurar el entorno en el portal de AFIP (ARCA) con Clave Fiscal Nivel 3.
+## Requisitos
 
-### 1.1. Habilitación de Servicios
-Es necesario habilitar los siguientes servicios en "Administrador de Relaciones de Clave Fiscal":
-1.  **Administración de Certificados Digitales**: Para subir el archivo `.csr` y obtener el `.crt`.
-2.  **Gestión de Puntos de Venta y Comprobantes**: Para crear un punto de venta tipo "FactuWS" (Web Services).
+- Clave Fiscal nivel 3
+- Certificados `.crt` y `.key` válidos
+- OpenSSL instalado o incluido junto al ejecutable
 
-### 1.2. Crear el Punto de Venta
-1.  Ingresar a "Gestión de Puntos de Venta y Comprobantes".
-2.  Agregar nuevo Punto de Venta.
-3.  **Importante**: El sistema debe ser **"RECE para aplicativo y web services"**.
-4.  Anotar el número (Ej: 3).
+## Configuración (.env)
 
-### 1.3. Generación del Certificado (Homologación/Producción)
-1.  **Generar Clave Privada (`.key`)**: Se hace localmente (Nexoryn lo hará con OpenSSL).
-2.  **Generar Pedido de Certificado (`.csr`)**: Documento que vincula el CUIT con la clave.
-3.  **Obtener Certificado (`.crt`)**: Subir el `.csr` a AFIP y descargar el certificado firmado.
+La app soporta homologación y producción. El flag `AFIP_PRODUCCION` define qué credenciales usar.
 
----
+```env
+# Flag de entorno (acepta AFIP_PRODUCCION o AFIP_PRODUCTION)
+AFIP_PRODUCCION=False
 
-## Fase 2: Configuración del Sistema (Nexoryn Tech)
+# Credenciales Homologación (default si AFIP_PRODUCCION=False)
+AFIP_CUIT=20XXXXXXXX9
+AFIP_CERT_PATH=certs/empresa_homo.crt
+AFIP_KEY_PATH=certs/empresa_homo.key
 
-### 2.1. Gestión de Credenciales
-Los certificados NO deben subirse al repositorio. Se guardarán en una carpeta segura (ej: `C:\Nexoryn\Certs\`).
+# Credenciales Producción (se usan si AFIP_PRODUCCION=True)
+AFIP_CUIT_PRODUCCION=20YYYYYYYY9
+AFIP_CERT_PATH_PRODUCCION=certs/empresa_prod.crt
+AFIP_KEY_PATH_PRODUCCION=certs/empresa_prod.key
 
-### 2.2. Variables de Entorno (`.env`)
-```powershell
-AFIP_CUIT="20XXXXXXXX9"
-AFIP_CERT_PATH="C:/Nexoryn/Certs/empresa.crt"
-AFIP_KEY_PATH="C:/Nexoryn/Certs/empresa.key"
+# Punto de venta
 AFIP_PUNTO_VENTA=3
-AFIP_MODO="homologacion" # o "produccion"
 ```
 
----
+**Resolución de rutas:**
+- Si las rutas son relativas, se resuelven respecto al directorio de configuración.
+- Directorio de configuración: `%APPDATA%\Nexoryn_Tech\` o la carpeta del ejecutable (modo portable).
 
-## Fase 3: Implementación Técnica (Backend)
+## Flujo en la UI
 
-### 3.1. Servicio de AFIP (`AfipService`)
-Crearemos una clase robusta para manejar:
-- **WSAA**: Obtención del Token de Acceso (válido por 12 horas).
-- **WSFE**: Envío de factura y recepción de CAE.
-- **Validación de CUIT**: Consulta de datos del cliente ante AFIP.
+- El botón **Autorizar AFIP** se habilita cuando:
+  - el documento está en estado `CONFIRMADO` o `PAGADO`
+  - tiene `codigo_afip`
+  - no tiene `cae`
+- Al autorizar, se actualizan:
+  - `cae`, `cae_vencimiento`, `punto_venta`, `tipo_comprobante_afip`, `cuit_emisor`, `qr_data`
+  - se asegura la creación del remito asociado si aplica
 
-### 3.2. Estructura de Datos (SQL)
-La tabla `app.documento` ya cuenta con los campos clave. Aseguraremos que se guarden:
-- `cae`: El número devuelto por AFIP.
-- `cae_vencimiento`: Fecha de caducidad.
-- `qr_data`: El JSON base64 para el QR legal.
+> La autorización es irreversible desde la UI. Verifica los datos antes de autorizar.
 
----
+## Troubleshooting
 
-## Fase 4: Integración UI (Flet)
+### `openssl no encontrado`
+- Instalar OpenSSL o Git for Windows
+- O copiar `openssl.exe`, `libcrypto-*.dll`, `libssl-*.dll` en `bin/` junto al `.exe`
 
-### 4.1. Flujo del Comprobante
-1.  **Estado "Borrador"**: Se carga el comprobante localmente.
-2.  **Botón "Autorizar en AFIP"**: Solo visible si tiene tipo de comprobante AFIP.
-3.  **Loading State**: Spinner mientras se comunica con los servidores de ARCA.
-4.  **Estado "Autorizado"**: Se bloquea la edición y se muestra el CAE.
+### `Certificado no encontrado` / `Clave privada no encontrada`
+- Revisar rutas en `.env`
+- Si son relativas, confirmar que estén junto a la configuración
 
-### 4.2. Generación de PDF
-Actualizar el motor de reportes para:
-- Incluir el **Código de Barras** o **QR** obligatorio.
-- Mostrar la leyenda "Comprobante Autorizado".
-- Formato según Resoluciones Generales de AFIP.
+### `WSAA/WSFE error`
+- Verificar que el certificado corresponda al CUIT configurado
+- Confirmar `AFIP_PRODUCCION` vs homologación
 
----
+## Seguridad
 
-## Fase 5: Pruebas y Salida a Producción
+- No subir certificados al repositorio.
+- Guardar `.key` en una ubicación segura.
+- Evitar loguear contenido de certificados o tokens.
 
-### 5.1. Homologación
-- Usar el CUIT de prueba de AFIP.
-- Verificar que el Token se renueve correctamente.
-- Validar tipos de IVA (0%, 10.5%, 21%, 27%).
+## Portal AFIP
 
-### 5.2. Paso a Producción
-- Cambiar rutas de certificados por los reales.
-- Cambiar `AFIP_MODO=produccion`.
-- Realizar la primera factura real (generalmente de $1) para verificar impacto.
-
----
-
-> [!TIP]
-> **Recomendación**: Empezar con Factura C (Monotributo) si el cliente es pequeño, o Factura B (Responsable Inscripto a Consumidor Final) por ser las más comunes.
-
-> [!TIP]
-> **OpenSSL en Windows**: La aplicación gestiona automáticamente la variable `MSYS_NO_PATHCONV`. Si utiliza Git Bash, no es necesario configurar nada adicional para que las rutas de los certificados sean procesadas correctamente.
+Para el alta inicial de servicios y generación de certificados, ver `docs/GUIA_AFIP_PORTAL.md`.

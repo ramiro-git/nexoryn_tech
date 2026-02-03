@@ -14,11 +14,19 @@ except ImportError:
 
 
 class BackupProfessionalView:
-    def __init__(self, page: ft.Page, db, show_message: Callable, ask_confirm: Optional[Callable] = None):
+    def __init__(
+        self,
+        page: ft.Page,
+        db,
+        show_message: Callable,
+        ask_confirm: Optional[Callable] = None,
+        pg_bin_path: Optional[str] = None,
+    ):
         self.page = page
         self.db = db
         self.show_message = show_message
         self.ask_confirm = ask_confirm
+        self.pg_bin_path = pg_bin_path
         
         # Colores
         self.COLOR_PRIMARY = "#4F46E5"
@@ -54,7 +62,7 @@ class BackupProfessionalView:
     def backup_manager(self):
         if self._backup_manager is None:
             from desktop_app.services.backup_manager import BackupManager
-            self._backup_manager = BackupManager(self.db)
+            self._backup_manager = BackupManager(self.db, pg_bin_path=self.pg_bin_path)
             # Purgar registros huérfanos (archivos que ya no existen)
             try:
                 purged = self._backup_manager.purge_invalid_backups()

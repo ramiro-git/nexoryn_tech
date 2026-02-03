@@ -1,19 +1,25 @@
-# Sistema de Backups Profesionales (Incremental/Diferencial)
+# Sistema de Backups Profesionales (FULL/DIFERENCIAL/INCREMENTAL)
 
 ## Resumen
 
-Este sistema implementa un esquema de backups profesional con capacidad de concatenación FULL + DIFERENCIAL + INCREMENTAL, permitiendo reconstruir cualquier punto en el tiempo sin pérdida de datos.
+El sistema profesional de backups está implementado en `BackupManager` + `BackupIncrementalService`. Genera backups concatenables FULL + DIFERENCIAL + INCREMENTAL y los registra en base de datos.
+
+**Cómo detecta cambios:**
+- Usa `pg_stat_user_tables` para detectar tablas con actividad desde el último backup.
+- Guarda estadísticas en `backups_incrementales/stats/*.json`.
+- Si PostgreSQL reinicia y las estadísticas se reinician, el sistema considera las tablas como “cambiadas” para estar del lado seguro.
+
+> Esto es un incremental lógico (por tablas) y **no** basado en WAL.
 
 ## Características Principales
 
-- Backups FULL (mensuales): Base completa de datos
-- Backups DIFERENCIALES (semanales): Cambios desde último FULL
-- Backups INCREMENTALES (diarios): Cambios desde último backup (incremental o diferencial)
-- Restauración concatenable: FULL + DIFERENCIAL + INCREMENTALES
-- Validaciones con checksum SHA-256
-- Integración con nube (Google Drive/S3/Carpeta Local)
-- Automatización completa vía scheduler
-- No modifica el sistema de backups existente
+- Backups FULL (mensuales) con `pg_dump -F c`
+- Backups DIFERENCIALES (semanales) por tablas con cambios desde el último FULL
+- Backups INCREMENTALES (diarios) por tablas con cambios desde el último backup (full/dif/inc)
+- Cadena de restauración: FULL + DIFERENCIAL + INCREMENTALES
+- Validación por existencia de archivos y checksum SHA-256
+- Scheduler integrado vía APScheduler al iniciar la app
+- No modifica el sistema de backups legacy (`backups/`)
 
 ## Arquitectura
 
@@ -21,54 +27,48 @@ Este sistema implementa un esquema de backups profesional con capacidad de conca
 
 ```
 backups_incrementales/
-├── full/               # Backups completos (mensuales)
-├── differential/         # Backups diferenciales (semanales)
-└── incremental/          # Backups incrementales (diarios)
+├── full/
+├── differential/
+├── incremental/
+└── stats/              # estadísticas por backup para detectar cambios
 ```
 
 ### Base de Datos
 
-- `seguridad.backup_manifest`: Registro de todos los backups
-- `seguridad.backup_chain`: Relaciones entre backups
-- `seguridad.backup_validation`: Historial de validaciones
-- `seguridad.backup_retention_policy`: Políticas de retención
-- `seguridad.backup_event`: Eventos del sistema de backups
+Tablas principales:
+- `seguridad.backup_manifest`
+- `seguridad.backup_chain`
+- `seguridad.backup_validation`
+- `seguridad.backup_event` (estructura disponible, no siempre poblada)
 
-### Vistas Útiles
+Configuración en `seguridad.config_sistema`:
+- `backup_schedules` (JSON)
+- `backup_retention` (JSON)
+- `backup_cloud_config` (JSON)
 
-- `seguridad.v_backup_resumen`: Resumen de backups
-- `seguridad.v_backup_cadenas`: Cadenas concatenables
+## Scheduler Integrado
 
-## Instalación
-
-### 1. Inicializar base de datos
-Las tablas necesarias ya están incluidas en el esquema principal. Solo asegúrate de haber ejecutado:
-
-```bash
-cd database
-python init_db.py
-```
-
-### 2. Verificar integración en la App
-El sistema de backups se inicia automáticamente al abrir la aplicación de escritorio (`desktop_app/main.py`). Puedes ver los logs de actividad en la consola o en el panel de Backups Profesionales dentro de la App.
-
-## Uso
-
-### Scheduler Integrado
-La aplicación cuenta con un scheduler interno (`BackgroundScheduler`) que se activa al iniciar.
-
-**Horarios por defecto:**
+**Horarios por defecto (hora local):**
 - **FULL**: Día 1 de cada mes a las 00:00
 - **DIFERENCIAL**: Domingos a las 23:30
 - **INCREMENTAL**: Diariamente a las 23:00
 - **Validación**: Diariamente a las 01:00
 
-### Ejecuciones Manuales (desde la UI)
-El panel de **Backups Profesionales** en la App permite:
-- Lanzar backups inmediatos de cualquier tipo.
-- Ver el historial de manifiestos.
-- Validar la integridad de los archivos.
-- Ver puntos de restauración disponibles.
+**Edición desde UI:**
+- El panel **Respaldos** permite cambiar días y horas.
+- Los minutos se mantienen según el default (FULL 00, DIF 30, INC 00).
+- Los cambios se guardan en `backup_schedules`.
+
+**Backups omitidos:**
+Al iniciar la app, se detectan backups faltantes y se ejecutan en orden `FULL → DIFERENCIAL → INCREMENTAL`.
+
+## Uso desde la UI
+
+En el panel **Respaldos** puedes:
+- Ejecutar backups manuales (FULL/DIF/INC).
+- Ver historial y métricas.
+- Validar backups existentes.
+- Configurar horarios y retención.
 
 ## Restauración
 
@@ -106,7 +106,6 @@ print(f"Backups a aplicar: {[b['archivo'] for b in preview['backups']]}")
 ### Línea de Comandos (Bootstrap rápido)
 
 ```bash
-# Restaurar desde backup ID específico
 python -c "
 from desktop_app.database import Database
 from desktop_app.config import load_config
@@ -119,155 +118,30 @@ print(result)
 "
 ```
 
-## Monitoreo
-
-### Estadísticas del Sistema
-
-```python
-from desktop_app.services.backup_manager import BackupManager
-
-manager = BackupManager(db)
-status = manager.get_status_summary()
-
-# Estadísticas de backups
-stats = status['estadisticas']
-for tipo, info in stats.items():
-    if tipo != '_total':
-        print(f"{tipo}: {info['cantidad']} archivos, {info['tamano_mb']} MB")
-
-print(f"Total: {stats['_total']['cantidad']} archivos, {stats['_total']['tamano_gb']} GB")
-
-# Espacio utilizado
-espacio = status['espacio_uso']
-print(f"Total: {espacio['total']['gb']} GB")
-
-# Puntos de restauración disponibles
-puntos = status['puntos_restauracion']
-for punto in puntos:
-    print(f"{punto['fecha']}: {punto['cantidad_backups']} backups")
-```
-
-### Consultas SQL Útiles
-
-```sql
--- Resumen de backups
-SELECT * FROM seguridad.v_backup_resumen ORDER BY fecha_inicio DESC LIMIT 20;
-
--- Cadenas de backup concatenables
-SELECT * FROM seguridad.v_backup_cadenas ORDER BY full_fecha DESC;
-
--- Espacio utilizado por tipo
-SELECT * FROM seguridad.get_backup_space_usage();
-
--- Últimos backups de cada tipo
-SELECT DISTINCT ON (tipo_backup) *
-FROM seguridad.backup_manifest
-WHERE estado = 'COMPLETADO'
-ORDER BY tipo_backup, fecha_inicio DESC;
-
--- Backups que no están en la nube
-SELECT tipo_backup, archivo_nombre, fecha_inicio, tamano_bytes
-FROM seguridad.backup_manifest
-WHERE nube_subido = FALSE AND estado = 'COMPLETADO'
-ORDER BY fecha_inicio DESC;
-
--- Validaciones recientes
-SELECT v.*, bm.tipo_backup, bm.archivo_nombre
-FROM seguridad.backup_validation v
-JOIN seguridad.backup_manifest bm ON v.backup_id = bm.id
-ORDER BY v.fecha_validacion DESC
-LIMIT 20;
-```
-
-## Integración con Nube
-
-### Configurar Sync con Carpeta Local
-
-```python
-from desktop_app.services.cloud_storage_service import CloudStorageService
-
-cloud_config = {
-    'sync_dir': r'C:\Users\TuUsuario\Google Drive\Nexoryn Backups'
-}
-
-cloud_service = CloudStorageService(db, provider='LOCAL', config=cloud_config)
-```
-
-### Configurar Google Drive
-
-```python
-cloud_config = {
-    'gdrive_credentials': 'path/to/credentials.json',
-    'gdrive_folder_id': 'folder_id'
-}
-
-cloud_service = CloudStorageService(db, provider='GOOGLE_DRIVE', config=cloud_config)
-```
-
-### Configurar AWS S3
-
-```python
-cloud_config = {
-    's3_bucket': 'nexoryn-backups',
-    's3_region': 'us-east-1',
-    's3_access_key': 'your_access_key',
-    's3_secret_key': 'your_secret_key'
-}
-
-cloud_service = CloudStorageService(db, provider='S3', config=cloud_config)
-```
-
-## Políticas de Retención
-
-### Política Estándar
-
-- **Backups FULL**: Retener 12 meses
-- **Backups DIFERENCIALES**: Retener 8 semanas
-- **Backups INCREMENTALES**: Retener 7 días
-
-### Personalizar Política
-
-```sql
-INSERT INTO seguridad.backup_retention_policy (nombre, descripcion, 
-    retencion_full_meses, retencion_diferencial_semanas, retencion_incremental_dias)
-VALUES ('PERSONALIZADA', 'Política personalizada', 
-    24, 16, 14);
-```
+> Nota: la base de datos destino debe existir antes de restaurar.
 
 ## Validaciones
 
-### Verificar Integridad de Backups
+`validate_backup_chain(backup_id)` verifica:
+- existencia del archivo
+- checksum SHA-256 (si está registrado)
 
-```python
-from desktop_app.services.restore_service import RestoreService
+No valida contenido lógico ni dependencias externas.
 
-restore_service = RestoreService(db, backup_service)
-```
+## Nube / Sync
 
-# Validar backup específico
-result = restore_service.validate_backup_chain(backup_id=123)
+El sistema soporta **sincronización a carpeta local** mediante `CloudStorageService`:
+- `provider=LOCAL` copia el archivo a `sync_dir`.
+- `provider=GOOGLE_DRIVE` y `provider=S3` están **reservados**; hoy hacen fallback a carpeta local si `sync_dir` existe.
 
-if result['valido']:
-    print("Backup válido")
-else:
-    print("Backup inválido:")
-    for validacion in result['validaciones']:
-        print(f"  {validacion['tipo']}: {validacion['mensaje']}")
-```
+La configuración se guarda en `backup_cloud_config`.
 
-### Verificar Checksum SHA-256
+## Retención
 
-```bash
-# Calcular checksum local
-sha256sum archivo.backup
-
-# Comparar con base de datos
-psql -U postgres -d nexoryn_tech -c "
-SELECT archivo_nombre, checksum_sha256 
-FROM seguridad.backup_manifest 
-WHERE id = 123;
-"
-```
+- La UI permite definir retención (FULL meses / DIF semanas / INC días).
+- La configuración se guarda en `backup_retention`.
+- **No hay purga automática** en el sistema incremental actual.
+- Existe `purge_invalid_backups()` para limpiar registros huérfanos (archivos faltantes).
 
 ## Configuración
 
@@ -275,180 +149,23 @@ WHERE id = 123;
 
 ```bash
 # Conexión a PostgreSQL
-export DB_HOST=localhost
-export DB_PORT=5432
-export DB_NAME=nexoryn_tech
-export DB_USER=postgres
-export DB_PASSWORD=tu_contraseña
+export DATABASE_URL=postgresql://postgres:password@localhost:5432/nexoryn_tech
+# o DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD
 
-# Ruta a binarios de PostgreSQL (opcional)
+# Ruta a binarios de PostgreSQL
 export PG_BIN_PATH="C:\Program Files\PostgreSQL\16\bin"
-
-# Directorio de backups (opcional)
-export BACKUP_DIR="C:\backups"
-```
-
-### Modificar Horarios
-
-```python
-from desktop_app.services.backup_manager import BackupManager
-
-manager = BackupManager(db)
-```
-
-# Modificar horario de backup FULL (día 1 del mes)
-manager.set_schedule('FULL', day=1, hour=0, minute=0)
-
-# Modificar horario de backup DIFERENCIAL (domingo)
-manager.set_schedule('DIFERENCIAL', weekday=6, hour=23, minute=30)
-
-# Modificar horario de backup INCREMENTAL (diario)
-manager.set_schedule('INCREMENTAL', hour=23, minute=0)
 ```
 
 ## Solución de Problemas
 
-### Scheduler no se inicia
+### `pg_dump` / `pg_restore` no encontrados
+1. Instalar PostgreSQL con herramientas de línea de comandos.
+2. Configurar `PG_BIN_PATH` o agregar `bin` al `PATH`.
 
-1. Verificar que APScheduler esté instalado:
-```bash
-pip install APScheduler
-```
+### Permisos / archivos en uso
+- Ejecutar la app con permisos suficientes para crear archivos en el directorio de backups.
 
-2. Verificar logs de la App y de la DB.
-```bash
-# Buscar errores en la tabla de auditoría de la DB
-psql -U postgres -d nexoryn_tech -c "SELECT * FROM seguridad.backup_event WHERE nivel_log = 'ERROR' ORDER BY fecha_hora DESC LIMIT 10;"
-```
+## Compatibilidad con Sistema Antiguo
 
-### Backup falla con "pg_dump not found"
-
-1. Instalar PostgreSQL con herramientas de línea de comandos
-2. Configurar `PG_BIN_PATH` en variables de entorno
-3. Agregar `bin` de PostgreSQL al PATH del sistema
-
-### Error de permisos
-
-```bash
-# En Windows, ejecutar como administrador
-```
-
-1. Verificar configuración de nube en `CloudStorageService`.
-2. Verificar credenciales (Google Drive/S3).
-3. Verificar conectividad de red.
-4. Revisar eventos de backup en la base de datos (`seguridad.backup_event`).
-
-## Rendimiento
-
-### Optimizaciones Implementadas
-
-- **Backups Full**: Usan formato comprimido de pg_dump (-F c)
-- **Backups Incrementales**: Solo cambios desde último backup
-- **Paralelización**: Varios jobs pueden ejecutarse en paralelo
-- **Hot Backups**: Mínimos locks en la base de datos
-- **Validación**: Checksums calculados durante backup
-
-### Métricas Esperadas
-
-- **Backup FULL**: ~5-10 minutos (dependiendo del tamaño)
-- **Backup DIFERENCIAL**: ~2-5 minutos
-- **Backup INCREMENTAL**: ~30 segundos - 2 minutos
-- **Restauración**: Variable según cantidad de backups en cadena
-
-## Comparación con Sistema Antiguo
-
-| Característica | Sistema Antiguo | Sistema Nuevo |
-|--------------|------------------|---------------|
-| Tipos de backup | Diario, Semanal, Mensual | FULL, DIFERENCIAL, INCREMENTAL |
-| Concatenación | No | Sí (FULL + DIF + INC) |
-| Validaciones | No | SHA-256 checksum |
-| Tracking | Parcial | Completo con metadata |
-| Nube | Carpeta local | S3, Google Drive, Local |
-| Retención | Configurable | Configurable por política |
-| Restauración | Último backup | Cualquier fecha |
-
-## Compatibilidad
-
-### Sistema Antiguo NO Modificado
-
-El sistema de backups existente (en `backups/`) **NO es modificado**. Puedes seguir usándolo normalmente.
-
-### Coexistencia
-
-Ambos sistemas pueden coexistir simultáneamente:
-- `backups/` - Sistema antiguo (diario/semanal/mensual/manual)
-- `backups_incrementales/` - Sistema nuevo (full/differential/incremental)
-
-## Seguridad
-
-### Checksums SHA-256
-
-Todos los backups tienen un checksum SHA-256 calculado automáticamente:
-- Garantiza integridad del archivo
-- Permite detectar corrupción
-- Requerido para restauración
-
-### Validaciones
-
-- Verificación de existencia de archivo
-- Verificación de checksum
-- Validación de cadena de backup
-- Logs de todos los eventos
-
-### Logs
-
-El sistema mantiene logs detallados en:
-- `backup_scheduler.log` - Logs del scheduler
-- Logs de aplicación (`seguridad.backup_event` en DB)
-
-## Soporte
-
-### Logs
-
-El sistema registra eventos en la tabla `seguridad.backup_event`. Puedes consultarlos desde la App o vía SQL:
-
-```bash
-# Ver últimos 50 eventos en DB
-psql -U postgres -d nexoryn_tech -c "SELECT * FROM seguridad.backup_event ORDER BY fecha_hora DESC LIMIT 50;"
-```
-
-### Consultas de Diagnóstico
-
-```sql
--- Backups fallidos recientes
-SELECT * FROM seguridad.backup_manifest
-WHERE estado = 'FALLIDO'
-ORDER BY fecha_inicio DESC
-LIMIT 10;
-
--- Backups sin validar recientes
-SELECT * FROM seguridad.backup_manifest
-WHERE estado = 'COMPLETADO'
-  AND id NOT IN (SELECT DISTINCT backup_id FROM seguridad.backup_validation)
-ORDER BY fecha_inicio DESC
-LIMIT 10;
-
--- Cadenas rotas (backups sin base)
-SELECT bm.* 
-FROM seguridad.backup_manifest bm
-LEFT JOIN seguridad.backup_manifest bm_base ON bm.backup_base_id = bm_base.id
-WHERE bm.backup_base_id IS NOT NULL AND bm_base.id IS NULL;
-```
-
-## Actualización
-
-### Actualizar desde versión anterior
-
-1. Hacer backup FULL del sistema actual
-2. Ejecutar migración de DB
-3. Iniciar scheduler nuevo
-4. Verificar que ambos sistemas funcionan
-5. Probar restauración
-
-## Resumen de Comandos
-
-El uso principal es a través de la **Interfaz Gráfica (Flet)**. Para tareas automáticas, el scheduler se inicia junto con la App.
-
----
-
-**Nota**: Este sistema es completamente compatible con el sistema de backups existente. No requiere cambios en el flujo de trabajo actual y ambos pueden funcionar simultáneamente.
+El sistema legacy (`backups/` con daily/weekly/monthly/manual) **no es modificado**.
+Si el sistema profesional falla al iniciar, la app intenta usar el servicio legacy como fallback para no detener el flujo de respaldos.

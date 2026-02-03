@@ -152,14 +152,15 @@ def generate_manual():
     )
     pdf.section_title('Condiciones para el ÉXITO de la factura:')
     pdf.chapter_body(
+        "- El comprobante debe estar confirmado y sin CAE antes de autorizar.\n"
         "- El CUIT del cliente debe ser válido y existir en la base de AFIP.\n"
         "- Los certificados (.crt y .key) deben estar vigentes (vencen anualmente).\n"
         "- El Punto de Venta debe ser tipo 'Web Services' (RECE)."
     )
     pdf.error_box(
         "Error de Conexión AFIP",
-        "Si AFIP no responde, el comprobante quedará en estado 'BORRADOR' o 'PENDIENTE'. NO intente facturar de nuevo el mismo "
-        "documento sin verificar antes en 'Comprobantes' si ya obtuvo un número. Si el error persiste, verifique su conexión a internet "
+        "Si AFIP no responde, el comprobante quedará sin CAE. NO intente facturar de nuevo el mismo "
+        "documento sin verificar antes en 'Comprobantes' si ya obtuvo CAE. Si el error persiste, verifique su conexión a internet "
         "o si la página de AFIP está caída (es común en horarios pico)."
     )
 
@@ -182,8 +183,8 @@ def generate_manual():
 
     pdf.section_title('Problema B: "No se encuentra el archivo .env" o credenciales')
     pdf.chapter_body(
-        "- Causa: Se borró el archivo de configuración en la raíz del programa.\n"
-        "- Solución: Recupere el archivo .env de su copia de seguridad de configuración."
+        "- Causa: Se borró el archivo de configuración o está en una ubicación no soportada.\n"
+        "- Solución: Verifique que exista un `.env` en %APPDATA%\\Nexoryn_Tech\\ o junto al ejecutable, y que tenga las credenciales correctas."
     )
 
     pdf.section_title('Problema C: El PDF no se genera o no se abre')
