@@ -7503,7 +7503,7 @@ def main(page: ft.Page) -> None:
                                 elif key == "dashboard":
                                     # Dashboard view has its own load_data in Basic UI component
                                     if dashboard_view_component:
-                                        _run_in_background(dashboard_view_component.load_data)
+                                        _run_in_background(dashboard_view_component.request_auto_refresh)
                             
                     except Exception:
                         pass

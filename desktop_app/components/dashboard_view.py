@@ -113,6 +113,7 @@ class DashboardView(ft.Container):
         # Auto-refresh thread control
         self._stop_event = threading.Event()
         self._refresh_thread = None
+        self._last_refresh_ts = 0.0
         
         # Set lifecycle hooks
         self.on_mount = self._handle_mount
@@ -308,6 +309,7 @@ class DashboardView(ft.Container):
              if self._current_request_id != request_id:
                  return
 
+        self._last_refresh_ts = time.monotonic()
         self.stats = stats
         self.last_updated_text.value = f"Última actualización: {datetime.datetime.now().strftime('%H:%M:%S')}"
         self.is_loading = False
@@ -334,6 +336,7 @@ class DashboardView(ft.Container):
              if self._current_request_id != request_id:
                  return
 
+        self._last_refresh_ts = time.monotonic()
         self.is_loading = False
         self.stats = {}  # Fallback
         
@@ -359,6 +362,17 @@ class DashboardView(ft.Container):
         self._build_dashboard_content()
         self.content = self._get_main_content()
         self._safe_update()
+
+    def request_auto_refresh(self, silent: bool = True) -> None:
+        """Auto-refresh gate for external polling triggers (respects interval)."""
+        if self.current_interval <= 0:
+            return
+        if self.is_loading:
+            return
+        now = time.monotonic()
+        if now - self._last_refresh_ts < self.current_interval:
+            return
+        self.load_data(silent=silent)
 
 
 
