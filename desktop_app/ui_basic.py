@@ -348,6 +348,51 @@ def _safe_update_multiple(*controls: Any) -> int:
     return updated_count
 
 
+def _is_event_loop_closed(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc)
+
+
+def _safe_page_open(page: ft.Page, dialog: ft.Control, context: str) -> bool:
+    if page is None:
+        return False
+    try:
+        if hasattr(page, "open"):
+            page.open(dialog)
+        else:
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
+        return True
+    except AssertionError as exc:
+        logger.debug("Page open skipped (%s): %s", context, exc)
+    except Exception as exc:
+        if _is_event_loop_closed(exc):
+            logger.debug("Page open skipped (%s): event loop closed", context)
+        else:
+            logger.exception("Page open failed (%s)", context)
+    return False
+
+
+def _safe_page_close(page: ft.Page, dialog: ft.Control, context: str) -> bool:
+    if page is None:
+        return False
+    try:
+        if hasattr(page, "close"):
+            page.close(dialog)
+        else:
+            dialog.open = False
+            page.update()
+        return True
+    except AssertionError as exc:
+        logger.debug("Page close skipped (%s): %s", context, exc)
+    except Exception as exc:
+        if _is_event_loop_closed(exc):
+            logger.debug("Page close skipped (%s): event loop closed", context)
+        else:
+            logger.exception("Page close failed (%s)", context)
+    return False
+
+
 # Flet Tab API compatibility across versions.
 try:
     _TAB_PARAMS = set(inspect.signature(ft.Tab).parameters)
@@ -1040,11 +1085,7 @@ def main(page: ft.Page) -> None:
 
     def ask_confirm(title: str, message: str, confirm_label: str, on_confirm, button_color: str = None) -> None:
         def close(_: Any) -> None:
-            if hasattr(page, "close"):
-                page.close(confirm_dialog)
-            else:
-                confirm_dialog.open = False
-                page.update()
+            _safe_page_close(page, confirm_dialog, "ask_confirm")
 
         def do_confirm(_: Any) -> None:
             close(None)
@@ -1070,12 +1111,7 @@ def main(page: ft.Page) -> None:
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
             ),
         ]
-        if hasattr(page, "open"):
-            page.open(confirm_dialog)
-        else:
-            page.dialog = confirm_dialog
-            confirm_dialog.open = True
-            page.update()
+        _safe_page_open(page, confirm_dialog, "ask_confirm")
 
     marcas_values: List[str] = []
     rubros_values: List[str] = []

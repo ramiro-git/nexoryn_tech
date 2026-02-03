@@ -1332,6 +1332,10 @@ class GenericTable:
         except:
             pass
 
+    @staticmethod
+    def _is_event_loop_closed(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc)
+
     def update(self) -> None:
         if not self.root:
             return
@@ -1342,7 +1346,10 @@ class GenericTable:
                 self.root.update()
         except AssertionError as exc:
             logger.debug("GenericTable update skipped: %s", exc)
-        except Exception:
+        except Exception as exc:
+            if self._is_event_loop_closed(exc):
+                logger.debug("GenericTable update skipped: event loop closed")
+                return
             logger.exception("GenericTable update failed")
 
     def _safe_table_update(self) -> None:
@@ -1368,6 +1375,9 @@ class GenericTable:
             logger.debug("GenericTable table update skipped: %s", exc)
             return
         except Exception as exc:
+            if self._is_event_loop_closed(exc):
+                logger.debug("GenericTable table update skipped: event loop closed")
+                return
             # If it still fails, try one last time with a nuked sort index
             logger.debug("GenericTable table update failed, retrying without sort index: %s", exc)
             try:
@@ -1375,8 +1385,11 @@ class GenericTable:
                 self.table.update()
             except AssertionError as exc:
                 logger.debug("GenericTable table update skipped after retry: %s", exc)
-            except Exception:
-                logger.exception("GenericTable table update failed after retry")
+            except Exception as exc:
+                if self._is_event_loop_closed(exc):
+                    logger.debug("GenericTable table update skipped after retry: event loop closed")
+                else:
+                    logger.exception("GenericTable table update failed after retry")
 
     def _build_rows(self, rows: List[Dict[str, Any]]) -> List[ft.DataRow]:
         result: List[ft.DataRow] = []
