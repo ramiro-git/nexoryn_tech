@@ -6288,8 +6288,8 @@ def main(page: ft.Page) -> None:
         value="Todas"
     ); _style_input(logs_adv_res)
     logs_adv_ide = ft.TextField(label="Id. Registro", width=110, keyboard_type=ft.KeyboardType.NUMBER); _style_input(logs_adv_ide)
-    logs_adv_desde = _date_field("Desde", width=140)
-    logs_adv_hasta = _date_field("Hasta", width=140)
+    logs_adv_desde = _date_field(page, "Desde", 140)
+    logs_adv_hasta = _date_field(page, "Hasta", 140)
 
     # Toggle for historical logs
     logs_historico_toggle = ft.Switch(label="Registros Históricos", value=False)
@@ -6367,6 +6367,11 @@ def main(page: ft.Page) -> None:
             AdvancedFilterControl("usuario", logs_adv_user),
             AdvancedFilterControl("entidad", logs_adv_ent),
             AdvancedFilterControl("accion", logs_adv_acc),
+            AdvancedFilterControl(
+                "resultado",
+                logs_adv_res,
+                getter=lambda ctrl: None if getattr(ctrl, "value", None) in (None, "", "Todas", "Todos", "---") else getattr(ctrl, "value", None),
+            ),
             AdvancedFilterControl("id_entidad", logs_adv_ide),
             AdvancedFilterControl("desde", logs_adv_desde),
             AdvancedFilterControl("hasta", logs_adv_hasta),
@@ -6374,6 +6379,25 @@ def main(page: ft.Page) -> None:
         show_inline_controls=False, show_mass_actions=False, show_selection=True, auto_load=True, page_size=50,
         show_export_button=True, show_export_scope=True,
     )
+
+    def _on_logs_filter_change(e=None) -> None:
+        logs_table.trigger_refresh()
+
+    def _on_logs_filter_submit(e=None) -> None:
+        logs_table.refresh()
+
+    for _ctrl in (
+        logs_adv_user,
+        logs_adv_ent,
+        logs_adv_acc,
+        logs_adv_res,
+        logs_adv_ide,
+        logs_adv_desde,
+        logs_adv_hasta,
+    ):
+        _maybe_set(_ctrl, "on_change", _on_logs_filter_change)
+        if hasattr(_ctrl, "on_submit"):
+            _ctrl.on_submit = _on_logs_filter_submit
 
     precios_view = make_card(
         "Listas de Precio", "Definición y actualización de listas.",

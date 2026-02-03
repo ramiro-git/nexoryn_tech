@@ -131,7 +131,7 @@ class LogArchiver:
     
     def archive_old_logs(self, progress_callback=None) -> Dict[str, Any]:
         """
-        Archive and purge old logs.
+        Archive and purge old logs using streaming to minimize memory usage.
         
         Args:
             progress_callback: Optional function(current, total, status_text) call for progress updates.
@@ -172,78 +172,95 @@ class LogArchiver:
                             total_logs = row[0] if row else 0 if isinstance(row, tuple) else row.get('count', 0)
                 except Exception: pass
             
-            # --- 2. Fetch logs in batches ---
-            all_logs = []
-            fetched_count = 0
-            
-            while True:
-                if progress_callback and total_logs > 0:
-                    progress_callback(fetched_count, total_logs, f"Recuperando registros... ({fetched_count}/{total_logs})")
-                
-                # Fetch next batch using offset
-                batch = self._fetch_old_logs(cutoff_date, batch_size=BATCH_SIZE, offset=fetched_count)
-                if not batch:
-                    break
-                
-                all_logs.extend(batch)
-                fetched_count += len(batch)
-                
-                # Safety limit: don't process more than 200k logs at once in memory to avoid OOM
-                if len(all_logs) >= 200_000:
-                    break
-            
-            if not all_logs:
+            if total_logs == 0:
                 if progress_callback: progress_callback(1, 1, "Sin logs antiguos para archivar.")
                 return result
             
+            # --- 2. Determine date range with first batch ---
             if progress_callback:
-                progress_callback(fetched_count, total_logs if total_logs > 0 else fetched_count, "Comprimiendo archivo...")
-
-            # --- 3. Determine date range & Create File ---
-            dates = [log.get("fecha_hora") for log in all_logs if log.get("fecha_hora")]
+                progress_callback(0, total_logs, "Recuperando rango de fechas...")
             
-            # Handle both datetime and string formats
+            first_batch = self._fetch_old_logs(cutoff_date, batch_size=1, offset=0)
+            if not first_batch:
+                return result
+            
+            min_date = datetime.now()
+            max_date = datetime.now()
+            
             try:
-                if isinstance(dates[0], str):
-                    dates = [datetime.fromisoformat(d.replace('Z', '+00:00')) for d in dates]
-                min_date = min(dates)
-                max_date = max(dates)
+                first_log = first_batch[0]
+                date_val = first_log.get("fecha_hora")
+                if isinstance(date_val, str):
+                    date_val = datetime.fromisoformat(date_val.replace('Z', '+00:00'))
+                min_date = date_val
             except:
-                min_date = datetime.now()
-                max_date = datetime.now()
+                pass
             
             archive_dir = self.get_archive_dir()
             filename = f"logs_{min_date.strftime('%Y-%m-%d')}_to_{max_date.strftime('%Y-%m-%d')}.jsonl.gz"
             filepath = archive_dir / filename
             
-            # Write to compressed JSON Lines file
+            # --- 3. Stream logs to compressed file in batches (minimize memory) ---
+            if progress_callback:
+                progress_callback(0, total_logs, "Comprimiendo registros en archivo...")
+            
+            fetched_count = 0
+            ids_to_delete = []
+            
             with gzip.open(filepath, 'wt', encoding='utf-8') as f:
-                for log in all_logs:
-                    clean_log = {}
-                    for k, v in log.items():
-                        clean_log[k] = self._serialize_for_json(v)
-                    f.write(json.dumps(clean_log, ensure_ascii=False) + '\n')
-                    result["archived"] += 1
+                while True:
+                    # Fetch batch
+                    batch = self._fetch_old_logs(cutoff_date, batch_size=BATCH_SIZE, offset=fetched_count)
+                    if not batch:
+                        break
+                    
+                    # Write batch immediately to file
+                    for log in batch:
+                        clean_log = {}
+                        for k, v in log.items():
+                            clean_log[k] = self._serialize_for_json(v)
+                        f.write(json.dumps(clean_log, ensure_ascii=False) + '\n')
+                        result["archived"] += 1
+                        
+                        # Collect IDs for deletion (keep small, batch delete soon)
+                        if log.get("id"):
+                            ids_to_delete.append(log["id"])
+                    
+                    fetched_count += len(batch)
+                    
+                    if progress_callback:
+                        progress_callback(fetched_count, total_logs, f"Comprimiendo... ({fetched_count}/{total_logs})")
             
             result["file"] = str(filepath)
             
-            # --- 4. Delete archived logs ---
-            ids = [log["id"] for log in all_logs if log.get("id")]
-            total_to_delete = len(ids)
-            deleted_so_far = 0
+            # Update max_date from last batch
+            try:
+                if fetched_count > 0:
+                    last_batch = self._fetch_old_logs(cutoff_date, batch_size=1, offset=fetched_count - 1)
+                    if last_batch:
+                        date_val = last_batch[0].get("fecha_hora")
+                        if isinstance(date_val, str):
+                            date_val = datetime.fromisoformat(date_val.replace('Z', '+00:00'))
+                        max_date = date_val
+            except:
+                pass
             
-            for i in range(0, total_to_delete, 1000):
+            # --- 4. Delete archived logs in batches ---
+            if ids_to_delete:
                 if progress_callback:
-                    pct_base = 0.5 # Assume fetch/write is first 50%
-                    pct_del = (deleted_so_far / total_to_delete) * 0.5
-                    current_count = int(fetched_count + deleted_so_far)
-                    # Simplified progress reporting
-                    progress_callback(current_count, total_logs * 2 if total_logs else total_to_delete * 2, f"Limpiando BD... ({deleted_so_far}/{total_to_delete})")
-
-                batch_ids = ids[i:i+1000]
-                deleted = self._delete_logs_by_ids(batch_ids)
-                result["deleted"] += deleted
-                deleted_so_far += deleted
+                    progress_callback(total_logs, total_logs, "Limpiando BD...")
+                
+                total_to_delete = len(ids_to_delete)
+                
+                for i in range(0, total_to_delete, 1000):
+                    batch_ids = ids_to_delete[i:i+1000]
+                    deleted = self._delete_logs_by_ids(batch_ids)
+                    result["deleted"] += deleted
+                    
+                    if progress_callback:
+                        deleted_so_far = min(i + 1000, total_to_delete)
+                        progress_callback(total_logs + deleted_so_far, total_logs + total_to_delete, 
+                                        f"Limpiando BD... ({deleted_so_far}/{total_to_delete})")
             
             print(f"[LogArchiver] Archived {result['archived']} logs to {filepath}, deleted {result['deleted']}")
             

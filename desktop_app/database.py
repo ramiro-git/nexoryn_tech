@@ -1,11 +1,12 @@
 import json
 import logging
+import re
 import threading
 import time
 import unicodedata
 from decimal import Decimal
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from psycopg.errors import ForeignKeyViolation, IntegrityError
@@ -17,6 +18,8 @@ from enums import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
@@ -30,8 +33,27 @@ def _to_id(val: Any) -> Optional[int]:
     """Safely convert a filter value to an integer ID."""
     if val in (None, "", "Todas", "Todos", "---"):
         return None
+    if isinstance(val, int):
+        return val
     try:
-        return int(val)
+        raw = str(val).strip()
+    except Exception:
+        return None
+    if raw in ("", "Todas", "Todos", "---"):
+        return None
+    if raw.isdigit():
+        return int(raw)
+    # Allow common thousands separators (., , space, _) but only in 3-digit groups
+    if re.fullmatch(r"\d{1,3}([\s,._]\d{3})+", raw):
+        digits = re.sub(r"[\s,._]", "", raw)
+        if not digits:
+            return None
+        try:
+            return int(digits)
+        except ValueError:
+            return None
+    try:
+        return int(raw)
     except (ValueError, TypeError):
         return None
 
@@ -58,6 +80,21 @@ def _normalize_log_result_filter(value: Any) -> Optional[List[str]]:
     if normalized in ("OK", "EXITOSO", "EXITO", "SUCCESS", "SUCCESSFUL"):
         return ["OK", "EXITOSO", "EXITO", "SUCCESS", "SUCCESSFUL"]
     return [normalized]
+
+
+def _parse_date_only(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, str):
+        raw = value.strip()
+        if _DATE_ONLY_RE.fullmatch(raw):
+            try:
+                return datetime.strptime(raw, "%Y-%m-%d")
+            except ValueError:
+                return None
+    return None
 
 
 class Database:
@@ -3588,12 +3625,10 @@ class Database:
             filters.append(f"UPPER(l.resultado) IN ({placeholders})")
             params.extend([term.upper() for term in result_terms])
             
-        ident = advanced.get("id_entidad")
-        if ident:
-            try:
-                filters.append("l.id_entidad = %s")
-                params.append(int(ident))
-            except (ValueError, TypeError): pass
+        ident = _to_id(advanced.get("id_entidad"))
+        if ident is not None:
+            filters.append("l.id_entidad = %s")
+            params.append(ident)
 
         desde = advanced.get("desde")
         hasta = advanced.get("hasta")
@@ -3603,11 +3638,17 @@ class Database:
             filters.append("l.fecha_hora >= CURRENT_DATE")
         else:
             if desde:
+                desde_dt = _parse_date_only(desde)
                 filters.append("l.fecha_hora >= %s")
-                params.append(desde)
+                params.append(desde_dt if desde_dt is not None else desde)
             if hasta:
-                filters.append("l.fecha_hora <= %s")
-                params.append(hasta)
+                hasta_dt = _parse_date_only(hasta)
+                if hasta_dt is not None:
+                    filters.append("l.fecha_hora < %s")
+                    params.append(hasta_dt + timedelta(days=1))
+                else:
+                    filters.append("l.fecha_hora <= %s")
+                    params.append(hasta)
 
         ip = advanced.get("ip")
         if ip:
@@ -3679,12 +3720,10 @@ class Database:
             filters.append(f"UPPER(l.resultado) IN ({placeholders})")
             params.extend([term.upper() for term in result_terms])
             
-        ident = advanced.get("id_entidad")
-        if ident:
-            try:
-                filters.append("l.id_entidad = %s")
-                params.append(int(ident))
-            except (ValueError, TypeError): pass
+        ident = _to_id(advanced.get("id_entidad"))
+        if ident is not None:
+            filters.append("l.id_entidad = %s")
+            params.append(ident)
 
         desde = advanced.get("desde")
         hasta = advanced.get("hasta")
@@ -3694,11 +3733,17 @@ class Database:
             filters.append("l.fecha_hora >= CURRENT_DATE")
         else:
             if desde:
+                desde_dt = _parse_date_only(desde)
                 filters.append("l.fecha_hora >= %s")
-                params.append(desde)
+                params.append(desde_dt if desde_dt is not None else desde)
             if hasta:
-                filters.append("l.fecha_hora <= %s")
-                params.append(hasta)
+                hasta_dt = _parse_date_only(hasta)
+                if hasta_dt is not None:
+                    filters.append("l.fecha_hora < %s")
+                    params.append(hasta_dt + timedelta(days=1))
+                else:
+                    filters.append("l.fecha_hora <= %s")
+                    params.append(hasta)
 
         ip = advanced.get("ip")
         if ip:
