@@ -966,7 +966,7 @@ def main(page: ft.Page) -> None:
 
             # Try to use legacy backup service for fallback
             try:
-                backup_service_fallback = BackupService(pg_bin_path=config.pg_bin_path)
+                backup_service_fallback = BackupService(pg_bin_path=config.pg_bin_path, db=db)
                 
                 def run_scheduled_backup(btype):
                     try:

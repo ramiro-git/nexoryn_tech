@@ -4,7 +4,7 @@ import logging
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, Dict, List, Optional
 import shutil
 
 try:
@@ -46,6 +46,7 @@ class BackupService:
         pg_bin_path: Optional[str] = None,
         sync_dir: Optional[str] = None,
         incremental_dir: Optional[str] = None,
+        db: Optional[Any] = None,
     ):
         # Calcular directorio raíz del proyecto
         current_file = Path(__file__).resolve()
@@ -67,6 +68,7 @@ class BackupService:
         self.backup_dir = backup_path
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         self.pg_bin_path = pg_bin_path
+        self.db = db
         
         # Convertir incremental_dir a absoluta
         inc_path = Path(incremental_dir) if incremental_dir else Path("backups_incrementales")
@@ -104,6 +106,48 @@ class BackupService:
         self.weekly_dir = self.backup_dir / "weekly"
         self.monthly_dir = self.backup_dir / "monthly"
         self.manual_dir = self.backup_dir / "manual"
+
+    def _get_maintenance_user_id(self) -> Optional[int]:
+        raw = os.getenv("DB_MAINTENANCE_USER_ID", "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+                logger.warning("DB_MAINTENANCE_USER_ID inválido (debe ser > 0).")
+            except ValueError:
+                logger.warning("DB_MAINTENANCE_USER_ID inválido (no es un entero).")
+
+        current_user_id = getattr(self.db, "current_user_id", None) if self.db else None
+        if current_user_id:
+            try:
+                value = int(current_user_id)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+
+        return None
+
+    def _build_pg_env(self, password: str) -> Dict[str, str]:
+        env = os.environ.copy()
+        env["PGPASSWORD"] = password
+
+        maintenance_user_id = self._get_maintenance_user_id()
+        if maintenance_user_id:
+            opt_piece = f"-c app.user_id={maintenance_user_id}"
+            existing = env.get("PGOPTIONS", "").strip()
+            if existing:
+                if opt_piece not in existing:
+                    env["PGOPTIONS"] = f"{existing} {opt_piece}"
+            else:
+                env["PGOPTIONS"] = opt_piece
+        else:
+            logger.warning(
+                "DB_MAINTENANCE_USER_ID no definido y sin current_user_id; RLS puede bloquear restores."
+            )
+
+        return env
     
     def set_backup_dir(self, new_path: str) -> bool:
         """Change the backup directory to a new location."""
@@ -373,8 +417,7 @@ class BackupService:
             # We typically use pg_restore for custom format
             pg_restore = shutil.which("pg_restore") or self._get_pg_dump_path().replace("pg_dump", "pg_restore")
             
-            env = os.environ.copy()
-            env["PGPASSWORD"] = config["password"]
+            env = self._build_pg_env(config["password"])
             
             # Note: --clean requires the user to have permission to drop objects
             cmd = [

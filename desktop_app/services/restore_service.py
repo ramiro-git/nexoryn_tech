@@ -90,6 +90,48 @@ class RestoreService:
                 return p
         
         raise FileNotFoundError("psql not found")
+
+    def _get_maintenance_user_id(self) -> Optional[int]:
+        raw = os.getenv("DB_MAINTENANCE_USER_ID", "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+                logger.warning("DB_MAINTENANCE_USER_ID inválido (debe ser > 0).")
+            except ValueError:
+                logger.warning("DB_MAINTENANCE_USER_ID inválido (no es un entero).")
+
+        current_user_id = getattr(self.db, "current_user_id", None)
+        if current_user_id:
+            try:
+                value = int(current_user_id)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+
+        return None
+
+    def _build_pg_env(self, password: str) -> Dict[str, str]:
+        env = os.environ.copy()
+        env["PGPASSWORD"] = password
+
+        maintenance_user_id = self._get_maintenance_user_id()
+        if maintenance_user_id:
+            opt_piece = f"-c app.user_id={maintenance_user_id}"
+            existing = env.get("PGOPTIONS", "").strip()
+            if existing:
+                if opt_piece not in existing:
+                    env["PGOPTIONS"] = f"{existing} {opt_piece}"
+            else:
+                env["PGOPTIONS"] = opt_piece
+        else:
+            logger.warning(
+                "DB_MAINTENANCE_USER_ID no definido y sin current_user_id; RLS puede bloquear restores."
+            )
+
+        return env
     
     def _verify_checksum(self, file_path: Path, expected_checksum: str) -> bool:
         sha256_hash = hashlib.sha256()
@@ -128,8 +170,7 @@ class RestoreService:
         db_name = target_db or config["name"]
         
         inicio = datetime.now()
-        env = os.environ.copy()
-        env["PGPASSWORD"] = config["password"]
+        env = self._build_pg_env(config["password"])
         
         try:
             # Las tablas de sistema de backup (backup_manifest, backup_event) ya fueron
@@ -248,8 +289,7 @@ class RestoreService:
         # Construir comando SQL
         truncate_sql = f"TRUNCATE TABLE {', '.join(tables)} RESTART IDENTITY CASCADE;"
         
-        env = os.environ.copy()
-        env["PGPASSWORD"] = config["password"]
+        env = self._build_pg_env(config["password"])
         
         cmd = [
             psql,
@@ -284,8 +324,7 @@ class RestoreService:
         
         config = self._get_db_config()
         psql = self._get_psql_path()
-        env = os.environ.copy()
-        env["PGPASSWORD"] = config["password"]
+        env = self._build_pg_env(config["password"])
         
         # Construir SQL que resincronice todas las secuencias de una sola vez
         # Para cada tabla, encontramos la columna PK (o columna con secuencia)
@@ -413,8 +452,7 @@ END $$;
         pg_restore = self._get_pg_restore_path()
         
         inicio = datetime.now()
-        env = os.environ.copy()
-        env["PGPASSWORD"] = config["password"]
+        env = self._build_pg_env(config["password"])
         
         try:
             # --- Fase de Truncado Inteligente ---

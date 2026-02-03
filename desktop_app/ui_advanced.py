@@ -345,7 +345,7 @@ def main(page: ft.Page) -> None:
             conn_badge.content.controls[1].color = text
             page.update()
 
-        backup_service = BackupService(pg_bin_path=config.pg_bin_path)
+        backup_service = BackupService(pg_bin_path=config.pg_bin_path, db=db)
         backup_view_component = BackupView(page, backup_service, show_message, set_connection)
         backup_view_control = ft.Container(
             content=backup_view_component.build(),

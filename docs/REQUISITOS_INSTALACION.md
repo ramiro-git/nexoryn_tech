@@ -35,6 +35,7 @@ DB_PORT=5432
 DB_NAME=nexoryn_tech
 DB_USER=postgres
 DB_PASSWORD=tu_password
+DB_MAINTENANCE_USER_ID=1
 
 # Pool (opcional)
 DB_POOL_MIN=1
@@ -70,6 +71,8 @@ AFIP_KEY_PATH_PRODUCCION="C:/Nexoryn/Certs/empresa_prod.key"
 # UI (opcional)
 NEXORYN_UI=basic  # o advanced
 ```
+
+Nota: `DB_MAINTENANCE_USER_ID` debe ser un `seguridad.usuario.id` existente (por defecto 1 para el admin inicial). Se usa en restores/psql para setear `app.user_id` y evitar bloqueos por RLS.
 
 ---
 
