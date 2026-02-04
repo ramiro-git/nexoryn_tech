@@ -281,6 +281,44 @@ def _format_datetime(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
         return str(value)
 
 
+def _normalize_datetime_input(value: Any) -> str:
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    s = str(value).strip()
+    if not s:
+        return ""
+
+    s = s.replace("T", " ")
+    if "+" in s:
+        s = s.split("+")[0]
+    elif "-" in s and s.count("-") > 2:
+        s = s.rsplit("-", 1)[0]
+    s = s.strip()
+
+    if "." in s:
+        s = s.split(".", 1)[0]
+
+    if " " in s:
+        try:
+            dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            try:
+                dt = datetime.strptime(s, "%Y-%m-%d %H:%M")
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return s
+
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except Exception:
+        return s
+    return s
+
+
 def _format_quantity(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
     if value is None:
         return "0"
@@ -828,8 +866,22 @@ def main(page: ft.Page) -> None:
     page.overlay.append(form_dialog)
 
     def close_form(e=None):
+        # Avoid UI updates while the window is closing and guard against
+        # sporadic Flet uid assertions during updates.
+        if window_is_closing:
+            return
         form_dialog.visible = False
-        page.update()
+        if _safe_update_control(form_dialog):
+            return
+        try:
+            page.update()
+        except AssertionError as exc:
+            logger.debug(f"Close form update skipped (uid missing): {exc}")
+        except Exception as exc:
+            if _is_event_loop_closed(exc):
+                logger.debug("Close form update skipped: event loop closed")
+            else:
+                logger.exception(f"Close form update failed: {exc}")
 
     def open_form(title, content, actions):
         _form_title.value = title
@@ -8264,13 +8316,13 @@ def main(page: ft.Page) -> None:
                 field_numero.read_only = False
                 field_numero.hint_text = ""
                 field_numero.value = doc_data["numero_serie"]
-                field_fecha.value = doc_data["fecha"][:10] if doc_data["fecha"] else None
+                field_fecha.value = _normalize_datetime_input(doc_data.get("fecha")) or field_fecha.value
             elif copy_doc_id:
                 field_obs.value = f"Copia de {doc_data.get('numero_serie','')}. " + (doc_data.get('observacion','') or "")
                 field_numero.read_only = True
                 field_numero.hint_text = "Automático"
                 field_numero.value = ""
-                field_fecha.value = datetime.now().strftime("%Y-%m-%d")
+                field_fecha.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             field_descuento.value = str(doc_data["descuento_porcentaje"])
             field_vto.value = doc_data["fecha_vencimiento"]
