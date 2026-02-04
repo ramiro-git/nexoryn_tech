@@ -75,6 +75,8 @@ No es obligatorio instalar Git, pero **OpenSSL sí** para AFIP. Opciones:
 
 La app ya maneja `MSYS_NO_PATHCONV` automáticamente para evitar problemas de rutas en Windows.
 
+> Nota importante: AFIP funciona en el `.exe` sin Bash. Lo único necesario es que `openssl.exe` esté accesible (instalado y en PATH, o incluido junto al ejecutable).
+
 ---
 
 ## 5. Implementación en Red LAN (Ejecutable Compartido)

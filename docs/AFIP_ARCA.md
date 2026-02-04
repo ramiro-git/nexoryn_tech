@@ -64,7 +64,7 @@ AFIP_PUNTO_VENTA=3
   - no tiene `cae`
 - Al autorizar, se actualizan:
   - `cae`, `cae_vencimiento`, `punto_venta`, `tipo_comprobante_afip`, `cuit_emisor`, `qr_data`
-  - se asegura la creación del remito asociado si aplica
+  - solo se actualizan datos AFIP del comprobante (no crea remitos automáticamente)
 
 > La autorización es irreversible desde la UI. Verifica los datos antes de autorizar.
 

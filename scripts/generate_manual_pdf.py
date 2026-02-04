@@ -1,5 +1,7 @@
 from fpdf import FPDF
 import datetime
+import re
+from pathlib import Path
 
 class ManualPDF(FPDF):
     def header(self):
@@ -31,6 +33,13 @@ class ManualPDF(FPDF):
         self.cell(0, 8, label, ln=True, align='L')
         self.ln(2)
 
+    def subsection_title(self, label):
+        self.set_font('helvetica', 'B', 11)
+        self.set_text_color(30, 41, 59) # Slate 800
+        self.ln(2)
+        self.cell(0, 7, label, ln=True, align='L')
+        self.ln(1)
+
     def chapter_body(self, text):
         self.set_font('helvetica', '', 11)
         self.set_text_color(51, 65, 85) # Slate 700
@@ -45,6 +54,26 @@ class ManualPDF(FPDF):
         self.set_text_color(51, 65, 85)
         self.cell(0, 7, f' - {description}', border=False, ln=True)
 
+    def bullet_item(self, text):
+        self.set_font('helvetica', '', 11)
+        self.set_text_color(51, 65, 85)
+        self.multi_cell(0, 6, f"- {text}")
+        self.ln(1)
+
+    def quote_line(self, text):
+        self.set_font('helvetica', 'I', 10)
+        self.set_text_color(100, 116, 139)
+        self.multi_cell(0, 6, f"> {text}")
+        self.ln(1)
+
+    def code_block(self, text):
+        self.set_font('courier', '', 9)
+        self.set_text_color(30, 41, 59)
+        self.set_fill_color(241, 245, 249)
+        self.set_draw_color(226, 232, 240)
+        self.multi_cell(0, 5, text, border=1, fill=True)
+        self.ln(2)
+
     def error_box(self, title, text):
         self.set_fill_color(254, 242, 242) # Red 50
         self.set_draw_color(239, 68, 68)  # Red 500
@@ -54,6 +83,98 @@ class ManualPDF(FPDF):
         self.set_font('helvetica', '', 10)
         self.multi_cell(0, 6, text, border='BLR', fill=True)
         self.ln(5)
+
+def sanitize_text(text):
+    if text is None:
+        return ""
+    replacements = {
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+        "\u00a0": " ",
+        "\u2022": "-",
+    }
+    for src, repl in replacements.items():
+        text = text.replace(src, repl)
+    text = text.replace("\t", "    ")
+    try:
+        text.encode("latin-1")
+    except UnicodeEncodeError:
+        text = text.encode("latin-1", "replace").decode("latin-1")
+    return text
+
+def render_markdown(pdf, text):
+    lines = text.splitlines()
+    in_code = False
+    paragraph = []
+    code_lines = []
+
+    def flush_paragraph():
+        if paragraph:
+            pdf.chapter_body(sanitize_text(" ".join(paragraph).strip()))
+            paragraph.clear()
+
+    def flush_code():
+        nonlocal code_lines
+        if code_lines:
+            pdf.code_block(sanitize_text("\n".join(code_lines)))
+            code_lines = []
+
+    for line in lines:
+        raw = line.rstrip("\n")
+        stripped = raw.strip()
+
+        if stripped.startswith("```"):
+            if in_code:
+                flush_code()
+                in_code = False
+            else:
+                flush_paragraph()
+                in_code = True
+            continue
+
+        if in_code:
+            code_lines.append(raw)
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            continue
+
+        if stripped.startswith("# "):
+            flush_paragraph()
+            pdf.chapter_title(sanitize_text(stripped[2:].strip()))
+            continue
+        if stripped.startswith("## "):
+            flush_paragraph()
+            pdf.section_title(sanitize_text(stripped[3:].strip()))
+            continue
+        if stripped.startswith("### "):
+            flush_paragraph()
+            pdf.subsection_title(sanitize_text(stripped[4:].strip()))
+            continue
+        if stripped.startswith(">"):
+            flush_paragraph()
+            quote = stripped.lstrip(">").strip()
+            pdf.quote_line(sanitize_text(quote))
+            continue
+
+        list_match = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)$", raw)
+        if list_match:
+            flush_paragraph()
+            item_text = list_match.group(3).strip()
+            pdf.bullet_item(sanitize_text(item_text))
+            continue
+
+        paragraph.append(stripped)
+
+    if in_code:
+        flush_code()
+    flush_paragraph()
 
 def generate_manual():
     pdf = ManualPDF()
@@ -91,7 +212,8 @@ def generate_manual():
         "4. Entidades y Cuentas Corrientes\n"
         "5. Facturación Electrónica (AFIP/ARCA)\n"
         "6. Caja y Movimientos Financieros\n"
-        "7. Resolución de Problemas y Qué hacer si algo falla"
+        "7. Resolución de Problemas y Qué hacer si algo falla\n"
+        "8. Apéndice técnico (Documentación)"
     )
 
     # --- CAPITULO 1: CONCEPTOS ---
@@ -118,6 +240,10 @@ def generate_manual():
     pdf.chapter_body(
         "No use solo el buscador global. Use los 'Filtros Avanzados' para buscar por 'Stock Bajo', 'Fecha de Alta' o 'Deuda de Cliente'. "
         "Esto reduce la carga del sistema y le da resultados exactos."
+    )
+    pdf.section_title('Seguridad por Inactividad')
+    pdf.chapter_body(
+        "Si no hay actividad durante 5 minutos, el sistema cierra la sesión automáticamente para proteger los datos."
     )
 
     # --- CAPITULO 3: INVENTARIO ---
@@ -153,9 +279,11 @@ def generate_manual():
     pdf.section_title('Condiciones para el ÉXITO de la factura:')
     pdf.chapter_body(
         "- El comprobante debe estar confirmado y sin CAE antes de autorizar.\n"
-        "- El CUIT del cliente debe ser válido y existir en la base de AFIP.\n"
+        "- Para comprobantes letra A se requiere CUIT válido (11 dígitos) y condición IVA del receptor.\n"
+        "- Para letra B/C se admite CUIT (11 dígitos) o DNI (hasta 8 dígitos).\n"
         "- Los certificados (.crt y .key) deben estar vigentes (vencen anualmente).\n"
-        "- El Punto de Venta debe ser tipo 'Web Services' (RECE)."
+        "- El Punto de Venta debe ser tipo 'Web Services' (RECE).\n"
+        "- AFIP funciona en el .exe sin Bash, pero requiere OpenSSL accesible."
     )
     pdf.error_box(
         "Error de Conexión AFIP",
@@ -187,7 +315,13 @@ def generate_manual():
         "- Solución: Verifique que exista un `.env` en %APPDATA%\\Nexoryn_Tech\\ o junto al ejecutable, y que tenga las credenciales correctas."
     )
 
-    pdf.section_title('Problema C: El PDF no se genera o no se abre')
+    pdf.section_title('Problema C: "openssl no encontrado" al facturar AFIP')
+    pdf.chapter_body(
+        "- Causa: OpenSSL no está instalado o no está accesible desde la app.\n"
+        "- Solución: Instale OpenSSL o copie `openssl.exe` junto con `libcrypto-*.dll` y `libssl-*.dll` al directorio del ejecutable."
+    )
+
+    pdf.section_title('Problema D: El PDF no se genera o no se abre')
     pdf.chapter_body(
         "- Causa: Un antivirus bloquea el acceso a la carpeta temporal o no tiene un lector de PDF instalado.\n"
         "- Solución: Verifique que puede abrir otros archivos PDF en su computadora."
@@ -213,6 +347,33 @@ def generate_manual():
     pdf.set_font('helvetica', 'I', 10)
     pdf.set_text_color(100, 116, 139)
     pdf.multi_cell(0, 10, 'Este manual es una herramienta dinámica. Si detecta un error no documentado, reporte al equipo técnico para su inclusión.', align='C')
+
+    # --- APENDICE TECNICO ---
+    pdf.add_page()
+    pdf.chapter_title('8. Apéndice técnico')
+    pdf.chapter_body(
+        "Este apéndice incluye la documentación técnica actual del proyecto. "
+        "Si se actualizan los documentos en /docs, vuelva a generar el PDF para reflejar los cambios."
+    )
+
+    appendix_docs = [
+        Path("docs/REQUISITOS_INSTALACION.md"),
+        Path("docs/GUIA_EMPAQUETADO.md"),
+        Path("docs/GUIA_RED_LOCAL.md"),
+        Path("docs/AFIP_ARCA.md"),
+        Path("docs/GUIA_AFIP_PORTAL.md"),
+        Path("docs/BACKUP_SYSTEM.md"),
+        Path("docs/DATABASE.md"),
+    ]
+
+    for doc_path in appendix_docs:
+        pdf.add_page()
+        if not doc_path.exists():
+            pdf.section_title(f"Documento no encontrado: {doc_path}")
+            pdf.chapter_body("No se pudo cargar este documento en el apéndice.")
+            continue
+        content = doc_path.read_text(encoding="utf-8")
+        render_markdown(pdf, content)
 
     output_path = "MANUAL_MAESTRO_NEXORYN_TECH.pdf"
     pdf.output(output_path)

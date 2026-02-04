@@ -9,6 +9,7 @@ Antes de empezar, la máquina debe tener:
 - **Python 3.12+** (recomendado) agregado al PATH.
 - **PostgreSQL 16+** (con `psql`, `pg_dump` y `pg_restore`).
 - **OpenSSL** (para firmar solicitudes AFIP).
+  - AFIP funciona en el `.exe` sin Bash, pero requiere `openssl.exe` accesible (instalado o junto al ejecutable).
 
 ### Instalación de dependencias
 Ejecutar en la carpeta raíz:
