@@ -8,7 +8,7 @@ La aplicación está construida con **Flet**. Para generar el ejecutable, utiliz
 
 ### Requisitos previos
 ```powershell
-pip install flet pyinstaller
+pip install -r requirements.txt
 ```
 
 ### Comandos de Empaquetado
@@ -17,6 +17,12 @@ flet pack desktop_app/main.py --name "NexorynTech" --add-data "database;database
 ```
 
 > **Importante**: incluir `--add-data "database;database"` para que el `database.sql` esté disponible en el ejecutable.
+
+```powershell
+flet pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png" --add-data "database;database"
+```
+
+> Nota: `requirements.txt` incluye las dependencias `jaraco.*` necesarias para evitar el error de PyInstaller `Failed to execute script 'pyi_rth_pkgres'`.
 
 ---
 

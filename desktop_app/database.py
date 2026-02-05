@@ -12,15 +12,20 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from psycopg.errors import ForeignKeyViolation, IntegrityError
 from psycopg_pool import ConnectionPool
 
-from enums import (
-    DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
-    DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES, DOCUMENTO_ESTADOS_ACTIVOS
-)
+try:
+    from desktop_app.enums import (
+        DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
+        DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES, DOCUMENTO_ESTADOS_ACTIVOS
+    )
+except ImportError:
+    from enums import (  # type: ignore
+        DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
+        DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES, DOCUMENTO_ESTADOS_ACTIVOS
+    )
 
 logger = logging.getLogger(__name__)
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
 
 def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
     columns = [
