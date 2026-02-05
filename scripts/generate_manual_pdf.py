@@ -4,17 +4,21 @@ import re
 from pathlib import Path
 
 class ManualPDF(FPDF):
+    def __init__(self, generated_at=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.generated_at = generated_at or datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+
     def header(self):
         self.set_font('helvetica', 'B', 15)
         self.set_text_color(99, 102, 241) # Indigo 500
-        self.cell(0, 10, 'NEXORYN TECH - Manual Maestro de Usuario', border=False, ln=True, align='R')
+        self.cell(0, 10, 'NEXORYN TECH - Manual Maestro', border=False, ln=True, align='R')
         self.ln(10)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('helvetica', 'I', 8)
         self.set_text_color(128)
-        self.cell(0, 10, f'Página {self.page_no()} | Confidencial - Uso Interno | Generado: {datetime.datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 0, 'C')
+        self.cell(0, 10, f'Página {self.page_no()} | Generado: {self.generated_at}', 0, 0, 'C')
 
     def chapter_title(self, label):
         self.set_font('helvetica', 'B', 16)
@@ -177,7 +181,8 @@ def render_markdown(pdf, text):
     flush_paragraph()
 
 def generate_manual():
-    pdf = ManualPDF()
+    generated_at = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    pdf = ManualPDF(generated_at=generated_at)
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
@@ -192,136 +197,264 @@ def generate_manual():
     pdf.ln(10)
     pdf.set_font('helvetica', '', 16)
     pdf.set_text_color(100, 116, 139)
-    pdf.cell(0, 10, 'Guía de Operación, Fallos y Resolución de Problemas', ln=True, align='C')
+    pdf.cell(0, 10, 'Guía de Operación y Resolución de Problemas', ln=True, align='C')
     
     pdf.set_y(220)
     pdf.set_font('helvetica', 'B', 12)
     pdf.set_text_color(30, 41, 59)
     pdf.cell(0, 10, 'Sistema de Gestión Integral', ln=True, align='C')
     pdf.set_font('helvetica', '', 10)
-    pdf.cell(0, 10, 'Este manual contiene detalles críticos sobre AFIP, Stock y Cuentas.', ln=True, align='C')
+    pdf.cell(0, 10, 'Este manual le guiará en el uso del sistema Nexoryn Tech, que gestiona las áreas de AFIP, Inventario y Cuentas.', ln=True, align='C')
 
     pdf.add_page()
 
     # --- INDICE ---
     pdf.chapter_title('Contenido del Manual')
     pdf.chapter_body(
-        "1. Conceptos Fundamentales\n"
-        "2. Navegación y Atajos de Eficiencia\n"
-        "3. Gestión de Inventario y Stock Crítico\n"
-        "4. Entidades y Cuentas Corrientes\n"
-        "5. Facturación Electrónica (AFIP/ARCA)\n"
-        "6. Caja y Movimientos Financieros\n"
-        "7. Resolución de Problemas y Qué hacer si algo falla\n"
-        "8. Apéndice técnico (Documentación)"
+        "1. Conceptos Básicos\n"
+        "2. Navegación y Atajos\n"
+        "3. Tablero de Control\n"
+        "4. Entidades\n"
+        "5. Inventario (Artículos)\n"
+        "6. Stock\n"
+        "7. Comprobantes y Facturación\n"
+        "8. Facturación Electrónica (AFIP/ARCA)\n"
+        "9. Remitos\n"
+        "10. Movimientos de Stock\n"
+        "11. Caja y Pagos\n"
+        "12. Cuentas Corrientes\n"
+        "13. Lista de Precios\n"
+        "14. Actualización Masiva\n"
+        "15. Resolución de Problemas y ¿Qué Hacer si Algo Falla?\n"
+        "16. Resumen Final de Atajos"
     )
 
     # --- CAPITULO 1: CONCEPTOS ---
-    pdf.chapter_title('1. Conceptos Fundamentales')
+    pdf.chapter_title('1. Conceptos Básicos')
     pdf.chapter_body(
-        "Nexoryn Tech es un sistema de gestión en tiempo real. Esto significa que cada acción (vender, cobrar, mover mercadería) "
-        "impacta de forma inmediata en los saldos y las estadísticas del tablero de control.\n\n"
-        "El sistema separa las operaciones en 'Comprobantes' (documentos legales o internos) y 'Movimientos' (el flujo físico o monetario)."
+        "Nexoryn Tech es un sistema de gestión en tiempo real. Esto significa que cada acción (vender, cobrar o mover mercadería) "
+        "actualiza inmediatamente los saldos y las estadísticas del panel de control.\n\n"
+        "El sistema organiza las operaciones en dos categorías:\n"
+        "- Comprobantes: documentos legales o internos que registran una transacción.\n"
+        "- Movimientos: el flujo físico o monetario real de la transacción."
     )
 
     # --- CAPITULO 2: NAVEGACION ---
-    pdf.chapter_title('2. Navegación y Atajos de Eficiencia')
-    pdf.section_title('Uso de Tablas Inteligentes')
+    pdf.chapter_title('2. Navegación y Atajos')
+    pdf.section_title('Búsqueda y filtros')
     pdf.chapter_body(
-        "Las tablas son el núcleo del sistema. Permiten editar datos directamente (vistas rápidas) o entrar al detalle completo."
+        "Cada vista principal se apoya en tablas. Use el buscador global para localizar registros por texto y los filtros avanzados "
+        "para acotar por estado, fechas, montos o categorías. Esto acelera la búsqueda y evita resultados mezclados."
     )
-    pdf.add_shortcut('Rueda Mouse', 'Scroll vertical lento/rápido.')
-    pdf.add_shortcut('Shift + Rueda', 'Scroll horizontal (vital para tablas con muchas columnas).')
-    pdf.add_shortcut('Doble Clic en Celda', 'Si la columna es editable, abre el editor instantáneo.')
-    pdf.add_shortcut('Ctrl + F', 'Foco rápido en el buscador global de la tabla.')
-    pdf.add_shortcut('F5', 'Refresca los datos de la tabla (útil en red local).')
-    
-    pdf.section_title('Filtros Avanzados')
+    pdf.section_title('Orden y acciones en tablas')
     pdf.chapter_body(
-        "No use solo el buscador global. Use los 'Filtros Avanzados' para buscar por 'Stock Bajo', 'Fecha de Alta' o 'Deuda de Cliente'. "
-        "Esto reduce la carga del sistema y le da resultados exactos."
+        "Puede ordenar por columnas haciendo clic en el título. Los botones más comunes son: "
+        "'Actualizar' para recargar datos, 'Reiniciar filtros' para volver a los valores iniciales y "
+        "'Exportar datos' para descargar el listado cuando esté disponible."
     )
-    pdf.section_title('Seguridad por Inactividad')
+    pdf.section_title('Atajos útiles')
+    pdf.add_shortcut('Rueda del Ratón', 'Scroll vertical lento/rápido.')
+    pdf.add_shortcut('Shift + Rueda', 'Scroll horizontal (ideal para tablas con muchas columnas).')
+    pdf.add_shortcut('Doble clic en celda', 'Abre el editor instantáneo si la columna es editable.')
+    pdf.add_shortcut('Ctrl + F', 'Busca rápidamente dentro de la tabla.')
+    pdf.add_shortcut('Enter', 'Confirma un formulario o ejecuta la búsqueda.')
+    pdf.add_shortcut('Esc', 'Cancela la acción o cierra el modal actual.')
+    pdf.add_shortcut('Ctrl + S', 'En algunas pantallas, guarda el borrador.')
+    pdf.add_shortcut('Tab / Shift+Tab', 'Navega rápidamente entre campos de texto.')
+    pdf.add_shortcut('Alt + [Letra]', 'Navega entre las pestañas del menú lateral.')
+
+    pdf.section_title('Seguridad por inactividad')
     pdf.chapter_body(
         "Si no hay actividad durante 5 minutos, el sistema cierra la sesión automáticamente para proteger los datos."
     )
 
-    # --- CAPITULO 3: INVENTARIO ---
-    pdf.chapter_title('3. Gestión de Inventario y Stock Crítico')
+    pdf.add_page()
+
+    # --- CAPITULO 3: TABLERO ---
+    pdf.chapter_title('3. Tablero de Control')
     pdf.chapter_body(
-        "Cada artículo tiene un 'Stock Mínimo'. Cuando el stock actual es igual o menor a este valor, el sistema marcará el producto "
-        "con una alerta visual en el inventario y en el tablero de control."
+        "El Tablero de Control reúne los indicadores principales del negocio: ventas del período, alertas de stock, "
+        "entidades activas, operaciones recientes y movimientos financieros.\n\n"
+        "Los datos se actualizan de forma automática y también puede forzar una actualización con el botón "
+        "'Actualizar ahora'.\n\n"
+        "Use el selector de período (Hoy/Semana/Mes/Año) para cambiar el rango de análisis y el selector de intervalo "
+        "(30 seg, 1 min, 5 min, 10 min, desactivado) para ajustar la frecuencia de actualización."
+    )
+
+    # --- CAPITULO 4: ENTIDADES ---
+    pdf.chapter_title('4. Entidades')
+    pdf.section_title('Qué es una entidad')
+    pdf.chapter_body(
+        "Las entidades representan clientes y proveedores. Se usan en comprobantes, pagos y cuentas corrientes."
+    )
+    pdf.section_title('Alta rápida y edición')
+    pdf.chapter_body(
+        "Para crear una entidad complete nombre, CUIT/DNI, condición IVA y datos de contacto. "
+        "Puede editar campos directamente en la tabla o abrir el detalle completo para ver más información."
+    )
+    pdf.section_title('Notas y estado')
+    pdf.chapter_body(
+        "Use el campo de notas para observaciones. El estado activo/inactivo permite mantener histórico sin eliminar registros."
+    )
+    pdf.section_title('Filtros útiles')
+    pdf.chapter_body(
+        "Filtre por tipo, CUIT, fecha de alta, localidad o saldo para encontrar rápidamente una entidad."
+    )
+
+    # --- CAPITULO 5: INVENTARIO ---
+    pdf.chapter_title('5. Inventario (Artículos)')
+    pdf.section_title('Alta de artículos')
+    pdf.chapter_body(
+        "Registre nombre, marca, rubro, unidad, IVA y precio base. Datos completos reducen errores en ventas y movimientos."
+    )
+    pdf.section_title('Edición rápida')
+    pdf.chapter_body(
+        "Las columnas editables permiten actualizar datos sin salir de la lista. Use doble clic en la celda para editar."
+    )
+    pdf.section_title('Stock mínimo y alertas')
+    pdf.chapter_body(
+        "Defina un stock mínimo por artículo. Cuando el stock llega al mínimo, el sistema muestra alertas en Inventario "
+        "y en el panel de control."
+    )
+    pdf.section_title('Precios por lista')
+    pdf.chapter_body(
+        "Si trabaja con listas de precios, puede asignar valores por lista y ajustar porcentajes según corresponda."
     )
     pdf.error_box(
         "Diferencia de Stock",
         "Si el stock físico no coincide con el del sistema, NO edite el número directamente en la ficha del producto. "
-        "Vaya a 'Movimientos' y realice un 'AJUSTE DE STOCK' con el motivo correspondiente para que quede registro de quién y por qué se cambió."
+        "En su lugar, vaya a 'Movimientos' y realice un 'Ajuste de Stock' con el motivo correspondiente para registrar el cambio."
     )
-
-    # --- CAPITULO 4: ENTIDADES ---
-    pdf.chapter_title('4. Entidades y Cuentas Corrientes')
+    pdf.section_title('Exportación')
     pdf.chapter_body(
-        "El saldo de un cliente se compone de: Facturas (+) y Pagos (-).\n\n"
-        "- Saldo Positivo: El cliente le debe dinero.\n"
-        "- Saldo Negativo: El cliente tiene saldo a favor (le pagó de más o hubo una devolución).\n\n"
-        "Importante: Para que un pago impacte en el saldo, debe estar asociado a la Entidad Comercial correcta."
+        "Cuando esté disponible, use 'Exportar datos' para descargar el listado filtrado."
     )
 
-    # --- CAPITULO 5: AFIP ---
+    # --- CAPITULO 6: STOCK ---
+    pdf.chapter_title('6. Stock')
+    pdf.chapter_body(
+        "La vista de Stock muestra alertas de artículos por debajo del mínimo. Úsela para priorizar reposición "
+        "y evitar quiebres.\n\n"
+        "El botón 'Actualizar' recarga la lista de alertas."
+    )
+
     pdf.add_page()
-    pdf.chapter_title('5. Facturación Electrónica (AFIP/ARCA)')
+
+    # --- CAPITULO 7: COMPROBANTES ---
+    pdf.chapter_title('7. Comprobantes y Facturación')
     pdf.chapter_body(
-        "El sistema se comunica con AFIP en tres pasos silenciosos:\n"
+        "Desde aquí se crean facturas, presupuestos y compras. El flujo típico es: crear, guardar borrador y confirmar.\n\n"
+        "Acciones habituales: ver detalle, copiar como nuevo e imprimir.\n\n"
+        "Estados comunes: Borrador (editable), Confirmado (impacta stock y cuentas) y Anulado (reversa). "
+        "Si necesita rehacer un comprobante, primero anule el anterior si corresponde."
+    )
+
+    # --- CAPITULO 8: AFIP ---
+    pdf.chapter_title('8. Facturación Electrónica (AFIP/ARCA)')
+    pdf.chapter_body(
+        "El sistema se comunica automáticamente con AFIP en tres pasos:\n"
         "1. Solicita un 'LoginTicket' (Token) usando sus certificados digitales.\n"
         "2. Envía los datos del comprobante.\n"
         "3. Recibe el CAE y la fecha de vencimiento."
     )
-    pdf.section_title('Condiciones para el ÉXITO de la factura:')
+    pdf.section_title('Condiciones para el éxito de la factura')
     pdf.chapter_body(
         "- El comprobante debe estar confirmado y sin CAE antes de autorizar.\n"
         "- Para comprobantes letra A se requiere CUIT válido (11 dígitos) y condición IVA del receptor.\n"
-        "- Para letra B/C se admite CUIT (11 dígitos) o DNI (hasta 8 dígitos).\n"
-        "- Los certificados (.crt y .key) deben estar vigentes (vencen anualmente).\n"
+        "- Para comprobantes letra B/C, se admite CUIT (11 dígitos) o DNI (hasta 8 dígitos).\n"
+        "- Los certificados (.crt y .key) deben estar vigentes.\n"
         "- El Punto de Venta debe ser tipo 'Web Services' (RECE).\n"
-        "- AFIP funciona en el .exe sin Bash, pero requiere OpenSSL accesible."
+        "- AFIP funciona usando el ejecutable, pero requiere OpenSSL accesible."
     )
     pdf.error_box(
         "Error de Conexión AFIP",
-        "Si AFIP no responde, el comprobante quedará sin CAE. NO intente facturar de nuevo el mismo "
+        "Si AFIP no responde, el comprobante quedará sin CAE. No intente facturar de nuevo el mismo "
         "documento sin verificar antes en 'Comprobantes' si ya obtuvo CAE. Si el error persiste, verifique su conexión a internet "
-        "o si la página de AFIP está caída (es común en horarios pico)."
+        "o si la página de AFIP está caída."
     )
-
-    # --- CAPITULO 6: CAJA ---
-    pdf.chapter_title('6. Caja y Movimientos Financieros')
+    pdf.section_title('Trámites en el Portal (Resumen)')
     pdf.chapter_body(
-        "La caja refleja el dinero disponible. Cada usuario tiene asignada una caja o puede usar una caja central.\n\n"
-        "Recuerde realizar el 'CIERRE DE CAJA' al final del día para comparar el efectivo real con lo que el sistema indica."
+        "1. Ingrese a AFIP con CUIT y clave fiscal.\n"
+        "2. Habilite los servicios de Certificados Digitales y Puntos de Venta.\n"
+        "3. Cree un Punto de Venta tipo 'Web Services'.\n"
+        "4. Suba el certificado y vincule el alias al servicio WSFEv1.\n\n"
+        "Para el paso a paso detallado, solicite la guía completa al soporte."
     )
 
-    # --- CAPITULO 7: RESOLUCIÓN DE FALLOS ---
+    # --- CAPITULO 9: REMITOS ---
+    pdf.chapter_title('9. Remitos')
+    pdf.chapter_body(
+        "Los remitos registran el despacho y la entrega de mercadería. Permiten seguir el estado de cada envío "
+        "y relacionarlo con un comprobante.\n\n"
+        "Estados típicos: Pendiente, Despachado, Entregado, Anulado.\n\n"
+        "Use filtros por entidad, fechas y depósito para ubicar un remito rápidamente."
+    )
+
+    # --- CAPITULO 10: MOVIMIENTOS ---
+    pdf.chapter_title('10. Movimientos de Stock')
+    pdf.chapter_body(
+        "Esta vista es el historial de entradas, salidas y ajustes. Cada movimiento muestra artículo, tipo, cantidad, "
+        "depósito y, cuando aplica, el comprobante asociado.\n\n"
+        "Use los filtros por artículo, tipo de movimiento, depósito y rango de fechas. "
+        "Las observaciones ayudan a entender el motivo del cambio."
+    )
+
     pdf.add_page()
-    pdf.chapter_title('7. Resolución de Problemas y Errores Comunes')
-    
+
+    # --- CAPITULO 11: CAJA Y PAGOS ---
+    pdf.chapter_title('11. Caja y Pagos')
+    pdf.chapter_body(
+        "Registra ingresos y egresos de caja. Para cargar un pago: seleccione la entidad, el comprobante pendiente, "
+        "la forma de pago, el monto y la fecha. Puede agregar referencia u observaciones.\n\n"
+        "Recomendación: revise los datos antes de confirmar."
+    )
+
+    # --- CAPITULO 12: CUENTAS CORRIENTES ---
+    pdf.chapter_title('12. Cuentas Corrientes')
+    pdf.chapter_body(
+        "Muestra el saldo por entidad. Estados comunes: Deudor, A favor y Al día.\n\n"
+        "Puede abrir el historial de movimientos para ver Debe/Haber y el saldo acumulado."
+    )
+
+    # --- CAPITULO 13: LISTA DE PRECIOS ---
+    pdf.chapter_title('13. Lista de Precios')
+    pdf.chapter_body(
+        "Cree listas con nombre y orden para definir prioridades. Puede activar o desactivar listas según necesidad. "
+        "Las listas se aplican a artículos y permiten trabajar con diferentes precios por segmento."
+    )
+
+    # --- CAPITULO 14: ACTUALIZACION MASIVA ---
+    pdf.chapter_title('14. Actualización Masiva')
+    pdf.section_title('1. Filtrar artículos')
+    pdf.chapter_body(
+        "Use filtros de nombre, marca, rubro, proveedor, lista de precios y estado para delimitar el conjunto."
+    )
+    pdf.section_title('2. Definir objetivo y ajuste')
+    pdf.chapter_body(
+        "Elija qué desea actualizar (costo o lista de precios) y el tipo de ajuste: porcentaje, monto fijo o valor exacto."
+    )
+    pdf.section_title('3. Vista previa y aplicación')
+    pdf.chapter_body(
+        "Genere la vista previa, seleccione filas y aplique los cambios. Revise variaciones antes de confirmar."
+    )
+
+    # --- CAPITULO 15: RESOLUCIÓN DE FALLOS ---
+    pdf.add_page()
+    pdf.chapter_title('15. Resolución de Problemas y ¿Qué Hacer si Algo Falla?')
+
     pdf.section_title('Problema A: El sistema no inicia o dice "Error de Base de Datos"')
     pdf.chapter_body(
         "- Causa: El servicio de PostgreSQL está detenido o el firewall bloquea la conexión.\n"
-        "- Solución: Reinicie la PC o verifique que el servicio de Postgres esté 'En Ejecución' en el administrador de tareas."
+        "- Solución: Reinicie la PC o verifique que el servicio de Postgres esté 'En Ejecución' en Servicios de Windows."
     )
 
-    pdf.section_title('Problema B: "No se encuentra el archivo .env" o credenciales')
-    pdf.chapter_body(
-        "- Causa: Se borró el archivo de configuración o está en una ubicación no soportada.\n"
-        "- Solución: Verifique que exista un `.env` en %APPDATA%\\Nexoryn_Tech\\ o junto al ejecutable, y que tenga las credenciales correctas."
-    )
-
-    pdf.section_title('Problema C: "openssl no encontrado" al facturar AFIP')
+    pdf.section_title('Problema B: "openssl no encontrado" al facturar AFIP')
     pdf.chapter_body(
         "- Causa: OpenSSL no está instalado o no está accesible desde la app.\n"
         "- Solución: Instale OpenSSL o copie `openssl.exe` junto con `libcrypto-*.dll` y `libssl-*.dll` al directorio del ejecutable."
     )
 
-    pdf.section_title('Problema D: El PDF no se genera o no se abre')
+    pdf.section_title('Problema C: El PDF no se genera o no se abre')
     pdf.chapter_body(
         "- Causa: Un antivirus bloquea el acceso a la carpeta temporal o no tiene un lector de PDF instalado.\n"
         "- Solución: Verifique que puede abrir otros archivos PDF en su computadora."
@@ -333,47 +466,25 @@ def generate_manual():
         "El sistema está protegido por 'transacciones' para evitar pérdida total, pero siempre verifique el último "
         "comprobante emitido tras un reinicio forzado."
     )
+    pdf.chapter_body(
+        "Si aparece una falla no documentada o un comportamiento inesperado, comuníquese de inmediato con soporte para "
+        "recibir asistencia y resolverlo cuanto antes."
+    )
 
     # --- RESUMEN DE ATAJOS ---
     pdf.ln(10)
-    pdf.chapter_title('Resumen Final de Atajos')
-    pdf.add_shortcut('Enter', 'Acepta el formulario o busca en la tabla.')
+    pdf.chapter_title('16. Resumen Final de Atajos')
+    pdf.add_shortcut('Enter', 'Acepta el formulario o ejecuta la búsqueda.')
     pdf.add_shortcut('Esc', 'Cancela la acción o cierra el modal actual.')
     pdf.add_shortcut('Ctrl + S', 'En algunas pantallas, guarda el borrador.')
     pdf.add_shortcut('Tab / Shift+Tab', 'Navega rápidamente entre campos de texto.')
     pdf.add_shortcut('Alt + [Letra]', 'Navega entre las pestañas del menú lateral.')
+    pdf.add_shortcut('Botón Actualizar', 'Recarga los datos de la tabla o la vista actual.')
 
     pdf.ln(15)
     pdf.set_font('helvetica', 'I', 10)
     pdf.set_text_color(100, 116, 139)
-    pdf.multi_cell(0, 10, 'Este manual es una herramienta dinámica. Si detecta un error no documentado, reporte al equipo técnico para su inclusión.', align='C')
-
-    # --- APENDICE TECNICO ---
-    pdf.add_page()
-    pdf.chapter_title('8. Apéndice técnico')
-    pdf.chapter_body(
-        "Este apéndice incluye la documentación técnica actual del proyecto. "
-        "Si se actualizan los documentos en /docs, vuelva a generar el PDF para reflejar los cambios."
-    )
-
-    appendix_docs = [
-        Path("docs/REQUISITOS_INSTALACION.md"),
-        Path("docs/GUIA_EMPAQUETADO.md"),
-        Path("docs/GUIA_RED_LOCAL.md"),
-        Path("docs/AFIP_ARCA.md"),
-        Path("docs/GUIA_AFIP_PORTAL.md"),
-        Path("docs/BACKUP_SYSTEM.md"),
-        Path("docs/DATABASE.md"),
-    ]
-
-    for doc_path in appendix_docs:
-        pdf.add_page()
-        if not doc_path.exists():
-            pdf.section_title(f"Documento no encontrado: {doc_path}")
-            pdf.chapter_body("No se pudo cargar este documento en el apéndice.")
-            continue
-        content = doc_path.read_text(encoding="utf-8")
-        render_markdown(pdf, content)
+    pdf.multi_cell(0, 10, 'Este manual es una herramienta dinámica. Si detecta un error no documentado, comuníquese con soporte para su inclusión.', align='C')
 
     output_path = "MANUAL_MAESTRO_NEXORYN_TECH.pdf"
     pdf.output(output_path)
