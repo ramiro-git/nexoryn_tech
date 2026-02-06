@@ -1583,8 +1583,8 @@ class Database:
 
         if search:
             pattern = f"%{search.strip()}%"
-            filters.append("nombre ILIKE %s")
-            params.append(pattern)
+            filters.append("(nombre ILIKE %s OR id::text ILIKE %s)")
+            params.extend([pattern, pattern])
 
         def add_like(field: str, value: Any) -> None:
             if isinstance(value, str) and value.strip():

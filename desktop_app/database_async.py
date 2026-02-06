@@ -265,18 +265,29 @@ class AsyncDatabase:
         """
         pool = await self._get_pool()
         
-        where_clause, params = self.db._build_catalog_filters(search, "articulo", None)
+        # Use sync logic to build robust filters
+        where_clause, params = self.db._build_article_filters(search, None, advanced)
         
         sort_columns = {
-            "id": "a.id",
-            "codigo": "a.codigo",
-            "descripcion": "a.descripcion",
-            "stock": "asr.stock_total",
-            "precio": "a.precio_costo",
+            "id": "id",
+            "codigo": "id::text",
+            "descripcion": "nombre",
+            "stock": "stock_actual",
+            "precio": "costo",
         }
         order_by = self.db._build_order_by(
-            sorts, sort_columns, default="a.descripcion ASC", tiebreaker="a.id ASC"
+            sorts, sort_columns, default="nombre ASC", tiebreaker="id ASC"
         )
+        
+        query = f"""
+            SELECT *
+            FROM app.v_articulo_detallado
+            WHERE {where_clause}
+            ORDER BY {order_by}
+            LIMIT %s
+            OFFSET %s
+        """
+        params.extend([limit, offset])
         
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
@@ -295,22 +306,30 @@ class AsyncDatabase:
         """
         pool = await self._get_pool()
         
-        where_clause, params = self.db._build_catalog_filters(search, table_view, None)
-        
-        # Apply advanced filters
-        filters = [where_clause] if where_clause else []
-        if advanced and table_view == "documentos":
-            f_desde = advanced.get("f_desde")
-            if f_desde:
-                filters.append("fecha >= %s")
-                params.append(f_desde)
+        if table_view == "articulo":
+            where_clause, params = self.db._build_article_filters(search, None, advanced)
+            query = f"SELECT COUNT(*) AS total FROM app.v_articulo_detallado WHERE {where_clause}"
+        else:
+            where_clause, params = self.db._build_catalog_filters(search, table_view, None)
             
-            f_hasta = advanced.get("f_hasta")
-            if f_hasta:
-                filters.append("fecha <= %s")
-                params.append(f_hasta)
-        
-        where_clause = " AND ".join(filters) if filters else "TRUE"
+            # Apply advanced filters
+            filters = [where_clause] if where_clause else []
+            if advanced and table_view == "documentos":
+                f_desde = advanced.get("f_desde")
+                if f_desde:
+                    filters.append("fecha >= %s")
+                    params.append(f_desde)
+                
+                f_hasta = advanced.get("f_hasta")
+                if f_hasta:
+                    filters.append("fecha <= %s")
+                    params.append(f_hasta)
+            
+            where_clause = " AND ".join(filters) if filters else "TRUE"
+            
+            # Assuming table_view matches table name for count if generic
+            # Note: Explicit query definition was missing in original code
+            query = f"SELECT COUNT(*) AS total FROM {table_view} WHERE {where_clause}"
         
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
