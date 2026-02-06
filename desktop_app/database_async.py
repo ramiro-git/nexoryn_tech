@@ -97,8 +97,8 @@ class AsyncDatabase:
         pool = await self._get_pool()
         
         # Build filters (using sync database's logic)
-        where_clause, params = self.db._build_catalog_filters(
-            search, "entidad", tipo
+        where_clause, params = self.db._build_entity_filters(
+            search=search, tipo=tipo, advanced=advanced
         )
         
         # Build sorting

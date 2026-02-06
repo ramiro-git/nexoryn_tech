@@ -1361,9 +1361,9 @@ class Database:
         if search:
             search_pattern = f"%{search.strip()}%"
             filters.append(
-                "(nombre_completo ILIKE %s OR razon_social ILIKE %s OR cuit ILIKE %s)"
+                "(nombre_completo ILIKE %s OR razon_social ILIKE %s OR cuit ILIKE %s OR apellido ILIKE %s OR nombre ILIKE %s OR domicilio ILIKE %s)"
             )
-            params.extend([search_pattern] * 3)
+            params.extend([search_pattern] * 6)
 
         cuit = advanced.get("cuit")
         if isinstance(cuit, str) and cuit.strip():
