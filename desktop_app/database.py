@@ -5665,13 +5665,18 @@ class Database:
 
     def anular_documento(self, doc_id: int) -> bool:
         """
-        Anula un comprobante y revierte movimientos de stock si corresponde.
+        Anula un comprobante, revierte movimientos de stock y cuenta corriente.
         """
         with self._transaction() as cur:
-             cur.execute("SELECT estado, id_tipo_documento FROM app.documento WHERE id = %s FOR UPDATE", (doc_id,))
+             cur.execute("SELECT estado, id_tipo_documento, numero_serie FROM app.documento WHERE id = %s FOR UPDATE", (doc_id,))
              res = cur.fetchone()
              if not res: raise ValueError("Documento no encontrado")
-             estado, id_tipo_doc = res
+             if isinstance(res, dict):
+                 estado = res["estado"]
+                 id_tipo_doc = res["id_tipo_documento"]
+                 numero_serie = res.get("numero_serie")
+             else:
+                 estado, id_tipo_doc, numero_serie = res
              
              if estado == 'ANULADO': return True
 
@@ -5705,13 +5710,69 @@ class Database:
                         INSERT INTO app.movimiento_articulo (id_articulo, id_tipo_movimiento, cantidad, id_deposito, id_documento, observacion, id_usuario)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                      """, (art_id, new_tipo_id, cant, dep_id, doc_id, "Anulación de Comprobante", self.current_user_id))
+             
+             # Revert current account movements (cuenta corriente)
+             cur.execute("""
+                SELECT id, id_entidad_comercial, tipo_movimiento, monto, concepto
+                FROM app.movimiento_cuenta_corriente
+                WHERE id_documento = %s AND anulado = FALSE
+             """, (doc_id,))
+             cc_movs = cur.fetchall()
+             
+             for cc_mov in cc_movs:
+                 if isinstance(cc_mov, dict):
+                     mov_id = cc_mov["id"]
+                     entidad_id = cc_mov["id_entidad_comercial"]
+                     tipo_mov = cc_mov["tipo_movimiento"]
+                     monto = cc_mov["monto"]
+                     concepto_orig = cc_mov.get("concepto", "")
+                 else:
+                     mov_id, entidad_id, tipo_mov, monto, concepto_orig = cc_mov
+                 
+                 # Determine reverse type: DEBITO -> CREDITO, CREDITO -> DEBITO
+                 # Use ANULACION type which behaves like CREDITO (subtracts from balance)
+                 if tipo_mov in ("DEBITO", "AJUSTE_DEBITO"):
+                     # Original was a debit (increased debt), so we need to reverse it (decrease debt)
+                     reverse_type = "ANULACION"
+                 elif tipo_mov in ("CREDITO", "AJUSTE_CREDITO"):
+                     # Original was a credit (decreased debt), so we need to reverse it (increase debt)
+                     reverse_type = "AJUSTE_DEBITO"
+                 else:
+                     continue  # Skip already reversed movements
+                 
+                 concepto_anulacion = f"Anulación: {concepto_orig[:120]}" if concepto_orig else f"Anulación doc {numero_serie or doc_id}"
+                 observacion_anulacion = f"Reversión automática por anulación de documento {numero_serie or doc_id}"
+                 
+                 # Register reverse movement
+                 cur.execute(
+                     "SELECT app.registrar_movimiento_cc(%s::bigint, %s::varchar(20), %s::varchar(150), %s::numeric, %s::bigint, %s::bigint, %s::text, %s::bigint)",
+                     (
+                         int(entidad_id),
+                         reverse_type,
+                         concepto_anulacion[:150],
+                         Decimal(str(monto)),
+                         int(doc_id),
+                         None,
+                         observacion_anulacion,
+                         int(self.current_user_id) if self.current_user_id is not None else None
+                     )
+                 )
+                 new_mov_res = cur.fetchone()
+                 new_mov_id = new_mov_res[0] if new_mov_res else None
+                 
+                 # Mark original movement as annulled and link to the new one
+                 cur.execute("""
+                    UPDATE app.movimiento_cuenta_corriente 
+                    SET anulado = TRUE, id_movimiento_anula = %s 
+                    WHERE id = %s
+                 """, (new_mov_id, mov_id))
         
         # Log audit activity
         self.log_activity(
             entidad="app.documento",
             accion="ANULACION",
             id_entidad=doc_id,
-            detalle={"estado_previo": estado}
+            detalle={"estado_previo": estado, "cc_movimientos_revertidos": len(cc_movs) if cc_movs else 0}
         )
         
         return True
@@ -6043,7 +6104,7 @@ class Database:
         offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Lista movimientos de cuenta corriente."""
-        filters = ["anulado = FALSE"]
+        filters = ["1=1"]  # Show all movements including annulled ones for full history
         params = []
         advanced = advanced or {}
 
@@ -6107,7 +6168,7 @@ class Database:
         advanced: Optional[Dict[str, Any]] = None
     ) -> int:
         """Cuenta movimientos de cuenta corriente."""
-        filters = ["anulado = FALSE"]
+        filters = ["1=1"]  # Show all movements including annulled ones for full history
         params = []
         advanced = advanced or {}
 

@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NEXORYN TECH - Database Schema (PostgreSQL)
--- Version: 2.3 - Optimized with Smart Sync Version Stamp
+-- Version: 2.4 - Optimized with Smart Sync Version Stamp
 -- ============================================================================
 
 -- Acquire advisory lock to prevent concurrent schema updates from multiple instances
@@ -1554,7 +1554,7 @@ SELECT
         ELSE 'AL_DIA'
     END AS estado_cuenta,
     s.ultimo_movimiento,
-    (SELECT COUNT(*) FROM app.movimiento_cuenta_corriente m WHERE m.id_entidad_comercial = s.id_entidad_comercial AND m.anulado = FALSE) AS total_movimientos,
+    (SELECT COUNT(*) FROM app.movimiento_cuenta_corriente m WHERE m.id_entidad_comercial = s.id_entidad_comercial) AS total_movimientos,
     e.activo
 FROM app.saldo_cuenta_corriente s
 JOIN app.entidad_comercial e ON e.id = s.id_entidad_comercial;
@@ -1595,7 +1595,7 @@ SELECT
     (SELECT COUNT(*) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'CLIENTE') AS clientes_deudores,
     (SELECT COALESCE(SUM(saldo_actual), 0) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'PROVEEDOR') AS deuda_proveedores,
     (SELECT COUNT(*) FROM app.saldo_cuenta_corriente WHERE saldo_actual > 0 AND tipo_entidad = 'PROVEEDOR') AS proveedores_acreedores,
-    (SELECT COUNT(*) FROM app.movimiento_cuenta_corriente WHERE fecha >= CURRENT_DATE AND anulado = FALSE) AS movimientos_hoy,
+    (SELECT COUNT(*) FROM app.movimiento_cuenta_corriente WHERE fecha >= CURRENT_DATE) AS movimientos_hoy,
     (SELECT COALESCE(SUM(CASE WHEN tipo_movimiento IN ('CREDITO', 'AJUSTE_CREDITO') THEN monto ELSE 0 END), 0) 
      FROM app.movimiento_cuenta_corriente WHERE fecha >= CURRENT_DATE AND anulado = FALSE) AS cobros_hoy,
     (SELECT COALESCE(SUM(CASE WHEN tipo_movimiento IN ('DEBITO', 'AJUSTE_DEBITO') THEN monto ELSE 0 END), 0) 
@@ -1637,9 +1637,9 @@ ON CONFLICT (clave) DO NOTHING;
 -- VERSION STAMP
 -- ============================================================================
 INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
-VALUES ('db_version', '2.3', 'TEXT', 'Versión actual de la base de datos')
+VALUES ('db_version', '2.4', 'TEXT', 'Versión actual de la base de datos')
 ON CONFLICT (clave) DO UPDATE 
-SET valor = '2.3';
+SET valor = '2.4';
 
 -- Release advisory lock
 SELECT pg_advisory_unlock(543210);
