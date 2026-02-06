@@ -66,6 +66,13 @@ try:
     from desktop_app.components.toast import ToastManager
     from desktop_app.components.mass_update_view import MassUpdateView
     from desktop_app.services.print_service import generate_pdf_and_open
+    from desktop_app.services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal
+    from desktop_app.services.number_locale import (
+        format_currency,
+        format_percent,
+        normalize_input_value,
+        parse_locale_number,
+    )
     from desktop_app.components.async_select import AsyncSelect
     from desktop_app.components.button_styles import cancel_button
     from desktop_app.enums import (
@@ -88,17 +95,14 @@ except ImportError:
     )
     from components.mass_update_view import MassUpdateView # type: ignore
     from services.print_service import generate_pdf_and_open # type: ignore
+    from services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal  # type: ignore
+    from services.number_locale import format_currency, format_percent, normalize_input_value, parse_locale_number  # type: ignore
+    from components.async_select import AsyncSelect  # type: ignore
     from components.button_styles import cancel_button # type: ignore
     from enums import (  # type: ignore
         DocumentoEstado, RemotoEstado, BackupEstado, ClaseDocumento,
         DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES
     )
-    from services.afip_service import AfipService # type: ignore
-    from services.backup_service import BackupService # type: ignore
-    from services.print_service import generate_pdf_and_open # type: ignore
-    from components.backup_professional_view import BackupProfessionalView # type: ignore
-    from components.dashboard_view import DashboardView # type: ignore
-    from components.button_styles import cancel_button # type: ignore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -152,25 +156,33 @@ class SafeDataTable(ft.DataTable):
 def _parse_float(value: Any, label: str = "valor") -> float:
     if value is None or (isinstance(value, str) and not value.strip()):
         return 0.0
-    try:
-        # Soporte para coma como separador decimal
-        clean_value = str(value).replace(",", ".")
-        return float(clean_value)
-    except ValueError:
+    parsed = parse_locale_number(value)
+    if parsed is None:
         raise ValueError(f"El campo '{label}' debe ser un número válido. Recibido: '{value}'")
+    return float(parsed)
+
+
+def _parse_int_quantity(value: Any, label: str = "Cantidad") -> int:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0
+    parsed = parse_locale_number(value)
+    if parsed is None:
+        raise ValueError(f"El campo '{label}' debe ser un número entero. Recibido: '{value}'")
+    if parsed != parsed.to_integral_value():
+        raise ValueError(f"El campo '{label}' debe ser un número entero (sin decimales).")
+    return int(parsed)
 
 
 def _parse_positive_float_optional(value: Any, label: str = "valor") -> float:
     if value is None or (isinstance(value, str) and not value.strip()):
         return 0.0
-    try:
-        clean_value = str(value).replace(",", ".")
-        parsed = float(clean_value)
-    except ValueError:
+    parsed = parse_locale_number(value)
+    if parsed is None:
         raise ValueError(f"El campo '{label}' debe ser un número válido. Recibido: '{value}'")
-    if parsed <= 0:
+    numeric = float(parsed)
+    if numeric <= 0:
         raise ValueError(f"El campo '{label}' debe ser mayor a 0 o dejarse vacío.")
-    return parsed
+    return numeric
 
 
 def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
@@ -178,12 +190,9 @@ def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
         return "—"
     try:
         val = float(value)
-        # Fix for "-0,00": if absolute value is extremely small, treat as zero
         if abs(val) < 0.001:
             val = 0.0
-            
-        formatted = f"{val:,.2f}"
-        return f"${formatted.replace(',', 'X').replace('.', ',').replace('X', '.')}"
+        return format_currency(val)
     except Exception:
         return str(value)
 
@@ -818,6 +827,19 @@ def main(page: ft.Page) -> None:
             
             # Get client name
             ent = db.get_entity_detail(doc.get("id_entidad_comercial")) if db else None
+
+            # Recalcular desglose fiscal para impresión.
+            # Esto evita que PDFs de documentos con IVA histórico en 0 (por detalle legado)
+            # muestren un IVA incorrecto cuando el artículo sí tiene alícuota fiscal.
+            try:
+                fiscal_pricing = _build_doc_fiscal_pricing_for_afip(db, doc)
+                doc["neto"] = float(quantize_2(to_decimal(fiscal_pricing.get("neto"), to_decimal("0"))))
+                doc["iva_total"] = float(quantize_2(to_decimal(fiscal_pricing.get("iva_total"), to_decimal("0"))))
+                doc["total"] = float(quantize_2(to_decimal(fiscal_pricing.get("total"), to_decimal("0"))))
+                doc["iva_breakdown"] = fiscal_pricing.get("iva_breakdown") or []
+            except Exception as exc:
+                logger.warning(f"No se pudo recalcular desglose fiscal para impresión: {exc}")
+                doc["iva_breakdown"] = doc.get("iva_breakdown") or []
             
             # Build Items Data
             items_data = []
@@ -3204,7 +3226,7 @@ def main(page: ft.Page) -> None:
                 price_rows.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(p['lista_nombre'], weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(_format_money(p['precio']))),
-                    ft.DataCell(ft.Text(f"{float(p['porcentaje']):.2f}% ({p['tipo_porcentaje']})")),
+                    ft.DataCell(ft.Text(f"{format_percent(p['porcentaje'], decimals=2)} ({p['tipo_porcentaje']})")),
                     ft.DataCell(ft.Text(p['fecha_actualizacion'].strftime("%d/%m/%Y %H:%M") if p['fecha_actualizacion'] else "—", size=11)),
                 ]))
 
@@ -3256,7 +3278,13 @@ def main(page: ft.Page) -> None:
                                         info_row("Marca", art.get('marca'), ft.icons.LABEL_ROUNDED),
                                         info_row("Rubro", art.get('rubro'), ft.icons.CATEGORY_ROUNDED),
                                         info_row("Proveedor", art.get('proveedor'), ft.icons.BUSINESS_ROUNDED),
-                                        info_row("PGan 2", f"{float(art.get('porcentaje_ganancia_2', 0)):.2f}%" if art.get('porcentaje_ganancia_2') is not None else "—", ft.icons.PERCENT_ROUNDED),
+                                        info_row(
+                                            "PGan 2",
+                                            format_percent(art.get("porcentaje_ganancia_2", 0), decimals=2)
+                                            if art.get("porcentaje_ganancia_2") is not None
+                                            else "—",
+                                            ft.icons.PERCENT_ROUNDED,
+                                        ),
                                         info_row("Notas", art.get('observacion'), ft.icons.NOTE_ROUNDED),
                                     ], expand=True),
                                     ft.Column([
@@ -4365,6 +4393,113 @@ def main(page: ft.Page) -> None:
         estado = str(doc_row.get("estado") or "").upper()
         return estado in (DocumentoEstado.CONFIRMADO.value, DocumentoEstado.PAGADO.value) and doc_row.get("codigo_afip") and not doc_row.get("cae")
 
+    def _build_doc_fiscal_pricing_for_afip(db_local: Database, doc_full: Dict[str, Any]) -> Dict[str, Any]:
+        items_src = doc_full.get("items") or []
+        if not items_src:
+            raise ValueError("El comprobante no tiene líneas para autorizar en AFIP.")
+
+        article_iva_cache: Dict[int, Any] = {}
+        calc_items: List[Dict[str, Any]] = []
+        for item in items_src:
+            fiscal_iva = max(to_decimal("0"), to_decimal(item.get("porcentaje_iva"), to_decimal("0")))
+            art_id = item.get("id_articulo")
+            try:
+                art_id_int = int(art_id) if art_id is not None else None
+            except Exception:
+                art_id_int = None
+            if fiscal_iva <= to_decimal("0") and art_id_int is not None:
+                if art_id_int not in article_iva_cache:
+                    art = db_local.get_article_simple(art_id_int)
+                    article_iva_cache[art_id_int] = max(
+                        to_decimal("0"),
+                        to_decimal((art or {}).get("porcentaje_iva"), to_decimal("0")),
+                    )
+                fiscal_iva = article_iva_cache.get(art_id_int, to_decimal("0"))
+
+            desc_pct = float(item.get("descuento_porcentaje") or 0)
+            desc_imp = float(item.get("descuento_importe") or 0)
+            discount_mode = "amount" if desc_imp > 0 and desc_pct <= 0 else "percentage"
+            calc_items.append(
+                {
+                    "id_articulo": art_id_int,
+                    "cantidad": float(item.get("cantidad") or 0),
+                    "precio_unitario": float(item.get("precio_unitario") or 0),
+                    "porcentaje_iva": 0.0,  # IVA visible del modo "incluido"
+                    "porcentaje_iva_fiscal": float(fiscal_iva),
+                    "descuento_porcentaje": desc_pct,
+                    "descuento_importe": desc_imp,
+                    "descuento_mode": discount_mode,
+                }
+            )
+
+        global_desc_pct = float(doc_full.get("descuento_porcentaje") or 0)
+        global_desc_imp = float(doc_full.get("descuento_importe") or 0)
+        global_discount_mode = "amount" if global_desc_imp > 0 and global_desc_pct <= 0 else "percentage"
+        return calculate_document_totals(
+            items=calc_items,
+            descuento_global_porcentaje=global_desc_pct,
+            descuento_global_importe=global_desc_imp,
+            descuento_global_mode=global_discount_mode,
+            sena=float(doc_full.get("sena") or 0),
+            pricing_mode="tax_included",
+        )
+
+    def _build_afip_iva_payload(
+        db_local: Database,
+        iva_breakdown: List[Dict[str, Any]],
+        imp_neto: Any,
+        imp_iva: Any,
+    ) -> List[Dict[str, Any]]:
+        tipos_iva = db_local.fetch_tipos_iva(limit=250)
+        tasa_to_codigo: Dict[str, int] = {}
+        for tipo in tipos_iva:
+            try:
+                codigo_afip = int(tipo.get("codigo"))
+            except Exception:
+                continue
+            if codigo_afip <= 0:
+                continue
+            tasa_key = str(quantize_2(to_decimal(tipo.get("porcentaje"), to_decimal("0"))))
+            tasa_to_codigo[tasa_key] = codigo_afip
+
+        payload: List[Dict[str, Any]] = []
+        for row in iva_breakdown or []:
+            tasa = quantize_2(to_decimal(row.get("porcentaje_iva"), to_decimal("0")))
+            if tasa <= to_decimal("0"):
+                continue
+            codigo = tasa_to_codigo.get(str(tasa))
+            if codigo is None:
+                tasa_text = normalize_input_value(tasa, decimals=2, use_grouping=False) or "0,00"
+                raise ValueError(f"No se encontró código AFIP para la alícuota IVA {tasa_text}%.")
+
+            base_imp = quantize_2(to_decimal(row.get("base_imponible"), to_decimal("0")))
+            importe = quantize_2(to_decimal(row.get("importe"), to_decimal("0")))
+            if base_imp == to_decimal("0") and importe == to_decimal("0"):
+                continue
+            payload.append(
+                {
+                    "Id": codigo,
+                    "BaseImp": float(base_imp),
+                    "Importe": float(importe),
+                }
+            )
+
+        imp_neto_dec = quantize_2(to_decimal(imp_neto))
+        imp_iva_dec = quantize_2(to_decimal(imp_iva))
+        if imp_iva_dec > to_decimal("0") and not payload:
+            raise ValueError("No se pudo armar el desglose de IVA para AFIP.")
+
+        if payload:
+            sum_base = quantize_2(sum((to_decimal(p["BaseImp"]) for p in payload), to_decimal("0")))
+            sum_iva = quantize_2(sum((to_decimal(p["Importe"]) for p in payload), to_decimal("0")))
+            diff_base = quantize_2(imp_neto_dec - sum_base)
+            diff_iva = quantize_2(imp_iva_dec - sum_iva)
+            if diff_base != to_decimal("0") or diff_iva != to_decimal("0"):
+                payload[-1]["BaseImp"] = float(quantize_2(to_decimal(payload[-1]["BaseImp"]) + diff_base))
+                payload[-1]["Importe"] = float(quantize_2(to_decimal(payload[-1]["Importe"]) + diff_iva))
+
+        return payload
+
     def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
         if not _can_authorize_afip(doc_row):
             show_toast("El comprobante no está listo para autorizar.", kind="error")
@@ -4384,17 +4519,25 @@ def main(page: ft.Page) -> None:
             last = afip.get_last_voucher_number(punto_venta, codigo_afip)
             next_num = last + 1
 
+            doc_full = db_local.get_document_full(doc_id)
+            if not doc_full:
+                show_toast("No se pudo cargar el comprobante completo para AFIP.", kind="error")
+                return
+            pricing = _build_doc_fiscal_pricing_for_afip(db_local, doc_full)
+            total = float(quantize_2(to_decimal(pricing.get("total"), to_decimal("0"))))
+            neto = float(quantize_2(to_decimal(pricing.get("neto"), to_decimal("0"))))
+            iva_total = float(quantize_2(to_decimal(pricing.get("iva_total"), to_decimal("0"))))
+            iva_payload = _build_afip_iva_payload(
+                db_local,
+                pricing.get("iva_breakdown") or [],
+                pricing.get("neto"),
+                pricing.get("iva_total"),
+            )
+
             entity = None
-            ent_id = doc_row.get("id_entidad")
+            ent_id = doc_row.get("id_entidad") or doc_full.get("id_entidad_comercial")
             if ent_id:
                 entity = db_local.fetch_entity_by_id(int(ent_id))
-
-            total = float(doc_row.get("total", 0) or 0)
-            neto = float(doc_row.get("neto", 0) or 0)
-            iva_total = float(doc_row.get("iva_total", 0) or 0)
-            if total and (neto <= 0 or iva_total < 0):
-                neto = total / 1.21
-                iva_total = total - neto
 
             letra = str(doc_row.get("letra") or "").strip().upper()
             es_letra_a = letra == "A" or codigo_afip in (1, 2, 3)
@@ -4441,14 +4584,9 @@ def main(page: ft.Page) -> None:
                 "ImpTrib": 0,
                 "MonId": "PES",
                 "MonCotiz": 1,
-                "Iva": [
-                    {
-                        "Id": 5,
-                        "BaseImp": neto,
-                        "Importe": iva_total,
-                    }
-                ],
             }
+            if iva_payload:
+                invoice_data["Iva"] = iva_payload
             if condicion_id is not None:
                 invoice_data["CondicionIVAReceptorId"] = condicion_id
 
@@ -4460,7 +4598,7 @@ def main(page: ft.Page) -> None:
                 try:
                     if not cae:
                         raise ValueError("CAE ausente para generar QR.")
-                    fecha_doc = str(doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
+                    fecha_doc = str(doc_full.get("fecha") or doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
                     qr_payload = {
                         "ver": 1,
                         "fecha": fecha_doc,
@@ -4468,7 +4606,7 @@ def main(page: ft.Page) -> None:
                         "ptoVta": int(punto_venta),
                         "tipoCmp": int(codigo_afip),
                         "nroCmp": int(next_num),
-                        "importe": round(total, 2),
+                        "importe": float(quantize_2(to_decimal(total))),
                         "moneda": "PES",
                         "ctz": 1,
                         "tipoDocRec": int(doc_tipo),
@@ -4503,6 +4641,8 @@ def main(page: ft.Page) -> None:
                 show_toast(f"Error AFIP: {res.get('error')}", kind="error")
         except Exception as e:
             show_toast(f"Error: {e}", kind="error")
+
+    _authorize_afip_doc_core = _authorize_afip_doc
 
     def _confirm_afip_authorization(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
         ask_confirm(
@@ -4572,143 +4712,7 @@ def main(page: ft.Page) -> None:
         return estado in (DocumentoEstado.CONFIRMADO.value, DocumentoEstado.PAGADO.value) and doc_row.get("codigo_afip") and not doc_row.get("cae")
 
     def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
-        if not _can_authorize_afip(doc_row):
-            show_toast("El comprobante no está listo para autorizar.", kind="error")
-            return
-        if not afip:
-            show_toast("Servicio AFIP no configurado. Verifique CUIT y certificados en .env", kind="error")
-            return
-        db_local = get_db_or_toast()
-        if not db_local:
-            return
-
-        try:
-            show_toast("Solicitando CAE...", kind="info")
-            doc_id = int(doc_row["id"])
-            codigo_afip = int(doc_row.get("codigo_afip"))
-            punto_venta = int(getattr(config, "afip_punto_venta", 1) or 1)
-            last = afip.get_last_voucher_number(punto_venta, codigo_afip)
-            next_num = last + 1
-
-            entity = None
-            ent_id = doc_row.get("id_entidad")
-            if ent_id:
-                entity = db_local.fetch_entity_by_id(int(ent_id))
-
-            total = float(doc_row.get("total", 0) or 0)
-            neto = float(doc_row.get("neto", 0) or 0)
-            iva_total = float(doc_row.get("iva_total", 0) or 0)
-            if total and (neto <= 0 or iva_total < 0):
-                neto = total / 1.21
-                iva_total = total - neto
-
-            letra = str(doc_row.get("letra") or "").strip().upper()
-            es_letra_a = letra == "A" or codigo_afip in (1, 2, 3)
-            cuit_raw = (doc_row.get("cuit_receptor") or (entity or {}).get("cuit") or "").strip()
-            digits = "".join(ch for ch in cuit_raw if ch.isdigit())
-            doc_tipo = 99
-            doc_nro = 0
-            if digits:
-                if len(digits) == 11:
-                    doc_tipo = 80
-                    doc_nro = int(digits)
-                elif len(digits) <= 8:
-                    doc_tipo = 96
-                    doc_nro = int(digits)
-                else:
-                    show_toast("CUIT/DNI del receptor inválido.", kind="error")
-                    return
-
-            if es_letra_a and doc_tipo != 80:
-                show_toast("Para comprobantes letra A se requiere CUIT válido del receptor.", kind="error")
-                return
-
-            condicion_nombre = (entity or {}).get("condicion_iva")
-            condicion_id = afip.get_condicion_iva_receptor_id(condicion_nombre) if condicion_nombre else None
-            if es_letra_a and not condicion_id:
-                show_toast("Falta la condición IVA del receptor (requerida para letra A).", kind="error")
-                return
-
-            invoice_data = {
-                "CantReg": 1,
-                "PtoVta": punto_venta,
-                "CbteTipo": codigo_afip,
-                "Concepto": 1,
-                "DocTipo": doc_tipo,
-                "DocNro": doc_nro,
-                "CbteDesde": next_num,
-                "CbteHasta": next_num,
-                "CbteFch": datetime.now().strftime("%Y%m%d"),
-                "ImpTotal": total,
-                "ImpTotConc": 0,
-                "ImpNeto": neto,
-                "ImpOpEx": 0,
-                "ImpIVA": iva_total,
-                "ImpTrib": 0,
-                "MonId": "PES",
-                "MonCotiz": 1,
-                "Iva": [
-                    {
-                        "Id": 5,
-                        "BaseImp": neto,
-                        "Importe": iva_total,
-                    }
-                ],
-            }
-            if condicion_id is not None:
-                invoice_data["CondicionIVAReceptorId"] = condicion_id
-
-            res = afip.authorize_invoice(invoice_data)
-            if res.get("success"):
-                cuit_emisor = "".join(ch for ch in str(getattr(afip, "cuit", "") or config.afip_cuit or "").strip() if ch.isdigit())
-                cae = res.get("CAE") or res.get("cae")
-                qr_data = None
-                try:
-                    if not cae:
-                        raise ValueError("CAE ausente para generar QR.")
-                    fecha_doc = str(doc_row.get("fecha") or datetime.now().strftime("%Y-%m-%d"))[:10]
-                    qr_payload = {
-                        "ver": 1,
-                        "fecha": fecha_doc,
-                        "cuit": int(cuit_emisor) if cuit_emisor else 0,
-                        "ptoVta": int(punto_venta),
-                        "tipoCmp": int(codigo_afip),
-                        "nroCmp": int(next_num),
-                        "importe": round(total, 2),
-                        "moneda": "PES",
-                        "ctz": 1,
-                        "tipoDocRec": int(doc_tipo),
-                        "nroDocRec": int(doc_nro),
-                        "tipoCodAut": "E",
-                        "codAut": cae,
-                    }
-                    qr_json = json.dumps(qr_payload, separators=(",", ":"), ensure_ascii=False)
-                    qr_base64 = base64.b64encode(qr_json.encode("utf-8")).decode("ascii")
-                    qr_param = quote(qr_base64, safe="")
-                    qr_data = f"https://www.afip.gob.ar/fe/qr/?p={qr_param}"
-                except Exception:
-                    qr_data = None
-                    show_toast("No se pudo generar el QR fiscal del comprobante.", kind="warning")
-
-                db_local.update_document_afip_data(
-                    doc_id,
-                    res["CAE"],
-                    res["CAEFchVto"],
-                    punto_venta,
-                    codigo_afip,
-                    cuit_emisor=cuit_emisor or None,
-                    qr_data=qr_data,
-                )
-                show_toast("Facturado exitosamente", kind="success")
-                if close_after:
-                    close_form()
-                if hasattr(documentos_summary_table, "refresh"):
-                    documentos_summary_table.refresh()
-                refresh_all_stats()
-            else:
-                show_toast(f"Error AFIP: {res.get('error')}", kind="error")
-        except Exception as e:
-            show_toast(f"Error: {e}", kind="error")
+        _authorize_afip_doc_core(doc_row, close_after=close_after)
 
     def _confirm_afip_authorization(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
         ask_confirm(
@@ -4753,15 +4757,20 @@ def main(page: ft.Page) -> None:
             details = db.fetch_documento_detalle(doc_id)
             # Improved content with more details
             total_doc = float(doc_row.get("total", 0))
+            line_discount_total = sum(float(d.get("descuento_importe", 0) or 0) for d in details)
+            global_discount_total = float(doc_row.get("descuento_importe", 0) or 0)
+            global_discount_pct = float(doc_row.get("descuento_porcentaje", 0) or 0)
             
             col_widths = {
                 "articulo": 300,
                 "lista": 120,
                 "cant": 70,
                 "unitario": 120,
+                "desc_pct": 90,
+                "desc_imp": 120,
                 "total": 130,
             }
-            table_min_width = sum(col_widths.values()) + 180
+            table_min_width = sum(col_widths.values()) + 220
 
             body = ft.Column([
                     ft.Container(
@@ -4819,6 +4828,8 @@ def main(page: ft.Page) -> None:
                                         ft.DataColumn(ft.Text("Lista", size=12, weight=ft.FontWeight.BOLD)),
                                         ft.DataColumn(ft.Text("Cant.", size=12, weight=ft.FontWeight.BOLD), numeric=True),
                                         ft.DataColumn(ft.Text("Unitario", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                        ft.DataColumn(ft.Text("Desc. %", size=12, weight=ft.FontWeight.BOLD), numeric=True),
+                                        ft.DataColumn(ft.Text("Desc. $", size=12, weight=ft.FontWeight.BOLD), numeric=True),
                                         ft.DataColumn(ft.Text("Total", size=12, weight=ft.FontWeight.BOLD), numeric=True),
                                     ],
                                     rows=[
@@ -4851,6 +4862,19 @@ def main(page: ft.Page) -> None:
                                                 content=ft.Text(_format_money(d["precio_unitario"]), size=13, text_align=ft.TextAlign.RIGHT),
                                             )),
                                             ft.DataCell(ft.Container(
+                                                width=col_widths["desc_pct"],
+                                                content=ft.Text(
+                                                    format_percent(d.get("descuento_porcentaje", 0) or 0, decimals=2),
+                                                    size=13,
+                                                    text_align=ft.TextAlign.RIGHT,
+                                                    color=COLOR_ERROR,
+                                                ),
+                                            )),
+                                            ft.DataCell(ft.Container(
+                                                width=col_widths["desc_imp"],
+                                                content=ft.Text(_format_money(d.get("descuento_importe", 0)), size=13, text_align=ft.TextAlign.RIGHT, color=COLOR_ERROR),
+                                            )),
+                                            ft.DataCell(ft.Container(
                                                 width=col_widths["total"],
                                                 content=ft.Text(_format_money(d["total_linea"]), size=13, weight=ft.FontWeight.W_500, text_align=ft.TextAlign.RIGHT),
                                             )),
@@ -4877,9 +4901,18 @@ def main(page: ft.Page) -> None:
                                     ft.Text(_format_money(doc_row.get("subtotal", 0)), size=11),
                                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250),
                                 ft.Row([
-                                    ft.Text(f"DESCUENTO ({doc_row.get('descuento_porcentaje', 0)}%):" if float(doc_row.get("descuento_porcentaje", 0)) > 0 else "DESCUENTO:", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
-                                    ft.Text(f"- {_format_money(doc_row.get('descuento_importe') if float(doc_row.get('descuento_importe',0)) > 0 else float(doc_row.get('subtotal', 0)) - float(doc_row.get('neto', 0)))}", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
-                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250) if float(doc_row.get("descuento_porcentaje", 0)) > 0 or float(doc_row.get("descuento_importe", 0)) > 0 else ft.Container(),
+                                    ft.Text("DESCUENTO LÍNEAS:", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"- {_format_money(line_discount_total)}", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250) if line_discount_total > 0 else ft.Container(),
+                                ft.Row([
+                                    ft.Text(
+                                        f"DESCUENTO GLOBAL ({global_discount_pct:.2f}%):" if global_discount_pct > 0 else "DESCUENTO GLOBAL:",
+                                        size=11,
+                                        color=COLOR_ERROR,
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    ft.Text(f"- {_format_money(global_discount_total)}", size=11, color=COLOR_ERROR, weight=ft.FontWeight.BOLD),
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=250) if global_discount_total > 0 else ft.Container(),
                                 ft.Row([
                                     ft.Text("NETO GRAVADO:", size=12, color=COLOR_TEXT_MUTED),
                                     ft.Text(_format_money(doc_row.get("neto", 0)), size=12),
@@ -6135,7 +6168,7 @@ def main(page: ft.Page) -> None:
             width=400,
         )
         
-        pcc_saldo = ft.Text("Saldo: $0.00", size=12, color=COLOR_TEXT_MUTED)
+        pcc_saldo = ft.Text("Saldo: $0,00", size=12, color=COLOR_TEXT_MUTED)
         
         def on_entidad_change(e):
             if pcc_entidad.value:
@@ -6215,7 +6248,7 @@ def main(page: ft.Page) -> None:
             width=400,
         )
         
-        aj_saldo = ft.Text("Saldo actual: $0.00", size=12, color=COLOR_TEXT_MUTED)
+        aj_saldo = ft.Text("Saldo actual: $0,00", size=12, color=COLOR_TEXT_MUTED)
         
         def on_ent_change(e):
             if aj_entidad.value:
@@ -8246,9 +8279,11 @@ def main(page: ft.Page) -> None:
         field_direccion = ft.TextField(label="Dirección de Entrega *", expand=True); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
         _style_input(field_numero)
-        field_descuento = ft.TextField(label="Desc. %", width=100, value="0"); _style_input(field_descuento)
-        field_sena = ft.TextField(label="Seña $", width=120, value="0", on_change=lambda _: _recalc_total()); _style_input(field_sena)
-        field_valor_declarado = ft.TextField(label="Valor Declarado $", width=140, value="0"); _style_input(field_valor_declarado)
+        field_descuento_global_pct = ft.TextField(label="Desc. Global %", width=130, value="0,00"); _style_input(field_descuento_global_pct)
+        field_descuento_global_imp = ft.TextField(label="Desc. Global $", width=130, value="0,00"); _style_input(field_descuento_global_imp)
+        field_sena = ft.TextField(label="Seña $", width=120, value="0,00", on_change=lambda _: _recalc_total()); _style_input(field_sena)
+        field_valor_declarado = ft.TextField(label="Valor Declarado $", width=140, value="0,00"); _style_input(field_valor_declarado)
+        global_discount_mode = {"value": "percentage"}
         
         # Automatic sync for declared value
         auto_valor_sync = ft.Switch(label="Auto", value=False, tooltip="Sincronizar con el Total")
@@ -8324,7 +8359,12 @@ def main(page: ft.Page) -> None:
                 field_numero.value = ""
                 field_fecha.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            field_descuento.value = str(doc_data["descuento_porcentaje"])
+            field_descuento_global_pct.value = normalize_input_value(doc_data.get("descuento_porcentaje", 0), decimals=2, use_grouping=True)
+            field_descuento_global_imp.value = normalize_input_value(doc_data.get("descuento_importe", 0), decimals=2, use_grouping=True)
+            if _parse_float(field_descuento_global_pct.value, "Desc. Global %") > 0:
+                global_discount_mode["value"] = "percentage"
+            elif _parse_float(field_descuento_global_imp.value, "Desc. Global $") > 0:
+                global_discount_mode["value"] = "amount"
             field_vto.value = doc_data["fecha_vencimiento"]
             field_direccion.value = doc_data.get("direccion_entrega", "") or ""
             
@@ -8332,8 +8372,8 @@ def main(page: ft.Page) -> None:
             if doc_data.get("id_lista_precio"):
                 dropdown_lista_global.value = str(doc_data["id_lista_precio"])
             
-            field_sena.value = str(doc_data.get("sena", 0))
-            field_valor_declarado.value = str(doc_data.get("valor_declarado", 0))
+            field_sena.value = normalize_input_value(doc_data.get("sena", 0), decimals=2, use_grouping=True)
+            field_valor_declarado.value = normalize_input_value(doc_data.get("valor_declarado", 0), decimals=2, use_grouping=True)
             
             _update_entidad_info(None)
         else:
@@ -8343,58 +8383,149 @@ def main(page: ft.Page) -> None:
         # Financial Summary
         manual_mode = ft.Switch(label="Manual", value=False)
         
-        sum_subtotal = ft.TextField(value="0.00", width=120, read_only=True, text_align=ft.TextAlign.RIGHT, label="Subtotal")
-        sum_iva = ft.TextField(value="0.00", width=100, read_only=True, text_align=ft.TextAlign.RIGHT, label="IVA")
-        sum_total = ft.TextField(value="0.00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_ACCENT), label="TOTAL")
-        sum_saldo = ft.TextField(value="0.00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_WARNING), label="SALDO")
-        
+        sum_subtotal = ft.TextField(value="0,00", width=120, read_only=True, text_align=ft.TextAlign.RIGHT, label="Subtotal")
+        sum_iva = ft.TextField(value="0,00", width=100, read_only=True, text_align=ft.TextAlign.RIGHT, label="IVA")
+        sum_total = ft.TextField(value="0,00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_ACCENT), label="TOTAL")
+        sum_saldo = ft.TextField(value="0,00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_WARNING), label="SALDO")
+        sum_desc_lineas = ft.TextField(value="0,00", width=130, read_only=True, text_align=ft.TextAlign.RIGHT, label="Desc. Líneas $")
+        sum_desc_global = ft.TextField(value="0,00", width=130, read_only=True, text_align=ft.TextAlign.RIGHT, label="Desc. Global $")
+
         if doc_data:
-            sum_subtotal.value = str(doc_data.get("neto", 0))
-            sum_iva.value = str(doc_data.get("iva_total", 0))
-            sum_total.value = str(doc_data.get("total", 0))
-        
-        def _recalc_total():
-            if manual_mode.value: return # Don't overwrite manual edits
-            
-            sub = 0.0
-            iva_tot = 0.0
-            
+            sum_subtotal.value = normalize_input_value(doc_data.get("total", 0), decimals=2, use_grouping=True)
+            sum_iva.value = normalize_input_value(0, decimals=2, use_grouping=True)
+            sum_total.value = normalize_input_value(doc_data.get("total", 0), decimals=2, use_grouping=True)
+            sum_desc_global.value = normalize_input_value(doc_data.get("descuento_importe", 0), decimals=2, use_grouping=True)
+
+        def _dec_to_input(value: Any, decimals: int = 2, use_grouping: bool = False) -> str:
+            return normalize_input_value(quantize_2(to_decimal(value)), decimals=decimals, use_grouping=use_grouping)
+
+        def _normalize_field_numeric(field: Optional[ft.TextField], decimals: int = 2, use_grouping: bool = True) -> None:
+            if not field:
+                return
+            normalized = normalize_input_value(field.value, decimals=decimals, use_grouping=use_grouping)
+            field.value = normalized if normalized else normalize_input_value("0", decimals=decimals, use_grouping=use_grouping)
+            _safe_update_control(field)
+
+        def _normalize_quantity_field(field: Optional[ft.TextField], *, label: str = "Cantidad") -> int:
+            if not field:
+                raise ValueError(f"El campo '{label}' es obligatorio.")
+            qty_int = _parse_int_quantity(field.value, label)
+            field.value = normalize_input_value(qty_int, decimals=0, use_grouping=False) or "0"
+            _safe_update_control(field)
+            return qty_int
+
+        def _base_neto_lineas() -> Any:
+            subtotal_neto_lineas = to_decimal("0")
             for row in lines_container.controls:
+                row_map = row.data or {}
                 try:
-                    # [Artículo, Lista, Cant, Precio, IVA, Delete]
-                    # Cant is now a Column: controls[2].controls[0] is the TextField
-                    c_cant = _parse_float(row.controls[2].controls[0].value, "Cantidad")
-                    c_price = _parse_float(row.controls[3].value, "Precio")
-                    c_iva = _parse_float(row.controls[4].value, "IVA")
-                    
-                    line_neto = c_cant * c_price
-                    sub += line_neto
-                    iva_tot += line_neto * (c_iva / 100.0)
-                except Exception as e:
-                    # En recalculo automático, si falla un renglón lo salteamos silenciosamente 
-                    # o podríamos mostrar toast, pero recalcula en cada cambio.
-                    # Sin embargo, si el error es explícito de parseo, lo dejamos
-                    # para que el usuario sepa qué pasó si llamó a recalcular.
-                    pass
-            
-            try:
-                desc_pct = float(field_descuento.value or 0)
-            except: desc_pct = 0.0
-            
-            if desc_pct > 0:
-                sub = sub * (1 - desc_pct/100)
-                iva_tot = iva_tot * (1 - desc_pct/100)
+                    cantidad_val = to_decimal(_parse_int_quantity(row_map["cant_field"].value, "Cantidad"))
+                    precio_val = to_decimal(_parse_float(row_map["price_field"].value, "Precio"))
+                    d_pct = row_map.get("desc_pct_field").value
+                    d_imp = row_map.get("desc_imp_field").value
+                    d_mode = (row_map.get("discount_mode_ref") or {}).get("value", "percentage")
+                    base_line = cantidad_val * precio_val
+                    _, line_imp = normalize_discount_pair(
+                        base_amount=base_line,
+                        descuento_porcentaje=d_pct,
+                        descuento_importe=d_imp,
+                        mode=d_mode if d_mode in ("percentage", "amount") else "percentage",
+                    )
+                    line_sign = to_decimal("1") if base_line >= to_decimal("0") else to_decimal("-1")
+                    subtotal_neto_lineas += base_line - (line_sign * line_imp)
+                except Exception:
+                    continue
+            return subtotal_neto_lineas
 
-            total = sub + iva_tot
-            
-            try:
-                sena_val = float(field_sena.value or 0)
-            except: sena_val = 0.0
+        def _sync_global_discount_pair_from_mode(
+            active_field: Optional[ft.TextField] = None,
+            normalize_active: bool = False,
+        ) -> None:
+            base_for_global = _base_neto_lineas()
+            mode = global_discount_mode["value"]
+            pct_norm, imp_norm = normalize_discount_pair(
+                base_amount=base_for_global,
+                descuento_porcentaje=field_descuento_global_pct.value,
+                descuento_importe=field_descuento_global_imp.value,
+                mode="amount" if mode == "amount" else "percentage",
+            )
+            if active_field is not field_descuento_global_pct or normalize_active:
+                field_descuento_global_pct.value = _dec_to_input(pct_norm, use_grouping=True)
+                _safe_update_control(field_descuento_global_pct)
+            if active_field is not field_descuento_global_imp or normalize_active:
+                field_descuento_global_imp.value = _dec_to_input(imp_norm, use_grouping=True)
+                _safe_update_control(field_descuento_global_imp)
+        
+        def _recalc_total(active_field: Optional[ft.TextField] = None):
+            if manual_mode.value: return # Don't overwrite manual edits
 
-            sum_subtotal.value = str(round(sub, 2))
-            sum_iva.value = str(round(iva_tot, 2))
-            sum_total.value = str(round(total, 2))
-            sum_saldo.value = str(round(max(0, total - sena_val), 2))
+            calc_items = []
+            row_refs = []
+            for row in lines_container.controls:
+                row_map = row.data or {}
+                try:
+                    c_cant = _parse_int_quantity(row_map["cant_field"].value, "Cantidad")
+                    c_price = _parse_float(row_map["price_field"].value, "Precio")
+                    c_iva = _parse_float(row_map["iva_field"].value, "IVA")
+                    d_pct = _parse_float(row_map["desc_pct_field"].value, "Desc. %")
+                    d_imp = _parse_float(row_map["desc_imp_field"].value, "Desc. $")
+                except Exception:
+                    continue
+                fiscal_iva_ref = row_map.get("fiscal_iva_rate_ref") or {}
+                fiscal_iva_rate = fiscal_iva_ref.get("value", 0)
+                calc_items.append({
+                    "cantidad": c_cant,
+                    "precio_unitario": c_price,
+                    "porcentaje_iva": c_iva,
+                    "porcentaje_iva_fiscal": fiscal_iva_rate,
+                    "descuento_porcentaje": d_pct,
+                    "descuento_importe": d_imp,
+                    "descuento_mode": (row_map.get("discount_mode_ref") or {}).get("value", "percentage"),
+                })
+                row_refs.append(row_map)
+
+            try:
+                desc_global_pct_val = _parse_float(field_descuento_global_pct.value, "Desc. Global %")
+            except Exception:
+                desc_global_pct_val = 0.0
+            try:
+                desc_global_imp_val = _parse_float(field_descuento_global_imp.value, "Desc. Global $")
+            except Exception:
+                desc_global_imp_val = 0.0
+            try:
+                sena_val = _parse_float(field_sena.value, "Seña")
+            except Exception:
+                sena_val = 0.0
+
+            result = calculate_document_totals(
+                items=calc_items,
+                descuento_global_porcentaje=desc_global_pct_val,
+                descuento_global_importe=desc_global_imp_val,
+                descuento_global_mode="amount" if global_discount_mode["value"] == "amount" else "percentage",
+                sena=sena_val,
+                pricing_mode="tax_included",
+            )
+
+            for i, priced_item in enumerate(result["items"]):
+                if i >= len(row_refs):
+                    break
+                row_refs[i]["total_field"].value = _dec_to_input(priced_item["total_linea"], use_grouping=True)
+                _safe_update_control(row_refs[i]["total_field"])
+            try:
+                if active_field is not field_descuento_global_pct:
+                    field_descuento_global_pct.value = _dec_to_input(result["descuento_global_porcentaje"], use_grouping=True)
+                    _safe_update_control(field_descuento_global_pct)
+                if active_field is not field_descuento_global_imp:
+                    field_descuento_global_imp.value = _dec_to_input(result["descuento_global_importe"], use_grouping=True)
+                    _safe_update_control(field_descuento_global_imp)
+                sum_desc_lineas.value = _dec_to_input(result["descuento_lineas_importe"], use_grouping=True)
+                sum_desc_global.value = _dec_to_input(result["descuento_global_importe"], use_grouping=True)
+                sum_subtotal.value = _dec_to_input(result["ui_subtotal"], use_grouping=True)
+                sum_iva.value = _dec_to_input(result["ui_iva_total"], use_grouping=True)
+                sum_total.value = _dec_to_input(result["total"], use_grouping=True)
+                sum_saldo.value = _dec_to_input(result["saldo"], use_grouping=True)
+            except Exception:
+                pass
             
             if auto_valor_sync.value:
                 field_valor_declarado.value = sum_total.value
@@ -8413,7 +8544,52 @@ def main(page: ft.Page) -> None:
 
         manual_mode.on_change = toggle_manual
 
-        field_descuento.on_change = lambda _: _recalc_total()
+        def _on_global_desc_pct_change(_):
+            global_discount_mode["value"] = "percentage"
+            _sync_global_discount_pair_from_mode(active_field=field_descuento_global_pct)
+            _recalc_total(active_field=field_descuento_global_pct)
+
+        def _on_global_desc_imp_change(_):
+            global_discount_mode["value"] = "amount"
+            _sync_global_discount_pair_from_mode(active_field=field_descuento_global_imp)
+            _recalc_total(active_field=field_descuento_global_imp)
+
+        def _on_global_desc_pct_commit(_):
+            global_discount_mode["value"] = "percentage"
+            _sync_global_discount_pair_from_mode(active_field=field_descuento_global_pct, normalize_active=True)
+            _recalc_total()
+
+        def _on_global_desc_imp_commit(_):
+            global_discount_mode["value"] = "amount"
+            _sync_global_discount_pair_from_mode(active_field=field_descuento_global_imp, normalize_active=True)
+            _recalc_total()
+
+        def _on_sena_commit(_):
+            _normalize_field_numeric(field_sena, decimals=2, use_grouping=True)
+            _recalc_total()
+
+        def _on_valor_declarado_commit(_):
+            _normalize_field_numeric(field_valor_declarado, decimals=2, use_grouping=True)
+
+        for manual_field in [sum_subtotal, sum_iva, sum_total]:
+            manual_field.on_submit = lambda _, fld=manual_field: _normalize_field_numeric(fld, decimals=2, use_grouping=True)
+            if hasattr(manual_field, "on_blur"):
+                manual_field.on_blur = lambda _, fld=manual_field: _normalize_field_numeric(fld, decimals=2, use_grouping=True)  # type: ignore[attr-defined]
+
+        field_descuento_global_pct.on_change = _on_global_desc_pct_change
+        field_descuento_global_imp.on_change = _on_global_desc_imp_change
+        field_descuento_global_pct.on_submit = _on_global_desc_pct_commit
+        field_descuento_global_imp.on_submit = _on_global_desc_imp_commit
+        field_sena.on_submit = _on_sena_commit
+        field_valor_declarado.on_submit = _on_valor_declarado_commit
+        if hasattr(field_descuento_global_pct, "on_blur"):
+            field_descuento_global_pct.on_blur = _on_global_desc_pct_commit  # type: ignore[attr-defined]
+        if hasattr(field_descuento_global_imp, "on_blur"):
+            field_descuento_global_imp.on_blur = _on_global_desc_imp_commit  # type: ignore[attr-defined]
+        if hasattr(field_sena, "on_blur"):
+            field_sena.on_blur = _on_sena_commit  # type: ignore[attr-defined]
+        if hasattr(field_valor_declarado, "on_blur"):
+            field_valor_declarado.on_blur = _on_valor_declarado_commit  # type: ignore[attr-defined]
         
         # Use ListView with internal padding to prevent "first item cut-off" issue
         lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
@@ -8426,6 +8602,10 @@ def main(page: ft.Page) -> None:
                 expand=True,
                 initial_items=art_initial_items
             )
+            initial_articulo_id = str(initial_data["id_articulo"]) if initial_data and initial_data.get("id_articulo") else None
+            initial_fiscal_iva = to_decimal((initial_data or {}).get("porcentaje_iva"), to_decimal("0"))
+            fiscal_iva_rate_ref = {"value": initial_fiscal_iva}
+            preserve_initial_fiscal = {"value": bool(initial_data)}
             def item_price_list_loader(query, offset, limit):
                 if not db: return [], False
                 rows = db.fetch_listas_precio(search=query, offset=offset, limit=limit)
@@ -8460,34 +8640,112 @@ def main(page: ft.Page) -> None:
                 initial_items=lista_initial_items,
             )
             cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field)
-            price_field = ft.TextField(label="Precio *",width=90, value="0"); _style_input(price_field)
-            iva_field = ft.TextField(label="IVA % *", width=60, value="21"); _style_input(iva_field)
-            total_field = ft.TextField(label="Total", width=100, value="0.00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field)
+            price_field = ft.TextField(label="Precio *",width=90, value="0,00"); _style_input(price_field)
+            iva_field = ft.TextField(label="IVA % *", width=60, value="0,00"); _style_input(iva_field)
+            desc_pct_field = ft.TextField(label="Desc. %", width=90, value="0,00"); _style_input(desc_pct_field)
+            desc_imp_field = ft.TextField(label="Desc. $", width=100, value="0,00"); _style_input(desc_imp_field)
+            total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field)
+            line_discount_mode = {"value": "percentage"}
+            quantity_warning_guard = {"raw": None, "ts": 0.0}
             
             if initial_data:
                 art_drop.value = str(initial_data["id_articulo"])
                 lista_drop.value = str(initial_data["id_lista_precio"]) if initial_data.get("id_lista_precio") else ""
-                cant_field.value = str(initial_data["cantidad"])
-                price_field.value = str(initial_data["precio_unitario"])
-                iva_field.value = str(initial_data["porcentaje_iva"])
+                qty_initial_dec = parse_locale_number(initial_data["cantidad"])
+                if qty_initial_dec is not None and qty_initial_dec == qty_initial_dec.to_integral_value():
+                    cant_field.value = normalize_input_value(initial_data["cantidad"], decimals=0, use_grouping=False)
+                else:
+                    # Compatibilidad histórica: mantenemos decimales visibles, pero se bloqueará guardado hasta corregir.
+                    cant_field.value = normalize_input_value(initial_data["cantidad"], decimals=2, use_grouping=False)
+                price_field.value = normalize_input_value(initial_data["precio_unitario"], decimals=2, use_grouping=True)
+                iva_field.value = "0,00"
+                desc_pct_field.value = normalize_input_value(initial_data.get("descuento_porcentaje", 0), decimals=2, use_grouping=True)
+                desc_imp_field.value = normalize_input_value(initial_data.get("descuento_importe", 0), decimals=2, use_grouping=True)
+                if _parse_float(desc_pct_field.value, "Desc. %") > 0:
+                    line_discount_mode["value"] = "percentage"
+                elif _parse_float(desc_imp_field.value, "Desc. $") > 0:
+                    line_discount_mode["value"] = "amount"
             else:
-                 # Usar lista global si está seleccionada
-                 if dropdown_lista_global.value and dropdown_lista_global.value != "":
-                     lista_drop.value = dropdown_lista_global.value
-                 else:
-                     lista_drop.value = ""
+                # Usar lista global si está seleccionada
+                if dropdown_lista_global.value and dropdown_lista_global.value != "":
+                    lista_drop.value = dropdown_lista_global.value
+                else:
+                    lista_drop.value = ""
+                iva_field.value = "0,00"
+
+            def _get_selected_article() -> Optional[Dict[str, Any]]:
+                if not art_drop.value:
+                    return None
+                try:
+                    selected_id = int(art_drop.value)
+                except Exception:
+                    return None
+                return next((a for a in articulos if int(a.get("id")) == selected_id), None)
+
+            def _get_article_default_iva_rate() -> Any:
+                art = _get_selected_article()
+                if not art and db and art_drop.value:
+                    try:
+                        art = db.get_article_simple(int(art_drop.value))
+                    except Exception:
+                        art = None
+                if not art:
+                    return to_decimal("0")
+                iva_default = art.get("porcentaje_iva")
+                if iva_default is None:
+                    return to_decimal("0")
+                return max(to_decimal("0"), to_decimal(iva_default))
+
+            def _sync_fiscal_iva_from_visible(*, source: str) -> None:
+                # source: "auto" (carga inicial), "article_change" (cambia artículo), "user" (edición manual)
+                try:
+                    visible_iva = to_decimal(_parse_float(iva_field.value, "IVA"))
+                except Exception:
+                    visible_iva = to_decimal("0")
+
+                if visible_iva > to_decimal("0"):
+                    fiscal_iva_rate_ref["value"] = quantize_2(visible_iva)
+                    preserve_initial_fiscal["value"] = False
+                    return
+
+                if (
+                    source == "auto"
+                    and preserve_initial_fiscal["value"]
+                    and initial_articulo_id
+                    and str(art_drop.value or "") == initial_articulo_id
+                    and initial_fiscal_iva > to_decimal("0")
+                ):
+                    fiscal_iva_rate_ref["value"] = max(to_decimal("0"), quantize_2(initial_fiscal_iva))
+                    return
+
+                fiscal_iva_rate_ref["value"] = quantize_2(_get_article_default_iva_rate())
+                preserve_initial_fiscal["value"] = False
             
-            def _update_line_total():
+            def _update_line_total(active_field: Optional[ft.TextField] = None, normalize_active: bool = False):
                 """Actualiza el total de la línea"""
                 try:
-                    c_cant = float(cant_field.value or 0)
-                    c_price = float(price_field.value or 0)
-                    line_total = c_cant * c_price
-                    total_field.value = f"{line_total:.2f}"
+                    c_cant = _parse_int_quantity(cant_field.value, "Cantidad")
+                    c_price = _parse_float(price_field.value, "Precio")
+                    base_line = to_decimal(c_cant) * to_decimal(c_price)
+                    d_pct, d_imp = normalize_discount_pair(
+                        base_amount=base_line,
+                        descuento_porcentaje=desc_pct_field.value,
+                        descuento_importe=desc_imp_field.value,
+                        mode="amount" if line_discount_mode["value"] == "amount" else "percentage",
+                    )
+                    if active_field is not desc_pct_field or normalize_active:
+                        desc_pct_field.value = _dec_to_input(d_pct, use_grouping=True)
+                        _safe_update_control(desc_pct_field)
+                    if active_field is not desc_imp_field or normalize_active:
+                        desc_imp_field.value = _dec_to_input(d_imp, use_grouping=True)
+                        _safe_update_control(desc_imp_field)
+                    line_sign = to_decimal("1") if base_line >= to_decimal("0") else to_decimal("-1")
+                    line_total = base_line - (line_sign * d_imp)
+                    total_field.value = _dec_to_input(line_total, use_grouping=True)
                     if total_field.page:
                         total_field.update()
-                except:
-                    total_field.value = "0.00"
+                except Exception:
+                    total_field.value = "0,00"
             
             def _update_price_from_list():
                 """Actualiza el precio basado en artículo y lista seleccionados"""
@@ -8518,8 +8776,7 @@ def main(page: ft.Page) -> None:
                 # Removed 'First available' usage and Cost fallback
                 # If no list selected, price stays 0.0 unless manually edited
                 
-                price_field.value = str(final_price)
-                iva_field.value = str(art.get("porcentaje_iva", 21))
+                price_field.value = _dec_to_input(final_price, use_grouping=True)
                 _update_line_total()
                 page.update()
                 _recalc_total()
@@ -8529,7 +8786,7 @@ def main(page: ft.Page) -> None:
             def _check_stock_warning():
                 if not art_drop.value: return
                 try:
-                    requested = float(cant_field.value or 0)
+                    requested = _parse_int_quantity(cant_field.value, "Cantidad")
                     available = db.get_article_stock(int(art_drop.value))
                     stock_text.value = f"Stock: {available}"
                     if requested > available:
@@ -8542,23 +8799,29 @@ def main(page: ft.Page) -> None:
                 except Exception as e:
                     logger.warning(f"Falló al actualizar interfaz: {e}")
 
-            def _on_art_change(e):
-                # Recargar opciones para actualizar los precios en los labels (ej: "Lista X ($500)")
+            def _refresh_lista_labels_with_prices() -> None:
                 try:
-                    # Si hay una lista seleccionada (ej: la global aplicada al iniciar), necesitamos
-                    # refrescar los labels para que aparezca el precio del nuevo artículo.
-                    items, _ = item_price_list_loader("", 0, 100) 
-                    # Convert dicts to Flet Options for the setter
+                    items, _ = item_price_list_loader("", 0, 100)
                     opts = [ft.dropdown.Option(str(i["value"]), i["label"]) for i in items]
+                    current_value = lista_drop.value
                     lista_drop.options = opts
-                    lista_drop.value = lista_drop.value # Force trigger label update
+                    lista_drop.value = current_value
+                    _safe_update_control(lista_drop)
                 except Exception as ex:
-                    print(f"Error updating price labels: {ex}")
+                    logger.warning(f"No se pudieron refrescar labels de listas con precios: {ex}")
 
+            def _on_art_change(e):
+                _refresh_lista_labels_with_prices()
+                _sync_fiscal_iva_from_visible(source="article_change")
                 _update_price_from_list()
                 _check_stock_warning()
             
             def _on_value_change(_):
+                _update_line_total()
+                _recalc_total()
+
+            def _on_iva_change(_):
+                _sync_fiscal_iva_from_visible(source="user")
                 _update_line_total()
                 _recalc_total()
 
@@ -8568,8 +8831,77 @@ def main(page: ft.Page) -> None:
                 _update_price_from_list()
             lista_drop.on_change = _on_lista_change
             
-            for f in [price_field, iva_field]:
-                f.on_change = _on_value_change
+            def _on_desc_pct_change(_):
+                line_discount_mode["value"] = "percentage"
+                _update_line_total(active_field=desc_pct_field)
+                _recalc_total()
+
+            def _on_desc_imp_change(_):
+                line_discount_mode["value"] = "amount"
+                _update_line_total(active_field=desc_imp_field)
+                _recalc_total()
+
+            def _on_desc_pct_commit(_):
+                line_discount_mode["value"] = "percentage"
+                _update_line_total(active_field=desc_pct_field, normalize_active=True)
+                _recalc_total()
+
+            def _on_desc_imp_commit(_):
+                line_discount_mode["value"] = "amount"
+                _update_line_total(active_field=desc_imp_field, normalize_active=True)
+                _recalc_total()
+
+            def _on_price_commit(_):
+                _normalize_field_numeric(price_field, decimals=2, use_grouping=True)
+                _update_line_total()
+                _recalc_total()
+
+            def _on_iva_commit(_):
+                _normalize_field_numeric(iva_field, decimals=2, use_grouping=True)
+                _sync_fiscal_iva_from_visible(source="user")
+                _update_line_total()
+                _recalc_total()
+
+            def _on_cantidad_commit(_):
+                try:
+                    _normalize_quantity_field(cant_field, label="Cantidad")
+                    quantity_warning_guard["raw"] = None
+                    quantity_warning_guard["ts"] = 0.0
+                except ValueError as exc:
+                    raw_value = str(cant_field.value or "").strip()
+                    now_ts = time.time()
+                    if (
+                        quantity_warning_guard["raw"] == raw_value
+                        and (now_ts - float(quantity_warning_guard["ts"] or 0.0)) < 0.8
+                    ):
+                        return
+                    quantity_warning_guard["raw"] = raw_value
+                    quantity_warning_guard["ts"] = now_ts
+                    show_toast(str(exc), kind="warning")
+                    return
+                _check_stock_warning()
+                _update_line_total()
+                _recalc_total()
+
+            desc_pct_field.on_change = _on_desc_pct_change
+            desc_imp_field.on_change = _on_desc_imp_change
+            desc_pct_field.on_submit = _on_desc_pct_commit
+            desc_imp_field.on_submit = _on_desc_imp_commit
+            price_field.on_submit = _on_price_commit
+            iva_field.on_submit = _on_iva_commit
+            cant_field.on_submit = _on_cantidad_commit
+
+            price_field.on_change = _on_value_change
+            iva_field.on_change = _on_iva_change
+            for field, handler in [
+                (desc_pct_field, _on_desc_pct_commit),
+                (desc_imp_field, _on_desc_imp_commit),
+                (price_field, _on_price_commit),
+                (iva_field, _on_iva_commit),
+                (cant_field, _on_cantidad_commit),
+            ]:
+                if hasattr(field, "on_blur"):
+                    field.on_blur = handler  # type: ignore[attr-defined]
 
             cant_container = ft.Column([cant_field, stock_text], spacing=0, width=80)
 
@@ -8578,7 +8910,15 @@ def main(page: ft.Page) -> None:
                 "update_price": _update_price_from_list,
                 "lista_drop": lista_drop,
                 "art_drop": art_drop,
-                "cant_field": cant_field # For potential future use
+                "cant_field": cant_field,
+                "price_field": price_field,
+                "iva_field": iva_field,
+                "fiscal_iva_rate_ref": fiscal_iva_rate_ref,
+                "sync_fiscal_iva": _sync_fiscal_iva_from_visible,
+                "desc_pct_field": desc_pct_field,
+                "desc_imp_field": desc_imp_field,
+                "total_field": total_field,
+                "discount_mode_ref": line_discount_mode,
             }
 
             delete_btn = ft.IconButton(
@@ -8588,9 +8928,11 @@ def main(page: ft.Page) -> None:
                 on_click=lambda e: _remove_line(e.control.parent)
             )
 
-            # [Artículo, Lista, Cant, Precio, IVA, Total, Delete]
-            row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
+            # [Artículo, Lista, Cant, Precio, IVA, Desc %, Desc $, Total, Delete]
+            row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, desc_pct_field, desc_imp_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
             row.data = row_map # Attack callbacks to row
+
+            _sync_fiscal_iva_from_visible(source="auto")
             
             lines_container.controls.append(row)
             if update_ui:
@@ -8609,7 +8951,10 @@ def main(page: ft.Page) -> None:
                 _check_stock_warning()
                 # Manual trigger of label refresh
                 try: 
-                    _on_art_change(None) 
+                    if initial_data:
+                        _refresh_lista_labels_with_prices()
+                    else:
+                        _on_art_change(None)
                 except: 
                      lista_drop.clear_cache()
             
@@ -8663,29 +9008,62 @@ def main(page: ft.Page) -> None:
             if not (field_direccion.value and str(field_direccion.value).strip()):
                 show_toast("La dirección de entrega es obligatoria", kind="warning")
                 return
+
+            # Normalización final para persistir formato consistente sin forzar durante tipeo.
+            _normalize_field_numeric(field_descuento_global_pct, decimals=2, use_grouping=True)
+            _normalize_field_numeric(field_descuento_global_imp, decimals=2, use_grouping=True)
+            _normalize_field_numeric(field_sena, decimals=2, use_grouping=True)
+            _normalize_field_numeric(field_valor_declarado, decimals=2, use_grouping=True)
+            if manual_mode.value:
+                _normalize_field_numeric(sum_subtotal, decimals=2, use_grouping=True)
+                _normalize_field_numeric(sum_iva, decimals=2, use_grouping=True)
+                _normalize_field_numeric(sum_total, decimals=2, use_grouping=True)
+
+            for row in lines_container.controls:
+                row_map = row.data or {}
+                try:
+                    _normalize_quantity_field(row_map.get("cant_field"), label="Cantidad")
+                except ValueError as exc:
+                    show_toast(str(exc), kind="error")
+                    return
+                _normalize_field_numeric(row_map.get("price_field"), decimals=2, use_grouping=True)
+                _normalize_field_numeric(row_map.get("iva_field"), decimals=2, use_grouping=True)
+                sync_fiscal = row_map.get("sync_fiscal_iva")
+                if callable(sync_fiscal):
+                    sync_fiscal(source="user")
+                _normalize_field_numeric(row_map.get("desc_pct_field"), decimals=2, use_grouping=True)
+                _normalize_field_numeric(row_map.get("desc_imp_field"), decimals=2, use_grouping=True)
             
             items = []
             for row in lines_container.controls:
-                controls = row.controls
-                # [Artículo, Lista, Cant, Precio, IVA, Total, Delete]
-                art_id = controls[0].value
+                row_map = row.data or {}
+                art_id = row_map["art_drop"].value
                 if not art_id: continue
                 
                 # Usar lista del ítem, o la global si no tiene
-                item_lista = controls[1].value
+                item_lista = row_map["lista_drop"].value
                 if not item_lista or item_lista == "" or item_lista == "Automático":
                     item_lista = dropdown_lista_global.value
                 
                 # Ensure global value is also clean
                 if item_lista == "Automático": item_lista = ""
-
-                items.append({
-                    "id_articulo": int(art_id),
-                    "id_lista_precio": int(item_lista) if item_lista and item_lista != "" else None,
-                    "cantidad": _parse_float(controls[2].controls[0].value, "Cantidad"),
-                    "precio_unitario": _parse_float(controls[3].value, "Precio Unitario"),
-                    "porcentaje_iva": _parse_float(controls[4].value, "Porcentaje IVA")
-                })
+                try:
+                    fiscal_iva_ref = row_map.get("fiscal_iva_rate_ref") or {}
+                    fiscal_iva_rate = float(to_decimal(fiscal_iva_ref.get("value", 0)))
+                    items.append({
+                        "id_articulo": int(art_id),
+                        "id_lista_precio": int(item_lista) if item_lista and item_lista != "" else None,
+                        "cantidad": _parse_int_quantity(row_map["cant_field"].value, "Cantidad"),
+                        "precio_unitario": _parse_float(row_map["price_field"].value, "Precio Unitario"),
+                        # Persistimos siempre la alícuota fiscal real, no el 0 visual del modo IVA incluido.
+                        "porcentaje_iva": fiscal_iva_rate,
+                        "descuento_porcentaje": _parse_float(row_map["desc_pct_field"].value, "Desc. %"),
+                        "descuento_importe": _parse_float(row_map["desc_imp_field"].value, "Desc. $"),
+                        "descuento_mode": (row_map.get("discount_mode_ref") or {}).get("value", "percentage"),
+                    })
+                except ValueError as exc:
+                    show_toast(str(exc), kind="error")
+                    return
             
             if not items:
                 show_toast("El comprobante debe tener al menos una línea", kind="warning")
@@ -8694,6 +9072,12 @@ def main(page: ft.Page) -> None:
             # Determinar id_lista_precio del documento
             gl_val = dropdown_lista_global.value
             doc_lista_precio = int(gl_val) if gl_val and gl_val != "" and gl_val != "Automático" else None
+            try:
+                desc_global_pct = _parse_float(field_descuento_global_pct.value, "Desc. Global %")
+                desc_global_imp = _parse_float(field_descuento_global_imp.value, "Desc. Global $")
+            except ValueError as exc:
+                show_toast(str(exc), kind="error")
+                return
 
             numero_serie_value = None
             if edit_doc_id:
@@ -8714,8 +9098,8 @@ def main(page: ft.Page) -> None:
                         items=items,
                         observacion=field_obs.value,
                         numero_serie=numero_serie_value,
-                        descuento_porcentaje=_parse_float(field_descuento.value, "Descuento (%)"),
-                        descuento_importe=float(doc_data.get("descuento_importe", 0)) if doc_data else 0,
+                        descuento_porcentaje=desc_global_pct,
+                        descuento_importe=desc_global_imp,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
                         direccion_entrega=field_direccion.value,
@@ -8737,8 +9121,8 @@ def main(page: ft.Page) -> None:
                         items=items,
                         observacion=field_obs.value,
                         numero_serie=numero_serie_value,
-                        descuento_porcentaje=_parse_float(field_descuento.value, "Descuento (%)"),
-                        descuento_importe=0,
+                        descuento_porcentaje=desc_global_pct,
+                        descuento_importe=desc_global_imp,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
                         direccion_entrega=field_direccion.value,
@@ -8772,19 +9156,29 @@ def main(page: ft.Page) -> None:
             # Set manual totals if they were different from calculated?
             # Or just set them if the document state says so.
             # Simplified: always load them and if they match, user can just keep going.
-            sum_subtotal.value = str(doc_data["neto"])
-            sum_iva.value = str(doc_data["iva_total"])
-            sum_total.value = str(doc_data["total"])
+            sum_subtotal.value = normalize_input_value(doc_data["total"], decimals=2, use_grouping=True)
+            sum_iva.value = normalize_input_value(0, decimals=2, use_grouping=True)
+            sum_total.value = normalize_input_value(doc_data["total"], decimals=2, use_grouping=True)
             try:
                 total_val = _parse_float(sum_total.value, "Total")
                 sena_val = _parse_float(field_sena.value, "Seña")
-                sum_saldo.value = str(round(max(0, total_val - sena_val), 2))
+                sum_saldo.value = normalize_input_value(round(max(0, total_val - sena_val), 2), decimals=2, use_grouping=True)
             except Exception:
-                sum_saldo.value = "0.00"
+                sum_saldo.value = "0,00"
+            sum_desc_lineas.value = normalize_input_value(
+                round(sum(float(it.get("descuento_importe", 0) or 0) for it in doc_data.get("items", [])), 2),
+                decimals=2,
+                use_grouping=True,
+            )
+            sum_desc_global.value = normalize_input_value(doc_data.get("descuento_importe", 0), decimals=2, use_grouping=True)
             # Auto-enable manual mode if there's a discrepancy? 
             # For now, let user enable it if they want to edit.
         else:
             _add_line(update_ui=False) # Add one line by default, no update yet
+
+        _sync_global_discount_pair_from_mode()
+        if not doc_data:
+            _recalc_total()
 
 
 
@@ -8800,7 +9194,7 @@ def main(page: ft.Page) -> None:
                     ft.Row([field_fecha, field_vto, dropdown_tipo], spacing=10),
                     ft.Row([dropdown_entidad, field_saldo], spacing=10),
                     ft.Row([dropdown_lista_global], spacing=10),
-                    ft.Row([dropdown_deposito, field_numero, field_descuento, field_sena], spacing=10),
+                    ft.Row([dropdown_deposito, field_numero, field_sena], spacing=10),
                     ft.Row([ft.Container(expand=True, content=field_obs)], spacing=10),
                     ft.Row([field_direccion], spacing=10),
                     ft.Divider(),
@@ -8827,7 +9221,14 @@ def main(page: ft.Page) -> None:
                     # Financial Footer
                     ft.Row([ft.Container(expand=True), auto_valor_sync, field_valor_declarado], alignment=ft.MainAxisAlignment.END, spacing=10),
                     ft.Row([
+                        ft.Container(expand=True),
+                        field_descuento_global_pct,
+                        field_descuento_global_imp,
+                    ], alignment=ft.MainAxisAlignment.END, spacing=10),
+                    ft.Row([
                         manual_mode,
+                        ft.Column([sum_desc_lineas], spacing=0),
+                        ft.Column([sum_desc_global], spacing=0),
                         ft.Column([sum_subtotal], spacing=0),
                         ft.Column([sum_iva], spacing=0),
                         ft.Column([sum_total], spacing=0),

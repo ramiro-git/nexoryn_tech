@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from desktop_app.database import Database
+from desktop_app.services.number_locale import format_currency, format_decimal
 
 logger = logging.getLogger(__name__)
 
@@ -635,14 +636,9 @@ class DashboardView(ft.Container):
     def _format_number(self, value: Any, decimals: int = 0, prefix: str = "") -> str:
         if value is None:
             return "—"
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return str(value)
-        # Formato argentino/español: punto para miles, coma para decimales
-        formatted = f"{number:,.{decimals}f}"
-        formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
-        return f"{prefix}{formatted}"
+        if prefix == "$":
+            return format_currency(value)
+        return format_decimal(value, decimals=decimals)
 
     def _as_number(self, value: Any) -> float:
         try:
@@ -651,14 +647,11 @@ class DashboardView(ft.Container):
             return 0.0
 
     def _format_compact(self, n: float) -> str:
-        # Formato compacto con coma decimal (estilo argentino/español)
         if n >= 1_000_000:
-            val = f"{n/1_000_000:,.1f}M"
-        elif n >= 1_000:
-            val = f"{n/1_000:,.1f}K"
-        else:
-            val = f"{n:,.0f}"
-        return val.replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"{format_decimal(n / 1_000_000, decimals=1)}M"
+        if n >= 1_000:
+            return f"{format_decimal(n / 1_000, decimals=1)}K"
+        return format_decimal(n, decimals=0)
 
     def _empty_state(self, section_key: str = "charts", custom_message: str = None) -> ft.Control:
         """Create a visually rich empty state component."""

@@ -60,7 +60,29 @@ La app ejecuta una sincronización **temprana** del esquema antes de abrir el po
 Al inicializar `Database`, se aplican migraciones seguras en caliente:
 - `app.pago.id_documento` se vuelve nullable (para pagos de cuenta corriente).
 - `app.movimiento_articulo.stock_resultante` se agrega si falta.
+- `app.documento_detalle.descuento_importe` se agrega si falta y se normaliza `NULL -> 0`.
 - Se actualiza el trigger `app.fn_sync_stock_resumen` para persistir `stock_resultante`.
+
+## Descuentos en comprobantes
+- `app.documento` mantiene el descuento global:
+  - `descuento_porcentaje`
+  - `descuento_importe`
+- `app.documento_detalle` almacena descuento por línea:
+  - `descuento_porcentaje`
+  - `descuento_importe`
+  - `total_linea` persiste el neto de la línea luego del descuento de línea (sin descuento global).
+- Regla de cálculo vigente:
+  - Primero se aplica descuento por línea.
+  - Luego el descuento global en importe se prorratea proporcionalmente sobre el neto de líneas antes de IVA.
+  - Modo global actual: **precio con IVA incluido** (`pricing_mode = tax_included`).
+  - El total operativo visible en UI no suma IVA adicional.
+  - El desglose fiscal (neto/IVA) se calcula internamente sobre la base neta resultante.
+- UX actual en comprobantes:
+  - El campo de IVA visible por línea inicia en `0,00` (editable).
+  - Si el usuario ingresa IVA visible `> 0`, ese valor actúa como override fiscal de la línea.
+  - Si el usuario deja IVA visible en `0,00`, la alícuota fiscal interna usa fallback del artículo.
+  - En persistencia (`app.documento_detalle.porcentaje_iva`) se guarda siempre la alícuota fiscal real.
+  - Para AFIP se arma `Iva` por alícuota real, sin hardcodear 21%.
 
 ## RLS y contexto de sesión
 El esquema habilita RLS en tablas núcleo:
@@ -113,3 +135,17 @@ La UI avanzada usa polling cada 5 segundos sobre `seguridad.log_actividad` media
 - `DB_POOL_MIN` y `DB_POOL_MAX` para el pool de conexiones.
 
 > Nota: si se requieren cambios riesgosos, ejecutar un flujo de migración controlado con backup previo.
+
+## Formato numérico AR (UI/PDF)
+- Se centralizó formato/parseo en `desktop_app/services/number_locale.py`.
+- Convención visual:
+  - Moneda: `$1.000.000,00`
+  - Porcentaje: `12,50%`
+  - Decimal genérico: `1.000.000,00`
+- Política de inputs:
+  - Durante `on_change` no se fuerza autoformato sobre el campo activo.
+  - La normalización se aplica en `on_blur`, `on_submit` y en `save`.
+- Compatibilidad de entrada:
+  - Se aceptan notaciones con coma o punto (`1,5`, `1000.5`, `1.000,50`, `1,000.50`).
+- Exclusión explícita:
+  - Campos de stock no se tratan como moneda/porcentaje por este criterio.

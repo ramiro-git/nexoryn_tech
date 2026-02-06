@@ -7,6 +7,7 @@ import flet as ft
 from desktop_app.database import Database
 from desktop_app.components.async_select import AsyncSelect
 from desktop_app.components.button_styles import cancel_button
+from desktop_app.services.number_locale import format_currency, format_percent
 
 
 # Styling helpers
@@ -463,17 +464,21 @@ class MassUpdateView(ft.Container):
                             ),
                             ft.DataCell(ft.Text(str(rid) if rid is not None else "—")),
                             ft.DataCell(ft.Text(r.get("nombre", ""))),
-                            ft.DataCell(ft.Text(f"${float(r.get('current', 0.0)):,.2f}")),
+                            ft.DataCell(ft.Text(format_currency(r.get("current", 0.0)))),
                             ft.DataCell(
                                 ft.Text(
-                                    f"${float(r.get('new', 0.0)):,.2f}",
+                                    format_currency(r.get("new", 0.0)),
                                     weight=ft.FontWeight.BOLD,
                                     color="#166534",
                                 )
                             ),
                             ft.DataCell(
                                 ft.Text(
-                                    f"{float(r.get('diff_pct', 0.0)):+.2f}%",
+                                    (
+                                        f"+{format_percent(r.get('diff_pct', 0.0), decimals=2)}"
+                                        if float(r.get("diff_pct", 0.0)) > 0
+                                        else format_percent(r.get("diff_pct", 0.0), decimals=2)
+                                    ),
                                     color="#EA580C" if float(r.get("diff_pct", 0.0)) != 0 else "#64748B",
                                 )
                             ),

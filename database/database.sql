@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NEXORYN TECH - Database Schema (PostgreSQL)
--- Version: 2.2 - Optimized with Smart Sync Version Stamp
+-- Version: 2.3 - Optimized with Smart Sync Version Stamp
 -- ============================================================================
 
 -- Acquire advisory lock to prevent concurrent schema updates from multiple instances
@@ -289,6 +289,7 @@ CREATE TABLE IF NOT EXISTS app.documento_detalle (
   cantidad               NUMERIC(14,4) NOT NULL,
   precio_unitario        NUMERIC(14,4) NOT NULL DEFAULT 0,
   descuento_porcentaje   NUMERIC(6,2) NOT NULL DEFAULT 0,
+  descuento_importe      NUMERIC(14,4) NOT NULL DEFAULT 0,
   porcentaje_iva         NUMERIC(6,2) NOT NULL DEFAULT 0,
   total_linea            NUMERIC(14,4) NOT NULL DEFAULT 0,
   id_lista_precio        BIGINT REFERENCES ref.lista_precio(id) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -359,6 +360,7 @@ CREATE TABLE IF NOT EXISTS app.remito_detalle (
 ALTER TABLE app.remito ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
 ALTER TABLE app.documento ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
 ALTER TABLE app.movimiento_articulo ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
+ALTER TABLE app.documento_detalle ADD COLUMN IF NOT EXISTS descuento_importe NUMERIC(14,4) NOT NULL DEFAULT 0;
 
 -- ============================================================================
 -- VIEWS
@@ -1635,9 +1637,9 @@ ON CONFLICT (clave) DO NOTHING;
 -- VERSION STAMP
 -- ============================================================================
 INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
-VALUES ('db_version', '2.2', 'TEXT', 'Versión actual de la base de datos')
+VALUES ('db_version', '2.3', 'TEXT', 'Versión actual de la base de datos')
 ON CONFLICT (clave) DO UPDATE 
-SET valor = '2.2';
+SET valor = '2.3';
 
 -- Release advisory lock
 SELECT pg_advisory_unlock(543210);

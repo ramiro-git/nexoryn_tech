@@ -23,12 +23,14 @@ try:
     from desktop_app.components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig
     from desktop_app.components.async_select import AsyncSelect
     from desktop_app.components.button_styles import cancel_button
+    from desktop_app.services.number_locale import format_currency, format_percent
 except ImportError:
     from config import load_config  # type: ignore
     from database import Database  # type: ignore
     from components.generic_table import ColumnConfig, GenericTable, SimpleFilterConfig  # type: ignore
     from components.async_select import AsyncSelect  # type: ignore
     from components.button_styles import cancel_button  # type: ignore
+    from services.number_locale import format_currency, format_percent  # type: ignore
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -40,7 +42,7 @@ def _format_money(value: Any) -> str:
     if value is None:
         return "-"
     try:
-        return f"${float(value):,.2f}"
+        return format_currency(value)
     except Exception:
         return str(value)
 
@@ -453,7 +455,7 @@ def main(page: ft.Page) -> None:
                     kv("Tipo", entity.get("tipo")),
                     kv("CUIT", entity.get("cuit")),
                     kv("Lista", entity.get("lista_precio")),
-                    kv("Descuento", f"{float(entity.get('descuento') or 0):.2f}%"),
+                    kv("Descuento", format_percent(entity.get("descuento") or 0, decimals=2)),
                     kv("Saldo", _format_money(entity.get("saldo_cuenta"))),
                     kv("Provincia", entity.get("provincia")),
                     kv("Localidad", entity.get("localidad")),
@@ -554,7 +556,7 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="rubro", label="Rubro"),
             ColumnConfig(key="costo", label="Costo", editable=True, formatter=lambda v, _: _format_money(v)),
             ColumnConfig(key="stock_actual", label="Stock", formatter=lambda v, _: "—" if v is None else f"{float(v):.2f}"),
-            ColumnConfig(key="porcentaje_iva", label="IVA", formatter=lambda v, _: f"{float(v or 0):.0f}%"),
+            ColumnConfig(key="porcentaje_iva", label="IVA", formatter=lambda v, _: format_percent(v or 0, decimals=0)),
             ColumnConfig(
                 key="activo",
                 label="Estado",

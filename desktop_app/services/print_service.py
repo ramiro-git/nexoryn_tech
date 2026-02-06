@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from fpdf import FPDF
 
 from desktop_app.enums import DocumentoEstado, RemotoEstado
+from desktop_app.services.number_locale import format_currency, format_percent
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def _format_money(value: Any) -> str:
     number = _safe_float(value, None)
     if number is None:
         return "-"
-    return f"$ {number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return format_currency(number)
 
 
 def _format_date(value: Any) -> str:
@@ -328,6 +329,9 @@ class InvoicePDF(BaseDocumentPDF):
     ):
         super().__init__(doc_data, entity_data, items_data, company_config)
         self.is_invoice = self._is_invoice_document()
+        self.subtotal_bruto = self._resolve_subtotal_bruto()
+        self.descuento_lineas = self._resolve_line_discount_total()
+        self.descuento_global = self._resolve_global_discount_total()
         self.tax_summary = self._build_tax_summary()
         self.neto = self._resolve_neto()
         self.iva_total = self._resolve_iva_total()
@@ -363,20 +367,36 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _resolve_neto(self) -> float:
         neto = _safe_float(self.doc.get("neto"), None)
-        if neto is not None and neto > 0:
+        if neto is not None:
             return neto
         total = sum(_safe_float(item.get("cantidad"), 0.0) * _safe_float(item.get("precio_unitario"), 0.0) for item in self.items)
         return total
+
+    def _resolve_subtotal_bruto(self) -> float:
+        subtotal = _safe_float(self.doc.get("subtotal"), None)
+        if subtotal is not None:
+            return subtotal
+        return sum(_safe_float(item.get("cantidad"), 0.0) * _safe_float(item.get("precio_unitario"), 0.0) for item in self.items)
+
+    def _resolve_line_discount_total(self) -> float:
+        return sum(_safe_float(item.get("descuento_importe"), 0.0) for item in self.items)
+
+    def _resolve_global_discount_total(self) -> float:
+        desc = _safe_float(self.doc.get("descuento_importe"), 0.0)
+        return desc if desc > 0 else 0.0
 
     def _resolve_iva_total(self) -> float:
         iva = _safe_float(self.doc.get("iva_total"), None)
         if iva is not None and iva > 0:
             return iva
-        return sum(bucket["iva"] for bucket in self.tax_summary.values())
+        summary_iva = sum(bucket["iva"] for bucket in self.tax_summary.values())
+        if summary_iva > 0:
+            return summary_iva
+        return iva if iva is not None else 0.0
 
     def _resolve_total(self) -> float:
         total = _safe_float(self.doc.get("total"), None)
-        if total is not None and total > 0:
+        if total is not None:
             return total
         return self.neto + self.iva_total
 
@@ -388,14 +408,33 @@ class InvoicePDF(BaseDocumentPDF):
         return self.is_invoice and letter == "A"
 
     def _build_tax_summary(self) -> Dict[float, Dict[str, float]]:
+        precomputed = self.doc.get("iva_breakdown")
+        if isinstance(precomputed, list):
+            buckets: Dict[float, Dict[str, float]] = {}
+            for row in precomputed:
+                pct = round(_safe_float((row or {}).get("porcentaje_iva"), 0.0), 2)
+                if pct <= 0:
+                    continue
+                base = _safe_float((row or {}).get("base_imponible"), 0.0)
+                iva = _safe_float((row or {}).get("importe"), 0.0)
+                if not base and not iva:
+                    continue
+                bucket = buckets.setdefault(pct, {"base": 0.0, "iva": 0.0})
+                bucket["base"] += base
+                bucket["iva"] += iva
+            if buckets:
+                return buckets
+
         buckets: Dict[float, Dict[str, float]] = {}
         for item in self.items:
             pct = round(_safe_float(item.get("porcentaje_iva"), 0.0), 2)
             if pct <= 0:
                 continue
-            qty = _safe_float(item.get("cantidad"), 0.0)
-            unit = _safe_float(item.get("precio_unitario"), 0.0)
-            base = qty * unit
+            base = _safe_float(item.get("total_linea"), None)
+            if base is None:
+                qty = _safe_float(item.get("cantidad"), 0.0)
+                unit = _safe_float(item.get("precio_unitario"), 0.0)
+                base = qty * unit
             bucket = buckets.setdefault(pct, {"base": 0.0, "iva": 0.0})
             bucket["base"] += base
             bucket["iva"] += base * (pct / 100.0)
@@ -521,12 +560,11 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _draw_items_table(self) -> None:
         """Draw items table with proper pagination."""
-        headers = ["Descripción", "Cant.", "Precio", "IVA %", "Total"]
+        headers = ["Descripción", "Cant.", "Precio", "IVA %", "Desc. %", "Desc. $", "Total"]
         start_x = self.l_margin
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        col_ratios = [0.45, 0.10, 0.15, 0.12, 0.18]
+        col_ratios = [0.34, 0.08, 0.12, 0.10, 0.10, 0.12, 0.14]
         col_widths = _distribute_width(table_width, col_ratios)
-        aligns = ["L", "C", "R", "C", "R"]
         
         def _draw_table_header() -> None:
             self.set_font("helvetica", "B", 9)
@@ -557,7 +595,13 @@ class InvoicePDF(BaseDocumentPDF):
             qty = _safe_float(item.get("cantidad"), 0.0)
             unit = _safe_float(item.get("precio_unitario"), 0.0)
             iva_pct = _safe_float(item.get("porcentaje_iva"), 0.0)
-            total = qty * unit
+            desc_pct = _safe_float(item.get("descuento_porcentaje"), 0.0)
+            desc_imp = _safe_float(item.get("descuento_importe"), 0.0)
+            total = _safe_float(item.get("total_linea"), None)
+            if total is None:
+                base = qty * unit
+                sign = 1 if base >= 0 else -1
+                total = base - (sign * max(0.0, desc_imp))
             desc = (item.get("articulo_nombre") or item.get("descripcion") or f"Artículo {item.get('id_articulo', '-')}")
             
             # Alternating row colors
@@ -585,8 +629,10 @@ class InvoicePDF(BaseDocumentPDF):
             qty_str = str(int(qty)) if qty == int(qty) else f"{qty:.2f}"
             self.cell(col_widths[1], row_height, qty_str, border="TB", align="C", fill=True)
             self.cell(col_widths[2], row_height, _format_money(unit), border="TB", align="R", fill=True)
-            self.cell(col_widths[3], row_height, f"{iva_pct:.2f}%", border="TB", align="C", fill=True)
-            self.cell(col_widths[4], row_height, _format_money(total), border="TB", align="R", fill=True)
+            self.cell(col_widths[3], row_height, format_percent(iva_pct, decimals=2), border="TB", align="C", fill=True)
+            self.cell(col_widths[4], row_height, format_percent(desc_pct, decimals=2), border="TB", align="R", fill=True)
+            self.cell(col_widths[5], row_height, _format_money(desc_imp), border="TB", align="R", fill=True)
+            self.cell(col_widths[6], row_height, _format_money(total), border="TB", align="R", fill=True)
             self.ln()
 
         self._table_header_active = False
@@ -594,17 +640,36 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _draw_totals_block(self) -> None:
         """Draw totals section aligned to the right."""
-        totals_width = 80
-        label_width = 45
-        value_width = 35
+        totals_width = 95
+        label_width = 57
+        value_width = 38
         x_start = self.w - self.r_margin - totals_width
         
         self.ln(2)
         
-        # Subtotal
+        # Subtotal bruto
         self.set_x(x_start)
         self.set_font("helvetica", "", 10)
-        self.cell(label_width, 6, "Subtotal:", border=0, align="R")
+        self.cell(label_width, 6, "Subtotal bruto:", border=0, align="R")
+        self.cell(value_width, 6, _format_money(self.subtotal_bruto), border=0, align="R")
+        self.ln()
+
+        if self.descuento_lineas > 0:
+            self.set_x(x_start)
+            self.cell(label_width, 6, "Descuento líneas:", border=0, align="R")
+            self.cell(value_width, 6, f"- {_format_money(self.descuento_lineas)}", border=0, align="R")
+            self.ln()
+
+        if self.descuento_global > 0:
+            desc_pct = _safe_float(self.doc.get("descuento_porcentaje"), 0.0)
+            self.set_x(x_start)
+            label = f"Descuento global ({format_percent(desc_pct, decimals=2)}):" if desc_pct > 0 else "Descuento global:"
+            self.cell(label_width, 6, label, border=0, align="R")
+            self.cell(value_width, 6, f"- {_format_money(self.descuento_global)}", border=0, align="R")
+            self.ln()
+
+        self.set_x(x_start)
+        self.cell(label_width, 6, "Neto gravado:", border=0, align="R")
         self.cell(value_width, 6, _format_money(self.neto), border=0, align="R")
         self.ln()
         
@@ -623,7 +688,7 @@ class InvoicePDF(BaseDocumentPDF):
                 self.set_font("helvetica", "", 8)
                 for pct, values in sorted(self.tax_summary.items(), key=lambda x: x[0]):
                     self.set_x(x_start)
-                    self.cell(label_width, 5, f"Base {pct:.2f}%: {_format_money(values['base'])}  |  IVA:", border=0, align="R")
+                    self.cell(label_width, 5, f"Base {format_percent(pct, decimals=2)}: {_format_money(values['base'])}  |  IVA:", border=0, align="R")
                     self.cell(value_width, 5, _format_money(values["iva"]), border=0, align="R")
                     self.ln()
         

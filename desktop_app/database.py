@@ -23,6 +23,11 @@ except ImportError:
         DOCUMENTO_ESTADOS_CONFIRMADOS, DOCUMENTO_ESTADOS_PENDIENTES, DOCUMENTO_ESTADOS_ACTIVOS
     )
 
+try:
+    from desktop_app.services.document_pricing import calculate_document_totals
+except ImportError:
+    from services.document_pricing import calculate_document_totals  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -191,7 +196,18 @@ class Database:
                         ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
                     """)
                     
-                    # 3. Update trigger to save stock_resultante on INSERT
+                    # 3. Ensure per-line discount amount exists for legacy DBs
+                    cur.execute("""
+                        ALTER TABLE app.documento_detalle
+                        ADD COLUMN IF NOT EXISTS descuento_importe NUMERIC(14,4) NOT NULL DEFAULT 0;
+                    """)
+                    cur.execute("""
+                        UPDATE app.documento_detalle
+                        SET descuento_importe = 0
+                        WHERE descuento_importe IS NULL;
+                    """)
+
+                    # 4. Update trigger to save stock_resultante on INSERT
                     cur.execute("""
                         CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
                         RETURNS TRIGGER AS $fn$
@@ -5085,6 +5101,18 @@ class Database:
                 
                 return payment_id
 
+    def _validate_document_item_quantities(self, items: List[Dict[str, Any]]) -> None:
+        for item in items:
+            raw_qty = item.get("cantidad")
+            try:
+                if isinstance(raw_qty, str):
+                    raw_qty = raw_qty.strip().replace(",", ".")
+                qty_dec = Decimal(str(raw_qty))
+            except Exception:
+                raise ValueError("La cantidad debe ser un número entero.")
+            if qty_dec != qty_dec.to_integral_value():
+                raise ValueError("La cantidad debe ser un número entero.")
+
     def create_document(self, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
                         numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
@@ -5096,7 +5124,10 @@ class Database:
                         valor_declarado: float = 0,
                         manual_values: Optional[Dict[str, float]] = None) -> int:
         """
-        items: list of {id_articulo, cantidad, precio_unitario, porcentaje_iva}
+        items: list of {
+            id_articulo, cantidad, precio_unitario, porcentaje_iva,
+            id_lista_precio, descuento_porcentaje, descuento_importe, observacion
+        }
         """
         header_query = """
             INSERT INTO app.documento (
@@ -5110,33 +5141,30 @@ class Database:
         detail_query = """
             INSERT INTO app.documento_detalle (
                 id_documento, nro_linea, id_articulo, cantidad, 
-                precio_unitario, porcentaje_iva, total_linea, id_lista_precio, observacion
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                precio_unitario, descuento_porcentaje, descuento_importe,
+                porcentaje_iva, total_linea, id_lista_precio, observacion
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
         if not items:
             raise ValueError("El comprobante debe tener al menos un item.")
+        self._validate_document_item_quantities(items)
 
-        # Calculate totals - apply discount before IVA
-        neto_bruto = 0
-        for item in items:
-            sub = float(item["cantidad"]) * float(item["precio_unitario"])
-            neto_bruto += sub
-        
-        # Apply discount to neto before IVA calculation
-        desc_factor = 1 - (float(descuento_porcentaje) / 100.0)
-        neto_descontado = neto_bruto * desc_factor
-        subtotal = neto_bruto  # Keep original for reference
-        
-        # Calculate IVA on discounted amount
-        iva_total = 0
-        for item in items:
-            sub = float(item["cantidad"]) * float(item["precio_unitario"])
-            sub_discounted = sub * desc_factor
-            iva_total += sub_discounted * (float(item["porcentaje_iva"]) / 100.0)
-        
-        neto_total = neto_descontado
-        total = neto_descontado + iva_total
+        pricing = calculate_document_totals(
+            items=items,
+            descuento_global_porcentaje=descuento_porcentaje,
+            descuento_global_importe=descuento_importe,
+            descuento_global_mode="percentage",
+            sena=sena,
+            pricing_mode="tax_included",
+        )
+
+        subtotal = pricing["subtotal_bruto"]
+        neto_total = pricing["neto"]
+        iva_total = pricing["iva_total"]
+        total = pricing["total"]
+        desc_pct_normalized = pricing["descuento_global_porcentaje"]
+        desc_imp_normalized = pricing["descuento_global_importe"]
         
         # Default dates if not provided
         if not fecha:
@@ -5153,11 +5181,11 @@ class Database:
         if manual_values:
             # Map UI 'subtotal' (which is net after discount) to DB 'neto'
             if "subtotal" in manual_values:
-                neto_total = manual_values["subtotal"]
+                neto_total = Decimal(str(manual_values["subtotal"]))
             if "iva_total" in manual_values:
-                iva_total = manual_values["iva_total"]
+                iva_total = Decimal(str(manual_values["iva_total"]))
             if "total" in manual_values:
-                total = manual_values["total"]
+                total = Decimal(str(manual_values["total"]))
 
         with self._transaction() as cur:
             # Header
@@ -5170,7 +5198,7 @@ class Database:
                 numero_para_insertar = str(self._next_document_number(cur, id_tipo_documento))
             cur.execute(header_query, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
-                observacion, numero_para_insertar, descuento_porcentaje, descuento_importe, self.current_user_id,
+                observacion, numero_para_insertar, desc_pct_normalized, desc_imp_normalized, self.current_user_id,
                 neto_total, subtotal, iva_total, total, sena, valor_declarado,
                 final_fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
             ))
@@ -5179,8 +5207,7 @@ class Database:
 
             # Details (batch insert)
             detail_rows = []
-            for i, item in enumerate(items, 1):
-                line_total = float(item["cantidad"]) * float(item["precio_unitario"])
+            for i, item in enumerate(pricing["items"], 1):
                 detail_rows.append(
                     (
                         doc_id,
@@ -5188,8 +5215,10 @@ class Database:
                         item["id_articulo"],
                         item["cantidad"],
                         item["precio_unitario"],
+                        item["descuento_porcentaje"],
+                        item["descuento_importe"],
                         item["porcentaje_iva"],
-                        line_total,
+                        item["total_linea"],
                         item.get("id_lista_precio"),
                         item.get("observacion")
                     )
@@ -5205,7 +5234,8 @@ class Database:
                     "tipo": id_tipo_documento,
                     "numero": numero_para_insertar,
                     "entidad": id_entidad_comercial,
-                    "total": float(total)
+                    "total": float(total),
+                    "descuento_lineas": float(pricing["descuento_lineas_importe"]),
                 }
             )
             
@@ -5747,15 +5777,21 @@ class Database:
                 }
                 
                 cur.execute("""
-                    SELECT id_articulo, cantidad, precio_unitario, porcentaje_iva, id_lista_precio, observacion
+                    SELECT id_articulo, cantidad, precio_unitario, descuento_porcentaje, descuento_importe,
+                           porcentaje_iva, total_linea, id_lista_precio, observacion
                     FROM app.documento_detalle WHERE id_documento = %s ORDER BY nro_linea
                 """, (doc_id,))
                 items = []
                 for row in cur.fetchall():
                     items.append({
                         "id_articulo": row[0], "cantidad": float(row[1]), 
-                        "precio_unitario": float(row[2]), "porcentaje_iva": float(row[3]),
-                        "id_lista_precio": row[4], "observacion": row[5]
+                        "precio_unitario": float(row[2]),
+                        "descuento_porcentaje": float(row[3] or 0),
+                        "descuento_importe": float(row[4] or 0),
+                        "porcentaje_iva": float(row[5] or 0),
+                        "total_linea": float(row[6] or 0),
+                        "id_lista_precio": row[7],
+                        "observacion": row[8]
                     })
                 doc["items"] = items
                 return doc
@@ -5770,32 +5806,30 @@ class Database:
                         sena: float = 0,
                         valor_declarado: float = 0,
                         manual_values: Optional[Dict[str, float]] = None) -> bool:
-        
-        neto_bruto = 0
-        for item in items:
-            sub = float(item["cantidad"]) * float(item["precio_unitario"])
-            neto_bruto += sub
-        
-        desc_factor = 1 - (float(descuento_porcentaje) / 100.0)
-        neto_descontado = neto_bruto * desc_factor
-        subtotal = neto_bruto
-        
-        iva_total = 0
-        for item in items:
-            sub = float(item["cantidad"]) * float(item["precio_unitario"])
-            sub_discounted = sub * desc_factor
-            iva_total += sub_discounted * (float(item["porcentaje_iva"]) / 100.0)
-        
-        neto_total = neto_descontado
-        total = neto_descontado + iva_total
+        self._validate_document_item_quantities(items)
+        pricing = calculate_document_totals(
+            items=items,
+            descuento_global_porcentaje=descuento_porcentaje,
+            descuento_global_importe=descuento_importe,
+            descuento_global_mode="percentage",
+            sena=sena,
+            pricing_mode="tax_included",
+        )
+
+        subtotal = pricing["subtotal_bruto"]
+        neto_total = pricing["neto"]
+        iva_total = pricing["iva_total"]
+        total = pricing["total"]
+        desc_pct_normalized = pricing["descuento_global_porcentaje"]
+        desc_imp_normalized = pricing["descuento_global_importe"]
         
         if manual_values:
             if "subtotal" in manual_values:
-                neto_total = manual_values["subtotal"]
+                neto_total = Decimal(str(manual_values["subtotal"]))
             if "iva_total" in manual_values:
-                iva_total = manual_values["iva_total"]
+                iva_total = Decimal(str(manual_values["iva_total"]))
             if "total" in manual_values:
-                total = manual_values["total"]
+                total = Decimal(str(manual_values["total"]))
 
         final_fecha = fecha if fecha else datetime.now()
 
@@ -5810,7 +5844,7 @@ class Database:
                 WHERE id=%s
             """, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
-                observacion, numero_serie, descuento_porcentaje, descuento_importe,
+                observacion, numero_serie, desc_pct_normalized, desc_imp_normalized,
                 neto_total, subtotal, iva_total, total, sena, valor_declarado,
                 final_fecha, fecha_vencimiento, id_lista_precio,
                 direccion_entrega, self.current_user_id,
@@ -5822,16 +5856,17 @@ class Database:
             detail_query = ("""
                 INSERT INTO app.documento_detalle (
                     id_documento, nro_linea, id_articulo, cantidad, 
-                    precio_unitario, porcentaje_iva, total_linea, id_lista_precio, observacion
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    precio_unitario, descuento_porcentaje, descuento_importe,
+                    porcentaje_iva, total_linea, id_lista_precio, observacion
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """)
             
             detail_rows = []
-            for i, item in enumerate(items, 1):
-                line_total = float(item["cantidad"]) * float(item["precio_unitario"])
+            for i, item in enumerate(pricing["items"], 1):
                 detail_rows.append((
                     doc_id, i, item["id_articulo"], item["cantidad"],
-                    item["precio_unitario"], item["porcentaje_iva"], line_total,
+                    item["precio_unitario"], item["descuento_porcentaje"], item["descuento_importe"],
+                    item["porcentaje_iva"], item["total_linea"],
                     item.get("id_lista_precio"), item.get("observacion")
                 ))
             
