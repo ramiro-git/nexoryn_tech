@@ -7502,15 +7502,15 @@ def main(page: ft.Page) -> None:
             def background_monitor():
                 while not window_is_closing:
                     try:
-                        # Check for inactivity timeout
-                        if current_user and current_user.get("id"):
-                            elapsed = time.time() - last_activity_time
-                            if elapsed > INACTIVITY_TIMEOUT:
-                                # Log timeout and logout
-                                if db:
-                                    db.log_activity("SISTEMA", "TIMEOUT_INACTIVIDAD", detalle={"timeout_seg": INACTIVITY_TIMEOUT})
-                                _run_on_ui(do_logout)
-                                continue # Skip remainder of this loop cycle after logout
+                        # Check for inactivity timeout - DISABLED per user request
+                        # if current_user and current_user.get("id"):
+                        #     elapsed = time.time() - last_activity_time
+                        #     if elapsed > INACTIVITY_TIMEOUT:
+                        #         # Log timeout and logout
+                        #         if db:
+                        #             db.log_activity("SISTEMA", "TIMEOUT_INACTIVIDAD", detalle={"timeout_seg": INACTIVITY_TIMEOUT})
+                        #         _run_on_ui(do_logout)
+                        #         continue # Skip remainder of this loop cycle after logout
 
                         # Only refresh if logged in
                         if db and db.current_user_id:
