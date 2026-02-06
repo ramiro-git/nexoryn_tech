@@ -8215,6 +8215,15 @@ def main(page: ft.Page) -> None:
                         if not missing_art.get("activo", True):
                             missing_art["nombre"] += " (Inactivo)"
                         articulos.append(missing_art)
+                    else:
+                        # Fallback for migrated articles not in database
+                        hist_desc = item.get("descripcion_historica") or "Artículo Desconocido"
+                        articulos.append({
+                            "id": aid,
+                            "nombre": f"{hist_desc} (Migrado)",
+                            "activo": False,
+                            "porcentaje_iva": item.get("porcentaje_iva", 0)
+                        })
                 
                 # Price List for the item
                 # Schema fallback: app.documento_detalle doesn't assume list, 
@@ -8271,6 +8280,15 @@ def main(page: ft.Page) -> None:
                         field_direccion.value = entity.get("domicilio") or ""
 
                     _safe_update_multiple(field_saldo, dropdown_lista_global, field_direccion)
+                    
+                    # Manual trigger to update existing line items with the new global list
+                    try:
+                        # We use a lambda to defer execution in case _on_global_list_change is not defined yet,
+                        # though in this scope it will be available when the callback runs.
+                        if "_on_global_list_change" in locals() or "_on_global_list_change" in globals():
+                             _on_global_list_change(None)
+                    except Exception:
+                        pass
                 except Exception as ex:
                     logger.error(f"Error updating entity info: {ex}")
         
@@ -8827,6 +8845,10 @@ def main(page: ft.Page) -> None:
                 _sync_fiscal_iva_from_visible(source="article_change")
                 _update_price_from_list()
                 _check_stock_warning()
+                
+                # Automation: if an article is selected and this is the last line, add a new one
+                if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
+                    _add_line()
             
             def _on_value_change(_):
                 _update_line_total()
@@ -9164,6 +9186,9 @@ def main(page: ft.Page) -> None:
                 if "id_lista_precio" not in item:
                     item["id_lista_precio"] = doc_data.get("id_lista_precio")
                 _add_line(initial_data=item, update_ui=False)
+            
+            # Always add a blank line at the end for automation to work
+            _add_line(update_ui=False)
             
             # Set manual totals if they were different from calculated?
             # Or just set them if the document state says so.

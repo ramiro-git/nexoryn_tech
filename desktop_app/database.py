@@ -4910,9 +4910,12 @@ class Database:
 
     def fetch_documento_detalle(self, documento_id: int) -> List[Dict[str, Any]]:
         query = """
-            SELECT dd.*, a.nombre as articulo, a.id as codigo_art, lp.nombre as lista_nombre
+            SELECT dd.*, 
+                   COALESCE(a.nombre, dd.descripcion_historica, 'Artículo Descon.') as articulo, 
+                   a.id as codigo_art, 
+                   lp.nombre as lista_nombre
             FROM app.documento_detalle dd
-            JOIN app.articulo a ON dd.id_articulo = a.id
+            LEFT JOIN app.articulo a ON dd.id_articulo = a.id
             LEFT JOIN ref.lista_precio lp ON dd.id_lista_precio = lp.id
             WHERE dd.id_documento = %s
             ORDER BY dd.nro_linea
@@ -5778,7 +5781,7 @@ class Database:
                 
                 cur.execute("""
                     SELECT id_articulo, cantidad, precio_unitario, descuento_porcentaje, descuento_importe,
-                           porcentaje_iva, total_linea, id_lista_precio, observacion
+                           porcentaje_iva, total_linea, id_lista_precio, observacion, descripcion_historica
                     FROM app.documento_detalle WHERE id_documento = %s ORDER BY nro_linea
                 """, (doc_id,))
                 items = []
@@ -5791,7 +5794,8 @@ class Database:
                         "porcentaje_iva": float(row[5] or 0),
                         "total_linea": float(row[6] or 0),
                         "id_lista_precio": row[7],
-                        "observacion": row[8]
+                        "observacion": row[8],
+                        "descripcion_historica": row[9]
                     })
                 doc["items"] = items
                 return doc
