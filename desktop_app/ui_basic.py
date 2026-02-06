@@ -991,9 +991,10 @@ def main(page: ft.Page) -> None:
         if current_user and current_user.get("id"):
             last_activity_time = time.time()
 
-    # Best-effort fallback; real input events are wired below.
+    # Best-effort fallback. Keep generic event tracking, but avoid global
+    # keyboard hook because it can interfere with numpad digit input on
+    # Windows/Flet in some environments.
     page.on_event = mark_activity
-    page.on_keyboard_event = mark_activity
     
     db_error: Optional[str] = None
     local_ip = "127.0.0.1"
