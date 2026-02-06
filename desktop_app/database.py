@@ -5453,6 +5453,9 @@ class Database:
                             ),
                         )
             
+            # Generar remito si corresponde (para documentos de VENTA: facturas, presupuestos, etc.)
+            self._ensure_remito_for_document(cur, doc_id)
+            
             # Log audit activity
             self.log_activity(
                 entidad="app.documento",
