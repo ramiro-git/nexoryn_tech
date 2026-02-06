@@ -8237,24 +8237,42 @@ def main(page: ft.Page) -> None:
 
         field_vto = _date_field(page, "Vencimiento *", width=160)
         field_vto.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
         lista_initial_items = [{"value": l["id"], "label": l["nombre"]} for l in listas]
         field_saldo = ft.Text("", size=12, color=COLOR_ACCENT, weight=ft.FontWeight.W_500)
         
-        def _update_entidad_info(e=None):
+        def _update_entidad_info(e=None, preserve_values=False):
             if dropdown_entidad.value:
-                info = db.get_saldo_entidad(int(dropdown_entidad.value))
-                bal = float(info.get("saldo", 0))
-                field_saldo.value = f"Saldo actual: {_format_money(bal)}"
-                if bal < 0:
-                    field_saldo.color = COLOR_SUCCESS
-                elif bal > 0:
-                    field_saldo.color = COLOR_ERROR
-                else:
-                    field_saldo.color = COLOR_TEXT_MUTED
-                if field_saldo.page:
-                    field_saldo.update()
+                try:
+                    ent_id = int(dropdown_entidad.value)
+                    # Fetch full entity details to get address and default price list
+                    entity = db.fetch_entity_by_id(ent_id) or {}
+                    
+                    # 1. Update Balance
+                    bal = float(entity.get("saldo_cuenta", 0))
+                    field_saldo.value = f"Saldo actual: {_format_money(bal)}"
+                    if bal < 0:
+                        field_saldo.color = COLOR_SUCCESS
+                    elif bal > 0:
+                        field_saldo.color = COLOR_ERROR
+                    else:
+                        field_saldo.color = COLOR_TEXT_MUTED
+                    
+                    if not preserve_values:
+                        # 2. auto-select Default Price List (if configured in client)
+                        # User requirement: "que la lista global la ponga por default la que tiene el cliente (si es que tiene una asignada, sino que no ponga nada)"
+                        if entity.get("id_lista_precio"):
+                            dropdown_lista_global.value = str(entity["id_lista_precio"])
+                        else:
+                            dropdown_lista_global.value = None
+                            
+                        # 3. Auto-fill Address
+                        # User requirement: "en la direccion, lo mismo, que ponga la del cliente (y sino tiene que no ponga nada)"
+                        field_direccion.value = entity.get("domicilio") or ""
+
+                    _safe_update_multiple(field_saldo, dropdown_lista_global, field_direccion)
+                except Exception as ex:
+                    logger.error(f"Error updating entity info: {ex}")
         
         ent_initial_items = [{"value": e["id"], "label": f"{e['nombre_completo']} ({e['tipo']})"} for e in entidades]
         dropdown_entidad = AsyncSelect(
@@ -8302,12 +8320,6 @@ def main(page: ft.Page) -> None:
         # AND the source document was a Factura (not Presupuesto, Remito, etc)
         is_facturado = doc_data and doc_data.get("cae") is not None
         source_is_factura = False
-        if doc_data:
-             # Try to determine if source type name contains "FACTURA"
-             # Since we only have ID here, we look it up in 'tipos' list loop below or pre-fetch?
-             # Easier: we loop below.
-             pass
-
         allowed_tipos = []
         
         # Helper to check if source type was valid for NC/ND
@@ -8375,7 +8387,7 @@ def main(page: ft.Page) -> None:
             field_sena.value = normalize_input_value(doc_data.get("sena", 0), decimals=2, use_grouping=True)
             field_valor_declarado.value = normalize_input_value(doc_data.get("valor_declarado", 0), decimals=2, use_grouping=True)
             
-            _update_entidad_info(None)
+            _update_entidad_info(None, preserve_values=True)
         else:
             if not dropdown_tipo.value and allowed_tipos:
                 dropdown_tipo.value = str(allowed_tipos[0]["id"])
