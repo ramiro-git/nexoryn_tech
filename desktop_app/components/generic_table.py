@@ -1083,21 +1083,20 @@ class GenericTable:
         except (ValueError, TypeError):
             idx_to_cast = None
 
-        existing_index: Optional[int] = None
-        for idx, (k, _) in enumerate(self.sorts):
+        existing_direction: Optional[str] = None
+        for k, direction in self.sorts:
             if k == key:
-                existing_index = idx
+                existing_direction = direction
                 break
 
-        if existing_index is None:
-            self.sorts.append((key, "asc"))
+        # Single-column sorting cycle:
+        # no sort -> asc -> desc -> no sort
+        if existing_direction is None:
+            self.sorts = [(key, "asc")]
+        elif existing_direction == "asc":
+            self.sorts = [(key, "desc")]
         else:
-            _, direction = self.sorts[existing_index]
-            if direction == "asc":
-                self.sorts.pop(existing_index)
-                self.sorts.append((key, "desc"))
-            else:
-                self.sorts.pop(existing_index)
+            self.sorts = []
 
         self._last_sort_idx = idx_to_cast if self.sorts else None
         self._sync_sort_indicator()

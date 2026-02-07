@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS app.lista_cliente (
 CREATE TABLE IF NOT EXISTS app.articulo (
   id                     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   nombre                 VARCHAR(200) NOT NULL,
+  codigo                 VARCHAR(80),
   id_marca               BIGINT REFERENCES ref.marca(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   id_rubro               BIGINT REFERENCES ref.rubro(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   id_tipo_iva            BIGINT REFERENCES ref.tipo_iva(id) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -574,7 +575,8 @@ SELECT
   a.observacion,
   a.ubicacion,
   COALESCE(st.stock_total, 0) AS stock_actual,
-  ap.precio AS precio_lista
+  ap.precio AS precio_lista,
+  a.codigo
 FROM app.articulo a
 LEFT JOIN ref.marca m ON m.id = a.id_marca
 LEFT JOIN ref.rubro r ON r.id = a.id_rubro
@@ -780,6 +782,7 @@ CREATE INDEX IF NOT EXISTS idx_articulo_proveedor ON app.articulo(id_proveedor);
 CREATE INDEX IF NOT EXISTS idx_articulo_tipo_iva ON app.articulo(id_tipo_iva);
 CREATE INDEX IF NOT EXISTS idx_articulo_unidad ON app.articulo(id_unidad_medida);
 CREATE INDEX IF NOT EXISTS idx_articulo_activo ON app.articulo(activo) WHERE activo = true;
+CREATE INDEX IF NOT EXISTS idx_articulo_codigo ON app.articulo(codigo);
 
 -- Full-text search for articles
 CREATE INDEX IF NOT EXISTS idx_articulo_nombre_trgm ON app.articulo USING gin (nombre gin_trgm_ops);
@@ -1097,6 +1100,7 @@ CREATE INDEX IF NOT EXISTS idx_entidad_nombre_completo_trgm ON app.entidad_comer
 );
 
 CREATE INDEX IF NOT EXISTS idx_articulo_nombre_lower_trgm ON app.articulo USING gin (lower(nombre) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_articulo_codigo_lower_trgm ON app.articulo USING gin (lower(codigo) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_articulo_ubicacion_lower_trgm ON app.articulo USING gin (lower(ubicacion) gin_trgm_ops);
 
 -- Document Search

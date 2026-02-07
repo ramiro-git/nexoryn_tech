@@ -68,6 +68,11 @@ try:
     from desktop_app.components.mass_update_view import MassUpdateView
     from desktop_app.services.print_service import generate_pdf_and_open
     from desktop_app.services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal
+    from desktop_app.services.article_price_autocalc import (
+        calc_pct_from_cost_price,
+        calc_price_from_cost_pct,
+        normalize_price_tipo,
+    )
     from desktop_app.services.number_locale import (
         format_currency,
         format_percent,
@@ -97,6 +102,7 @@ except ImportError:
     from components.mass_update_view import MassUpdateView # type: ignore
     from services.print_service import generate_pdf_and_open # type: ignore
     from services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal  # type: ignore
+    from services.article_price_autocalc import calc_pct_from_cost_price, calc_price_from_cost_pct, normalize_price_tipo  # type: ignore
     from services.number_locale import format_currency, format_percent, normalize_input_value, parse_locale_number  # type: ignore
     from components.async_select import AsyncSelect  # type: ignore
     from components.button_styles import cancel_button # type: ignore
@@ -184,6 +190,18 @@ def _parse_positive_float_optional(value: Any, label: str = "valor") -> float:
     if numeric <= 0:
         raise ValueError(f"El campo '{label}' debe ser mayor a 0 o dejarse vacío.")
     return numeric
+
+
+def _normalize_price_tipo(tipo: Any) -> str:
+    return normalize_price_tipo(tipo)
+
+
+def _calc_price_from_cost_pct(cost: Any, pct: Any, tipo: Any) -> float:
+    return calc_price_from_cost_pct(cost, pct, tipo)
+
+
+def _calc_pct_from_cost_price(cost: Any, price: Any, tipo: Any) -> float:
+    return calc_pct_from_cost_price(cost, price, tipo)
 
 
 def _format_money(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
@@ -1586,6 +1604,8 @@ def main(page: ft.Page) -> None:
 
     articulos_advanced_nombre = ft.TextField(label="Nombre contiene", width=220, on_change=_art_live)
     _style_input(articulos_advanced_nombre)
+    articulos_advanced_codigo = ft.TextField(label="Código contiene", width=180, on_change=_art_live)
+    _style_input(articulos_advanced_codigo)
     articulos_advanced_marca = _dropdown("Filtrar Marca", [("", "Todas")], value="", width=200, on_change=_art_live)
     articulos_advanced_rubro = _dropdown("Filtrar Rubro", [("", "Todos")], value="", width=200, on_change=_art_live)
     articulos_advanced_proveedor = AsyncSelect(
@@ -2221,6 +2241,13 @@ def main(page: ft.Page) -> None:
         columns=[
             ColumnConfig(key="nombre", label="Nombre", editable=True, width=240),
             ColumnConfig(
+                key="codigo",
+                label="Código",
+                editable=True,
+                formatter=lambda v, _: v or "—",
+                width=120,
+            ),
+            ColumnConfig(
                 key="marca",
                 label="Marca",
                 editable=True,
@@ -2361,6 +2388,7 @@ def main(page: ft.Page) -> None:
         data_provider=articulos_provider,
         advanced_filters=[
             AdvancedFilterControl("nombre", articulos_advanced_nombre),
+            AdvancedFilterControl("codigo", articulos_advanced_codigo),
             AdvancedFilterControl("id_marca", articulos_advanced_marca),
             AdvancedFilterControl("id_rubro", articulos_advanced_rubro),
             AdvancedFilterControl("id_proveedor", articulos_advanced_proveedor),
@@ -2389,7 +2417,7 @@ def main(page: ft.Page) -> None:
         show_export_button=True,
         show_export_scope=True,
     )
-    articulos_table.search_field.hint_text = "Búsqueda global (nombre)…"
+    articulos_table.search_field.hint_text = "Búsqueda global (nombre/código)…"
     
     articulos_view = ft.Column([
         ft.Row([
@@ -2860,6 +2888,8 @@ def main(page: ft.Page) -> None:
 
     nuevo_articulo_nombre = ft.TextField(label="Nombre *", width=560)
     _style_input(nuevo_articulo_nombre)
+    nuevo_articulo_codigo = ft.TextField(label="Código", width=275)
+    _style_input(nuevo_articulo_codigo)
     nuevo_articulo_marca = ft.Dropdown(label="Marca *", width=275, options=[], value="")
     _style_input(nuevo_articulo_marca)
     nuevo_articulo_rubro = ft.Dropdown(label="Rubro *", width=275, options=[], value="")
@@ -2883,6 +2913,203 @@ def main(page: ft.Page) -> None:
     nuevo_articulo_activo = ft.Switch(label="Activo", value=True)
     articulo_precios_container = ft.Column(spacing=10)
 
+    def _article_decimal_input(value: Any) -> str:
+        return normalize_input_value(value, decimals=2, use_grouping=False) or "0,00"
+
+    def _default_tipo_porcentaje_id() -> str:
+        margin_id = next(
+            (
+                str(t["id"])
+                for t in tipos_porcentaje_values
+                if _normalize_price_tipo(t.get("tipo")) == "MARGEN"
+            ),
+            "",
+        )
+        if margin_id:
+            return margin_id
+        return str(tipos_porcentaje_values[0]["id"]) if tipos_porcentaje_values else ""
+
+    def _resolve_tipo_porcentaje_label(tipo_id: Any) -> str:
+        tipo_entry = next(
+            (
+                t
+                for t in tipos_porcentaje_values
+                if str(t.get("id")) == str(tipo_id)
+            ),
+            None,
+        )
+        if tipo_entry:
+            return _normalize_price_tipo(tipo_entry.get("tipo"))
+        return _normalize_price_tipo(tipo_id)
+
+    def _normalize_article_numeric_field(field: ft.TextField) -> None:
+        field.value = _article_decimal_input(field.value)
+        _safe_update_control(field)
+
+    def _iter_article_price_rows() -> List[ft.Container]:
+        rows: List[ft.Container] = []
+        for ctrl in articulo_precios_container.controls:
+            if isinstance(ctrl, ft.Container) and hasattr(ctrl, "price_data") and hasattr(ctrl, "price_refs"):
+                rows.append(ctrl)
+        return rows
+
+    def _sync_row_price_from_pct(row_cont: ft.Container, *, normalize_inputs: bool = False) -> None:
+        refs = getattr(row_cont, "price_refs", {}) or {}
+        guard = refs.get("sync_guard")
+        tf_precio = refs.get("precio")
+        tf_porc = refs.get("porcentaje")
+        dd_tipo = refs.get("tipo")
+        if not isinstance(guard, dict) or tf_precio is None or tf_porc is None or dd_tipo is None:
+            return
+        if guard.get("active"):
+            return
+
+        try:
+            cost_val = _parse_float(nuevo_articulo_costo.value, "Costo")
+            pct_val = _parse_float(tf_porc.value, "Porcentaje")
+        except Exception:
+            return
+
+        tipo_label = _resolve_tipo_porcentaje_label(dd_tipo.value)
+        price_val = _calc_price_from_cost_pct(cost_val, pct_val, tipo_label)
+
+        guard["active"] = True
+        try:
+            if normalize_inputs:
+                tf_porc.value = _article_decimal_input(pct_val)
+                _safe_update_control(tf_porc)
+            tf_precio.value = _article_decimal_input(price_val)
+            _safe_update_control(tf_precio)
+        finally:
+            guard["active"] = False
+
+    def _sync_row_pct_from_price(row_cont: ft.Container, *, normalize_inputs: bool = False) -> None:
+        refs = getattr(row_cont, "price_refs", {}) or {}
+        guard = refs.get("sync_guard")
+        tf_precio = refs.get("precio")
+        tf_porc = refs.get("porcentaje")
+        dd_tipo = refs.get("tipo")
+        if not isinstance(guard, dict) or tf_precio is None or tf_porc is None or dd_tipo is None:
+            return
+        if guard.get("active"):
+            return
+
+        try:
+            cost_val = _parse_float(nuevo_articulo_costo.value, "Costo")
+            price_val = _parse_float(tf_precio.value, "Precio")
+        except Exception:
+            return
+
+        tipo_label = _resolve_tipo_porcentaje_label(dd_tipo.value)
+        pct_val = _calc_pct_from_cost_price(cost_val, price_val, tipo_label)
+
+        guard["active"] = True
+        try:
+            if normalize_inputs:
+                tf_precio.value = _article_decimal_input(price_val)
+                _safe_update_control(tf_precio)
+            tf_porc.value = _article_decimal_input(pct_val)
+            _safe_update_control(tf_porc)
+        finally:
+            guard["active"] = False
+
+    def _sync_all_article_prices_from_cost() -> None:
+        for row_cont in _iter_article_price_rows():
+            _sync_row_price_from_pct(row_cont)
+
+    def _build_article_price_row(
+        *,
+        list_name: Any,
+        lista_id: Any,
+        precio_value: Any = 0,
+        porcentaje_value: Any = 0,
+        tipo_id: Any = None,
+    ) -> ft.Container:
+        tf_p = ft.TextField(
+            label="Precio",
+            value=_article_decimal_input(precio_value),
+            width=110,
+            prefix_text="$",
+        )
+        _style_input(tf_p)
+
+        tf_per = ft.TextField(
+            label="%",
+            value=_article_decimal_input(porcentaje_value),
+            width=90,
+        )
+        _style_input(tf_per)
+
+        dd_default = str(tipo_id) if tipo_id else _default_tipo_porcentaje_id()
+        dd_tp = ft.Dropdown(
+            label="Tipo de Calculo",
+            width=180,
+            options=[
+                ft.dropdown.Option(str(t["id"]), t["tipo"]) for t in tipos_porcentaje_values
+            ],
+            value=dd_default,
+        )
+        _style_input(dd_tp)
+
+        row_cont = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Text(str(list_name or "—"), size=13, width=120),
+                    tf_p,
+                    tf_per,
+                    dd_tp,
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        )
+        row_cont.price_data = {"lp_id": lista_id}
+        row_cont.price_refs = {
+            "precio": tf_p,
+            "porcentaje": tf_per,
+            "tipo": dd_tp,
+            "sync_guard": {"active": False},
+        }
+
+        def _on_pct_or_tipo_change(_: Any = None) -> None:
+            _sync_row_price_from_pct(row_cont)
+
+        def _on_precio_change(_: Any = None) -> None:
+            _sync_row_pct_from_price(row_cont)
+
+        def _on_pct_commit(_: Any = None) -> None:
+            _normalize_article_numeric_field(tf_per)
+            _sync_row_price_from_pct(row_cont, normalize_inputs=True)
+
+        def _on_precio_commit(_: Any = None) -> None:
+            _normalize_article_numeric_field(tf_p)
+            _sync_row_pct_from_price(row_cont, normalize_inputs=True)
+
+        tf_per.on_change = _on_pct_or_tipo_change
+        dd_tp.on_change = _on_pct_or_tipo_change
+        tf_p.on_change = _on_precio_change
+        tf_per.on_submit = _on_pct_commit
+        tf_p.on_submit = _on_precio_commit
+        if hasattr(tf_per, "on_blur"):
+            tf_per.on_blur = _on_pct_commit  # type: ignore[attr-defined]
+        if hasattr(tf_p, "on_blur"):
+            tf_p.on_blur = _on_precio_commit  # type: ignore[attr-defined]
+
+        return row_cont
+
+    def _wire_article_cost_handlers() -> None:
+        def _on_cost_change(_: Any = None) -> None:
+            _sync_all_article_prices_from_cost()
+
+        def _on_cost_commit(_: Any = None) -> None:
+            _normalize_article_numeric_field(nuevo_articulo_costo)
+            _sync_all_article_prices_from_cost()
+
+        nuevo_articulo_costo.on_change = _on_cost_change
+        nuevo_articulo_costo.on_submit = _on_cost_commit
+        if hasattr(nuevo_articulo_costo, "on_blur"):
+            nuevo_articulo_costo.on_blur = _on_cost_commit  # type: ignore[attr-defined]
+
     def crear_articulo(_: Any = None) -> None:
         db_conn = get_db_or_toast()
         if db_conn is None:
@@ -2899,6 +3126,7 @@ def main(page: ft.Page) -> None:
 
             art_id = db_conn.create_article(
                 nombre=nuevo_articulo_nombre.value or "",
+                codigo=nuevo_articulo_codigo.value,
                 marca=nuevo_articulo_marca.value,
                 rubro=nuevo_articulo_rubro.value,
                 costo=costo_val,
@@ -3005,6 +3233,7 @@ def main(page: ft.Page) -> None:
 
             updates = {
                 "nombre": nuevo_articulo_nombre.value or "",
+                "codigo": nuevo_articulo_codigo.value,
                 "marca": nuevo_articulo_marca.value,
                 "rubro": nuevo_articulo_rubro.value,
                 "costo": costo_val,
@@ -3126,6 +3355,7 @@ def main(page: ft.Page) -> None:
                 [
                     section_title("Información General"),
                     ft.Row([nuevo_articulo_nombre], spacing=10),
+                    ft.Row([nuevo_articulo_codigo], spacing=10),
                     ft.Row([nuevo_articulo_marca, nuevo_articulo_rubro], spacing=10),
                     ft.Row([nuevo_articulo_tipo_iva, nuevo_articulo_unidad], spacing=10),
                     ft.Row([nuevo_articulo_proveedor], spacing=10),
@@ -3181,6 +3411,7 @@ def main(page: ft.Page) -> None:
         _populate_dropdowns()
         
         nuevo_articulo_nombre.value = ""
+        nuevo_articulo_codigo.value = ""
         nuevo_articulo_marca.value = ""
         nuevo_articulo_rubro.value = ""
         # Default IVA to 21% if found
@@ -3208,46 +3439,21 @@ def main(page: ft.Page) -> None:
             lists = db_conn.fetch_listas_precio()
             articulo_precios_container.controls.clear()
             for l in lists:
-                if not l.get("activa", True): continue
-                
-                tf_p = ft.TextField(
-                    label="Precio",
-                    value="0",
-                    width=110,
-                    prefix_text="$",
+                if not l.get("activa", True):
+                    continue
+                articulo_precios_container.controls.append(
+                    _build_article_price_row(
+                        list_name=l.get("nombre"),
+                        lista_id=l.get("id"),
+                        precio_value=0,
+                        porcentaje_value=0,
+                        tipo_id=None,
+                    )
                 )
-                _style_input(tf_p)
-                
-                tf_per = ft.TextField(
-                    label="%",
-                    value="0",
-                    width=90,
-                )
-                _style_input(tf_per)
-                
-                dd_tp = ft.Dropdown(
-                    label="Tipo de Calculo",
-                    width=180,
-                    options=[
-                        ft.dropdown.Option(str(t["id"]), t["tipo"]) for t in tipos_porcentaje_values
-                    ],
-                    value=next((str(t["id"]) for t in tipos_porcentaje_values if "mar" in t["tipo"].lower()), 
-                          (str(tipos_porcentaje_values[0]["id"]) if tipos_porcentaje_values else "")),
-                )
-                _style_input(dd_tp)
-                
-                row_cont = ft.Container(
-                    content=ft.Row([
-                        ft.Text(l['nombre'], size=13, width=120),
-                        tf_p,
-                        tf_per,
-                        dd_tp
-                    ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-                )
-                row_cont.price_data = {"lp_id": l["id"]}
-                articulo_precios_container.controls.append(row_cont)
         except Exception as e:
             logger.warning(f"Falló al llenar precios de artículo: {e}")
+
+        _wire_article_cost_handlers()
 
         open_form(
             "Nuevo artículo",
@@ -3338,6 +3544,7 @@ def main(page: ft.Page) -> None:
                         ft.Divider(height=1, color=COLOR_BORDER),
                                 ft.Row([
                                     ft.Column([
+                                        info_row("Código", art.get('codigo') or "—", ft.icons.INFO_OUTLINE_ROUNDED),
                                         info_row("Marca", art.get('marca'), ft.icons.LABEL_ROUNDED),
                                         info_row("Rubro", art.get('rubro'), ft.icons.CATEGORY_ROUNDED),
                                         info_row("Proveedor", art.get('proveedor'), ft.icons.BUSINESS_ROUNDED),
@@ -3399,6 +3606,7 @@ def main(page: ft.Page) -> None:
                 return
 
             nuevo_articulo_nombre.value = art.get("nombre", "")
+            nuevo_articulo_codigo.value = art.get("codigo") or ""
             nuevo_articulo_marca.value = art.get("marca_nombre") or ""
             nuevo_articulo_rubro.value = art.get("rubro_nombre") or ""
             nuevo_articulo_tipo_iva.value = str(art["id_tipo_iva"]) if art.get("id_tipo_iva") else ""
@@ -3419,45 +3627,21 @@ def main(page: ft.Page) -> None:
             prices = db_conn.fetch_article_prices(art_id)
             articulo_precios_container.controls.clear()
             for p in prices:
-                tf_p = ft.TextField(
-                    label="Precio",
-                    value=str(p["precio"] or 0),
-                    width=110,
-                    prefix_text="$",
+                articulo_precios_container.controls.append(
+                    _build_article_price_row(
+                        list_name=p.get("lista_nombre") or "—",
+                        lista_id=p.get("id_lista_precio"),
+                        precio_value=p.get("precio") or 0,
+                        porcentaje_value=p.get("porcentaje") or 0,
+                        tipo_id=p.get("id_tipo_porcentaje"),
+                    )
                 )
-                _style_input(tf_p)
-                
-                tf_per = ft.TextField(
-                    label="%",
-                    value=str(p["porcentaje"] or 0),
-                    width=90,
-                )
-                _style_input(tf_per)
-                
-                dd_tp = ft.Dropdown(
-                    label="Tipo de Calculo",
-                    width=180,
-                    options=[
-                        ft.dropdown.Option(str(t["id"]), t["tipo"]) for t in tipos_porcentaje_values
-                    ],
-                    value=str(p["id_tipo_porcentaje"]) if p.get("id_tipo_porcentaje") else "",
-                )
-                _style_input(dd_tp)
-                
-                row_cont = ft.Container(
-                    content=ft.Row([
-                        ft.Text(p['lista_nombre'] or "—", size=13, width=120),
-                        tf_p,
-                        tf_per,
-                        dd_tp
-                    ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-                )
-                row_cont.price_data = {"lp_id": p["id_lista_precio"]}
-                articulo_precios_container.controls.append(row_cont)
 
         except Exception as exc:
             show_toast(f"Error al cargar artículo: {exc}", kind="error")
             return
+
+        _wire_article_cost_handlers()
 
         open_form(
             "Editar artículo",

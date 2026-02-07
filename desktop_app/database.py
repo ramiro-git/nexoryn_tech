@@ -207,7 +207,69 @@ class Database:
                         WHERE descuento_importe IS NULL;
                     """)
 
-                    # 4. Update trigger to save stock_resultante on INSERT
+                    # 4. Ensure article code exists for product identification
+                    cur.execute("""
+                        ALTER TABLE app.articulo
+                        ADD COLUMN IF NOT EXISTS codigo VARCHAR(80);
+                    """)
+                    cur.execute("""
+                        UPDATE app.articulo
+                        SET codigo = NULLIF(BTRIM(codigo), '')
+                        WHERE codigo IS DISTINCT FROM NULLIF(BTRIM(codigo), '');
+                    """)
+                    cur.execute("""
+                        UPDATE app.articulo
+                        SET codigo = id::text
+                        WHERE codigo IS NULL;
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_articulo_codigo ON app.articulo(codigo);
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_articulo_codigo_lower_trgm
+                        ON app.articulo USING gin (lower(codigo) gin_trgm_ops);
+                    """)
+
+                    # 5. Keep article detailed view in sync with latest schema
+                    cur.execute("""
+                        CREATE OR REPLACE VIEW app.v_articulo_detallado AS
+                        SELECT
+                          a.id AS id,
+                          a.id AS id_articulo,
+                          a.nombre,
+                          a.id_marca,
+                          m.nombre AS marca,
+                          a.id_rubro,
+                          r.nombre AS rubro,
+                          a.costo,
+                          a.id_tipo_iva,
+                          ti.porcentaje AS porcentaje_iva,
+                          a.id_unidad_medida,
+                          um.nombre AS unidad_medida,
+                          um.abreviatura AS unidad_abreviatura,
+                          a.id_proveedor,
+                          COALESCE(prov.razon_social, TRIM(COALESCE(prov.apellido, '') || ' ' || COALESCE(prov.nombre, ''))) AS proveedor,
+                          a.stock_minimo,
+                          a.descuento_base,
+                          a.redondeo,
+                          a.porcentaje_ganancia_2,
+                          a.activo,
+                          a.observacion,
+                          a.ubicacion,
+                          COALESCE(st.stock_total, 0) AS stock_actual,
+                          ap.precio AS precio_lista,
+                          a.codigo
+                        FROM app.articulo a
+                        LEFT JOIN ref.marca m ON m.id = a.id_marca
+                        LEFT JOIN ref.rubro r ON r.id = a.id_rubro
+                        LEFT JOIN ref.tipo_iva ti ON ti.id = a.id_tipo_iva
+                        LEFT JOIN ref.unidad_medida um ON um.id = a.id_unidad_medida
+                        LEFT JOIN app.entidad_comercial prov ON prov.id = a.id_proveedor
+                        LEFT JOIN app.v_stock_total st ON st.id_articulo = a.id
+                        LEFT JOIN app.articulo_precio ap ON ap.id_articulo = a.id AND ap.id_lista_precio = 1;
+                    """)
+
+                    # 6. Update trigger to save stock_resultante on INSERT
                     cur.execute("""
                         CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
                         RETURNS TRIGGER AS $fn$
@@ -1599,8 +1661,8 @@ class Database:
 
         if search:
             pattern = f"%{search.strip()}%"
-            filters.append("(nombre ILIKE %s OR id::text ILIKE %s)")
-            params.extend([pattern, pattern])
+            filters.append("(nombre ILIKE %s OR codigo ILIKE %s OR id::text ILIKE %s)")
+            params.extend([pattern, pattern, pattern])
 
         def add_like(field: str, value: Any) -> None:
             if isinstance(value, str) and value.strip():
@@ -1608,6 +1670,7 @@ class Database:
                 params.append(f"%{value.strip()}%")
 
         add_like("nombre", advanced.get("nombre"))
+        add_like("codigo", advanced.get("codigo"))
         
         marca_id = _to_id(advanced.get("id_marca"))
         if marca_id is not None:
@@ -1911,6 +1974,7 @@ class Database:
 
         sort_columns = {
             "id": "id",
+            "codigo": "codigo",
             "nombre": "nombre",
             "marca": "marca",
             "rubro": "rubro",
@@ -1943,6 +2007,14 @@ class Database:
                 # Special case: Price list sorting needs NULLS LAST to keep '---' at bottom
                 if column == "precio_lista":
                     clauses.append(f"{column} {dir_sql} NULLS LAST")
+                # Natural sort for product codes: numeric values are sorted by numeric value
+                # (99 < 100 < 998), then fallback to text sort for non-numeric codes.
+                elif column == "codigo":
+                    numeric_flag = "CASE WHEN NULLIF(BTRIM(codigo), '') ~ '^[0-9]+$' THEN 0 ELSE 1 END"
+                    numeric_value = "CASE WHEN NULLIF(BTRIM(codigo), '') ~ '^[0-9]+$' THEN (BTRIM(codigo))::numeric END"
+                    clauses.append(f"{numeric_flag} ASC")
+                    clauses.append(f"{numeric_value} {dir_sql} NULLS LAST")
+                    clauses.append(f"codigo {dir_sql}")
                 else:
                     clauses.append(f"{column} {dir_sql}")
             
@@ -2655,6 +2727,7 @@ class Database:
         self,
         *,
         nombre: str,
+        codigo: Optional[str] = None,
         marca: Optional[str] = None,
         rubro: Optional[str] = None,
         costo: Any = 0,
@@ -2704,6 +2777,7 @@ class Database:
 
         marca_name = clean(marca)
         rubro_name = clean(rubro)
+        codigo_clean = clean(codigo)
 
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
@@ -2729,9 +2803,18 @@ class Database:
                 descuento_base_value = coerce_non_negative_number(descuento_base, "descuento base")
                 pgan2_value = coerce_non_negative_number(porcentaje_ganancia_2, "ganancia 2") if porcentaje_ganancia_2 is not None else None
 
+                if codigo_clean:
+                    cur.execute(
+                        "SELECT id FROM app.articulo WHERE lower(codigo) = lower(%s) LIMIT 1",
+                        (codigo_clean,),
+                    )
+                    if cur.fetchone():
+                        raise ValueError("Ya existe un artículo con ese código.")
+
                 query = """
                     INSERT INTO app.articulo (
                         nombre,
+                        codigo,
                         id_marca,
                         id_rubro,
                         costo,
@@ -2746,13 +2829,14 @@ class Database:
                         redondeo,
                         porcentaje_ganancia_2
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """
                 cur.execute(
                     query,
                     (
                         nombre_clean,
+                        codigo_clean,
                         marca_id,
                         rubro_id,
                         costo_value,
@@ -2776,14 +2860,14 @@ class Database:
                     entidad="app.articulo",
                     accion="ALTA",
                     id_entidad=art_id,
-                    detalle={"nombre": nombre_clean, "costo": costo_value}
+                    detalle={"nombre": nombre_clean, "codigo": codigo_clean, "costo": costo_value}
                 )
                 
                 return art_id
 
     def update_article_fields(self, article_id: int, updates: Dict[str, Any]) -> None:
         allowed = {
-            "nombre", "costo", "stock_minimo", "activo", 
+            "nombre", "codigo", "costo", "stock_minimo", "activo", 
             "marca", "rubro", "ubicacion", "observacion",
             "id_tipo_iva", "id_unidad_medida", "id_proveedor",
             "descuento_base", "redondeo", "porcentaje_ganancia_2"
@@ -2823,6 +2907,24 @@ class Database:
                 filtered["activo"] = False
             else:
                 raise ValueError("Valor inválido para activo (usa true/false).")
+        if "codigo" in filtered:
+            codigo_raw = filtered["codigo"]
+            codigo_clean = str(codigo_raw).strip() if codigo_raw is not None else ""
+            filtered["codigo"] = codigo_clean or None
+            if codigo_clean:
+                with self.pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT id
+                            FROM app.articulo
+                            WHERE lower(codigo) = lower(%s) AND id <> %s
+                            LIMIT 1
+                            """,
+                            (codigo_clean, int(article_id)),
+                        )
+                        if cur.fetchone():
+                            raise ValueError("Ya existe otro artículo con ese código.")
         
         assignments: List[str] = []
         params: List[Any] = []
@@ -2932,6 +3034,7 @@ class Database:
         query = """
             SELECT 
                 a.id, a.nombre, a.id_marca, m.nombre as marca_nombre,
+                a.codigo,
                 a.id_rubro, r.nombre as rubro_nombre,
                 a.costo, a.stock_minimo, a.ubicacion, a.activo, a.observacion,
                 a.id_tipo_iva, a.id_unidad_medida, a.id_proveedor,
