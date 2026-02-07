@@ -191,12 +191,14 @@ class BaseDocumentPDF(FPDF):
         entity_data: Dict[str, Any],
         items_data: List[Dict[str, Any]],
         company_config: Optional[Dict[str, Any]] = None,
+        show_prices: bool = True,
     ):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.doc = doc_data or {}
         self.entity = entity_data or {}
         self.items = items_data or []
         self.company = company_config or {}
+        self.show_prices = bool(show_prices)
         self.set_auto_page_break(True, margin=25)
         self.set_margins(12, 10, 12)
         self._temp_images: List[str] = []
@@ -326,8 +328,9 @@ class InvoicePDF(BaseDocumentPDF):
         entity_data: Dict[str, Any],
         items_data: List[Dict[str, Any]],
         company_config: Optional[Dict[str, Any]] = None,
+        show_prices: bool = True,
     ):
-        super().__init__(doc_data, entity_data, items_data, company_config)
+        super().__init__(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
         self.is_invoice = self._is_invoice_document()
         self.subtotal_bruto = self._resolve_subtotal_bruto()
         self.descuento_lineas = self._resolve_line_discount_total()
@@ -560,10 +563,14 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _draw_items_table(self) -> None:
         """Draw items table with proper pagination."""
-        headers = ["Descripción", "Cant.", "Precio", "IVA %", "Desc. %", "Desc. $", "Total"]
+        if self.show_prices:
+            headers = ["Descripción", "Cant.", "Precio", "IVA %", "Desc. %", "Desc. $", "Total"]
+            col_ratios = [0.34, 0.08, 0.12, 0.10, 0.10, 0.12, 0.14]
+        else:
+            headers = ["Descripción", "Cant."]
+            col_ratios = [0.84, 0.16]
         start_x = self.l_margin
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        col_ratios = [0.34, 0.08, 0.12, 0.10, 0.10, 0.12, 0.14]
         col_widths = _distribute_width(table_width, col_ratios)
         
         def _draw_table_header() -> None:
@@ -628,11 +635,12 @@ class InvoicePDF(BaseDocumentPDF):
             # Format quantity as integer if it's a whole number
             qty_str = str(int(qty)) if qty == int(qty) else f"{qty:.2f}"
             self.cell(col_widths[1], row_height, qty_str, border="TB", align="C", fill=True)
-            self.cell(col_widths[2], row_height, _format_money(unit), border="TB", align="R", fill=True)
-            self.cell(col_widths[3], row_height, format_percent(iva_pct, decimals=2), border="TB", align="C", fill=True)
-            self.cell(col_widths[4], row_height, format_percent(desc_pct, decimals=2), border="TB", align="R", fill=True)
-            self.cell(col_widths[5], row_height, _format_money(desc_imp), border="TB", align="R", fill=True)
-            self.cell(col_widths[6], row_height, _format_money(total), border="TB", align="R", fill=True)
+            if self.show_prices:
+                self.cell(col_widths[2], row_height, _format_money(unit), border="TB", align="R", fill=True)
+                self.cell(col_widths[3], row_height, format_percent(iva_pct, decimals=2), border="TB", align="C", fill=True)
+                self.cell(col_widths[4], row_height, format_percent(desc_pct, decimals=2), border="TB", align="R", fill=True)
+                self.cell(col_widths[5], row_height, _format_money(desc_imp), border="TB", align="R", fill=True)
+                self.cell(col_widths[6], row_height, _format_money(total), border="TB", align="R", fill=True)
             self.ln()
 
         self._table_header_active = False
@@ -640,6 +648,14 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _draw_totals_block(self) -> None:
         """Draw totals section aligned to the right."""
+        if not self.show_prices:
+            self.ln(2)
+            self.set_font("helvetica", "I", 9)
+            self.set_text_color(*COLOR_TEXT_MUTED)
+            self.cell(0, 6, "Precios e importes ocultos por configuración de impresión.", border=0, ln=1, align="R")
+            self.set_text_color(*COLOR_TEXT)
+            return
+
         totals_width = 95
         label_width = 57
         value_width = 38
@@ -722,8 +738,9 @@ class RemitoPDF(BaseDocumentPDF):
         entity_data: Dict[str, Any],
         items_data: List[Dict[str, Any]],
         company_config: Optional[Dict[str, Any]] = None,
+        show_prices: bool = True,
     ):
-        super().__init__(remito_data, entity_data, items_data, company_config)
+        super().__init__(remito_data, entity_data, items_data, company_config, show_prices=show_prices)
         self.remito = remito_data or {}
         self._doc_type_label = "REMITO"
         self._doc_letter = ""
@@ -768,7 +785,7 @@ class RemitoPDF(BaseDocumentPDF):
             self.set_font("helvetica", "", 10)
             self.cell(0, 6, _format_date(entrega), border=0, ln=1)
         
-        if valor_decl > 0:
+        if self.show_prices and valor_decl > 0:
             self.set_font("helvetica", "B", 10)
             self.cell(label_width, 6, "Valor declarado:", border=0)
             self.set_font("helvetica", "", 10)
@@ -894,6 +911,7 @@ def generate_pdf_and_open(
     *,
     kind: str = "invoice",
     company_config: Optional[Dict[str, Any]] = None,
+    show_prices: bool = True,
 ) -> str:
     """
     Generate a PDF document and open it.
@@ -909,14 +927,15 @@ def generate_pdf_and_open(
             - cuit_empresa: Tax ID
             - domicilio_empresa: Company address
             - slogan: Company slogan
+        show_prices: If False, hides monetary values in printed PDF.
     
     Returns:
         Path to the generated PDF file
     """
     if kind == "remito":
-        pdf = RemitoPDF(doc_data, entity_data, items_data, company_config)
+        pdf = RemitoPDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
     else:
-        pdf = InvoicePDF(doc_data, entity_data, items_data, company_config)
+        pdf = InvoicePDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
 
     path = pdf.generate()
     _open_pdf(path)

@@ -815,8 +815,8 @@ def main(page: ft.Page) -> None:
         except Exception:
             return {}
 
-    def print_document_external(doc_id):
-        """Global helper to print from table"""
+    def print_document_external(doc_id: int, *, include_prices: bool = True) -> None:
+        """Global helper to print an invoice/receipt document."""
         try:
             if not db: return 
             
@@ -851,11 +851,71 @@ def main(page: ft.Page) -> None:
                 items_data.append(item_copy)
 
             # Generate PDF with company config
-            generate_pdf_and_open(doc, ent or {}, items_data, kind="invoice", company_config=get_company_config())
+            generate_pdf_and_open(
+                doc,
+                ent or {},
+                items_data,
+                kind="invoice",
+                company_config=get_company_config(),
+                show_prices=include_prices,
+            )
             show_toast("PDF generado correctamente.", kind="success")
             
         except Exception as e:
             show_toast(f"Error al imprimir: {e}", kind="error")
+
+    def ask_print_options(doc_label: str, on_print: Callable[[bool], None]) -> None:
+        """Display print options with price visibility toggle before generating PDF."""
+        include_prices_switch = ft.Switch(
+            label="Incluir precios e importes",
+            value=False,
+            active_color=COLOR_ACCENT,
+        )
+        
+        def _close(_: Any) -> None:
+            _safe_page_close(page, print_options_dialog, "ask_print_options")
+
+        def _confirm_print(_: Any) -> None:
+            include_prices = bool(include_prices_switch.value)
+            _close(None)
+            try:
+                on_print(include_prices)
+            except Exception as exc:
+                show_toast(f"Error al imprimir {doc_label}: {exc}", kind="error")
+
+        print_options_dialog.title = ft.Text(f"Opciones de impresión: {doc_label}", size=20, weight=ft.FontWeight.BOLD)
+        print_options_dialog.content = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "Por seguridad, podés ocultar precios e importes en la impresión.",
+                        size=13,
+                        color=COLOR_TEXT_MUTED,
+                    ),
+                    include_prices_switch,
+                ],
+                spacing=10,
+                tight=True,
+            ),
+            width=460,
+            padding=ft.padding.symmetric(vertical=8),
+        )
+        print_options_dialog.shape = ft.RoundedRectangleBorder(radius=16)
+        print_options_dialog.actions = [
+            _cancel_button("Cancelar", on_click=_close),
+            ft.ElevatedButton(
+                "Imprimir",
+                icon=ft.icons.PRINT_ROUNDED,
+                bgcolor=COLOR_ACCENT,
+                color="#FFFFFF",
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                on_click=_confirm_print,
+            ),
+        ]
+        _safe_page_open(page, print_options_dialog, "ask_print_options")
+
+    def request_invoice_print(doc_id: int) -> None:
+        ask_print_options("comprobante", lambda include_prices: print_document_external(int(doc_id), include_prices=include_prices))
 
 
     # --- SHARED DIALOGS ---
@@ -1160,6 +1220,7 @@ def main(page: ft.Page) -> None:
         status_badge.tooltip = db_error
 
     confirm_dialog = ft.AlertDialog(modal=True)
+    print_options_dialog = ft.AlertDialog(modal=True)
 
     def ask_confirm(title: str, message: str, confirm_label: str, on_confirm, button_color: str = None) -> None:
         def close(_: Any) -> None:
@@ -5162,13 +5223,23 @@ def main(page: ft.Page) -> None:
                 width=720,
                 height=600,
             )
-            def _print_remito(_=None):
+            def _print_remito_with_options(include_prices: bool) -> None:
                 try:
                     entity_detail = db.get_entity_detail(rem_row.get("id_entidad_comercial")) if db else {}
-                    generate_pdf_and_open(rem_row, entity_detail or {}, details, kind="remito", company_config=get_company_config())
+                    generate_pdf_and_open(
+                        rem_row,
+                        entity_detail or {},
+                        details,
+                        kind="remito",
+                        company_config=get_company_config(),
+                        show_prices=include_prices,
+                    )
                     show_toast("Remito generado correctamente.", kind="success")
                 except Exception as exc:
                     show_toast(f"Error al imprimir remito: {exc}", kind="error")
+
+            def _print_remito(_=None):
+                ask_print_options("remito", _print_remito_with_options)
 
             actions = [
                 _cancel_button("Cerrar", on_click=lambda _: close_form())
@@ -5454,7 +5525,7 @@ def main(page: ft.Page) -> None:
                     tooltip="Imprimir",
                     icon_color=COLOR_TEXT_MUTED,
                     icon_size=18,
-                    on_click=lambda e, rid=row["id"]: print_document_external(rid),
+                    on_click=lambda e, rid=row["id"]: request_invoice_print(int(rid)),
                 )
             ),
             ColumnConfig(
@@ -9604,7 +9675,7 @@ def main(page: ft.Page) -> None:
             if not current_doc_id:
                 show_toast("Primero guardá el comprobante para poder imprimir.", kind="warning")
                 return
-            print_document_external(int(current_doc_id))
+            request_invoice_print(int(current_doc_id))
 
         def _handle_modal_doc_state_change() -> None:
             _refresh_modal_doc_state()
