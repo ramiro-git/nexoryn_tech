@@ -91,6 +91,10 @@ class MassUpdateView(ft.Container):
         self._current_index: int = 0
         self._all_preview_data: List[Dict[str, Any]] = []
         self._is_loading_batch: bool = False
+        self._preview_mode: str = "COSTO"
+        self._preview_active_lists: List[Dict[str, Any]] = []
+        self._preview_selected_list_label: str = "Lista Seleccionada"
+        self._preview_skipped_invalid_factor: int = 0
 
         # Loader
         self.loader = ft.ProgressBar(width=None, color="#6366F1", visible=False)
@@ -144,7 +148,7 @@ class MassUpdateView(ft.Container):
 
         # Warning Text
         self.warning_text = ft.Text(
-            "⚠️ Modificar el Costo recalculará automáticamente los precios basados en Margen.",
+            "⚠️ Modificar el Costo recalculará automáticamente todas las listas desde el costo.",
             color="#EA580C",
             size=12,
             visible=True,
@@ -155,20 +159,13 @@ class MassUpdateView(ft.Container):
 
         # Preview Table
         self.preview_table = SafeDataTable(
-            columns=[
-                ft.DataColumn(ft.Checkbox(label="Sel", on_change=self._toggle_all)),
-                ft.DataColumn(ft.Text("ID")),
-                ft.DataColumn(ft.Text("Artículo")),
-                ft.DataColumn(ft.Text("Valor Actual")),
-                ft.DataColumn(ft.Text("Nuevo Valor")),
-                ft.DataColumn(ft.Text("Variación")),
-            ],
+            columns=[],
             width=None,
-            # expand=True, # Removed expand to let ListView handle scrolling
             heading_row_color="#F1F5F9",
             data_row_color={"hovered": "#F8FAFC"},
             bgcolor="#FFFFFF",
         )
+        self._set_preview_columns()
 
         # Buttons
         self.btn_preview = ft.ElevatedButton(
@@ -201,9 +198,14 @@ class MassUpdateView(ft.Container):
             visible=False,
         )
 
+        self.preview_table_scroll = ft.Row(
+            [self.preview_table],
+            scroll=ft.ScrollMode.AUTO,
+        )
+
         # Preview Results Container (replaces ListView to avoid ghost space)
         self.scroll_container = ft.Column(
-            [self.preview_table, self.btn_load_more],
+            [self.preview_table_scroll, self.btn_load_more],
             tight=True,
             visible=False,
         )
@@ -382,6 +384,11 @@ class MassUpdateView(ft.Container):
     
     def _clear_preview_state(self):
         """Reset all preview-related state."""
+        self._preview_mode = "COSTO"
+        self._preview_active_lists = []
+        self._preview_selected_list_label = "Lista Seleccionada"
+        self._preview_skipped_invalid_factor = 0
+        self._set_preview_columns()
         self.preview_table.rows.clear()
         self.selected_ids.clear()
         self._all_preview_data = []
@@ -392,9 +399,12 @@ class MassUpdateView(ft.Container):
         self.btn_apply.text = "APLICAR CAMBIOS SELECCIONADOS"
         self.btn_load_more.visible = False
 
-        self.preview_table.update()
-        self.btn_apply.update()
-        self.btn_load_more.update()
+        try:
+            self.preview_table.update()
+            self.btn_apply.update()
+            self.btn_load_more.update()
+        except Exception:
+            pass
         self._show_preview_placeholder("Sin vista previa", "Genera la vista previa para ver articulos.")
 
         # Try reset scroll
@@ -433,6 +443,55 @@ class MassUpdateView(ft.Container):
         self.preview_empty.update()
         self.scroll_container.update()
         self.preview_section_container.update()
+
+    def _format_variation_text(self, diff_pct: Any) -> str:
+        try:
+            pct = float(diff_pct or 0)
+        except Exception:
+            pct = 0.0
+        formatted = format_percent(pct, decimals=2)
+        return f"+{formatted}" if pct > 0 else formatted
+
+    def _variation_color(self, diff_pct: Any) -> str:
+        try:
+            pct = float(diff_pct or 0)
+        except Exception:
+            pct = 0.0
+        if pct > 0:
+            return "#EA580C"
+        if pct < 0:
+            return "#0F766E"
+        return "#64748B"
+
+    def _set_preview_columns(self) -> None:
+        select_label = "Sel"
+        self.preview_table.columns = [
+            ft.DataColumn(ft.Checkbox(label=select_label, on_change=self._toggle_all)),
+            ft.DataColumn(ft.Text("ID")),
+            ft.DataColumn(ft.Text("Artículo")),
+            ft.DataColumn(ft.Text("Costo Actual")),
+            ft.DataColumn(ft.Text("Costo Nuevo")),
+            ft.DataColumn(ft.Text("Var. Costo")),
+        ]
+
+        if self._preview_mode == "COSTO":
+            for lp in self._preview_active_lists:
+                self.preview_table.columns.append(
+                    ft.DataColumn(ft.Text(lp.get("nombre") or "Lista"))
+                )
+        else:
+            label = self._preview_selected_list_label or "Lista Seleccionada"
+            self.preview_table.columns.extend(
+                [
+                    ft.DataColumn(ft.Text(f"{label} Actual")),
+                    ft.DataColumn(ft.Text(f"{label} Nuevo")),
+                    ft.DataColumn(ft.Text(f"Var. {label}")),
+                ]
+            )
+        try:
+            self.preview_table.update()
+        except Exception:
+            pass
     
     
     def _load_next_batch(self) -> None:
@@ -452,39 +511,75 @@ class MassUpdateView(ft.Container):
                 rid = int(r["id"])
                 # Don't force add to selection here, respect current state
                 is_selected = rid in self.selected_ids
-                
-                self.preview_table.rows.append(
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(
-                                ft.Checkbox(
-                                    value=is_selected,
-                                    on_change=lambda e, rid=rid: self._toggle_one(rid, e.control.value),
-                                )
-                            ),
-                            ft.DataCell(ft.Text(str(rid) if rid is not None else "—")),
-                            ft.DataCell(ft.Text(r.get("nombre", ""))),
-                            ft.DataCell(ft.Text(format_currency(r.get("current", 0.0)))),
+                cells: List[ft.DataCell] = [
+                    ft.DataCell(
+                        ft.Checkbox(
+                            value=is_selected,
+                            on_change=lambda e, rid=rid: self._toggle_one(rid, e.control.value),
+                        )
+                    ),
+                    ft.DataCell(ft.Text(str(rid) if rid is not None else "—")),
+                    ft.DataCell(ft.Text(r.get("nombre", ""))),
+                    ft.DataCell(ft.Text(format_currency(r.get("costo_current", 0.0)))),
+                    ft.DataCell(
+                        ft.Text(
+                            format_currency(r.get("costo_new", 0.0)),
+                            weight=ft.FontWeight.BOLD,
+                            color="#166534",
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.Text(
+                            self._format_variation_text(r.get("costo_diff_pct", 0.0)),
+                            color=self._variation_color(r.get("costo_diff_pct", 0.0)),
+                        )
+                    ),
+                ]
+
+                if self._preview_mode == "COSTO":
+                    list_changes = r.get("list_changes", {}) or {}
+                    for lp in self._preview_active_lists:
+                        lp_id = int(lp.get("id"))
+                        change = list_changes.get(lp_id)
+                        if change is None:
+                            change = list_changes.get(str(lp_id))
+                        if not change:
+                            cells.append(ft.DataCell(ft.Text("—", color="#64748B")))
+                            continue
+                        list_text = (
+                            f"{format_currency(change.get('current', 0.0))} -> "
+                            f"{format_currency(change.get('new', 0.0))} "
+                            f"({self._format_variation_text(change.get('diff_pct', 0.0))})"
+                        )
+                        cells.append(
                             ft.DataCell(
                                 ft.Text(
-                                    format_currency(r.get("new", 0.0)),
+                                    list_text,
+                                    color=self._variation_color(change.get("diff_pct", 0.0)),
+                                )
+                            )
+                        )
+                else:
+                    cells.extend(
+                        [
+                            ft.DataCell(ft.Text(format_currency(r.get("selected_current", 0.0)))),
+                            ft.DataCell(
+                                ft.Text(
+                                    format_currency(r.get("selected_new", 0.0)),
                                     weight=ft.FontWeight.BOLD,
                                     color="#166534",
                                 )
                             ),
                             ft.DataCell(
                                 ft.Text(
-                                    (
-                                        f"+{format_percent(r.get('diff_pct', 0.0), decimals=2)}"
-                                        if float(r.get("diff_pct", 0.0)) > 0
-                                        else format_percent(r.get("diff_pct", 0.0), decimals=2)
-                                    ),
-                                    color="#EA580C" if float(r.get("diff_pct", 0.0)) != 0 else "#64748B",
+                                    self._format_variation_text(r.get("selected_diff_pct", 0.0)),
+                                    color=self._variation_color(r.get("selected_diff_pct", 0.0)),
                                 )
                             ),
                         ]
                     )
-                )
+
+                self.preview_table.rows.append(ft.DataRow(cells=cells))
             
             self._current_index = end_index
             self.preview_table.update()
@@ -648,10 +743,10 @@ class MassUpdateView(ft.Container):
     def _on_target_change(self, e):
         val = self.target_selector.value
         if val == "COSTO":
-            self.warning_text.value = "⚠️ Modificar el Costo recalculará automáticamente los precios basados en Margen."
+            self.warning_text.value = "⚠️ Modificar el Costo recalculará automáticamente todas las listas desde el costo."
             self.warning_text.color = "#EA580C"
         else:
-            self.warning_text.value = "ℹ️ Modificar una lista ajustará el margen automáticamente con respecto al costo."
+            self.warning_text.value = "ℹ️ Modificar una lista derivará un nuevo costo y recalculará todas las listas."
             self.warning_text.color = "#3B82F6"
         self.warning_text.update()
 
@@ -674,7 +769,7 @@ class MassUpdateView(ft.Container):
             self._set_loading(True)
             self.show_toast("Generando vista previa…", "info")
 
-            rows = await asyncio.to_thread(
+            preview_payload = await asyncio.to_thread(
                 self.db.preview_mass_update,
                 filters=self._get_filters(),
                 target=target,
@@ -683,6 +778,16 @@ class MassUpdateView(ft.Container):
                 list_id=list_id,
                 limit=None,  # full list (ojo si son miles)
             )
+            if not isinstance(preview_payload, dict):
+                raise ValueError("Formato de vista previa inválido.")
+            rows = preview_payload.get("rows", []) or []
+            meta = preview_payload.get("meta", {}) or {}
+            self._preview_mode = str(meta.get("target_mode") or target)
+            self._preview_active_lists = meta.get("active_lists", []) or []
+            selected_list = meta.get("selected_list") or {}
+            self._preview_selected_list_label = str(selected_list.get("nombre") or "Lista Seleccionada")
+            self._preview_skipped_invalid_factor = int(meta.get("skipped_invalid_factor") or 0)
+            self._set_preview_columns()
 
             # Clear state
             self.preview_table.rows.clear()
@@ -702,16 +807,28 @@ class MassUpdateView(ft.Container):
 
             if not rows:
                 self.preview_table.update()
-                self._show_preview_placeholder(
-                    "Sin resultados",
-                    "No se encontraron articulos con los filtros actuales.",
-                )
+                if self._preview_skipped_invalid_factor > 0:
+                    self._show_preview_placeholder(
+                        "Sin resultados válidos",
+                        "Los artículos encontrados fueron omitidos por factor inválido (DESCUENTO >= 100%).",
+                    )
+                else:
+                    self._show_preview_placeholder(
+                        "Sin resultados",
+                        "No se encontraron articulos con los filtros actuales.",
+                    )
                 self.btn_apply.text = "APLICAR CAMBIOS SELECCIONADOS"
                 self.btn_apply.disabled = True
                 self.btn_apply.update()
                 self.btn_load_more.visible = False
                 self.btn_load_more.update()
-                self.show_toast("No se encontraron artículos con los filtros actuales.", "info")
+                if self._preview_skipped_invalid_factor > 0:
+                    self.show_toast(
+                        f"Se omitieron {self._preview_skipped_invalid_factor} artículos por factor inválido (DESCUENTO >= 100%).",
+                        "warning",
+                    )
+                else:
+                    self.show_toast("No se encontraron artículos con los filtros actuales.", "info")
             else:
                 self._show_preview_table()
                 # Load first batch only (lazy loading)
@@ -723,6 +840,11 @@ class MassUpdateView(ft.Container):
                     self.show_toast(f"Vista previa lista: {total} artículos. Mostrando {loaded}, scrollea para cargar más.", "success")
                 else:
                     self.show_toast(f"Vista previa lista: {total} artículos.", "success")
+                if self._preview_skipped_invalid_factor > 0:
+                    self.show_toast(
+                        f"Se omitieron {self._preview_skipped_invalid_factor} artículos por factor inválido (DESCUENTO >= 100%).",
+                        "warning",
+                    )
 
             self._ui_update()
 
@@ -759,6 +881,14 @@ class MassUpdateView(ft.Container):
             self.selected_ids.add(art_id)
         else:
             self.selected_ids.discard(art_id)
+        try:
+            if self.preview_table.columns:
+                header = self.preview_table.columns[0].label
+                if isinstance(header, ft.Checkbox):
+                    header.value = len(self._all_preview_data) > 0 and len(self.selected_ids) == len(self._all_preview_data)
+                    header.update()
+        except Exception:
+            pass
         self._update_apply_btn()
 
     def _update_apply_btn(self):
@@ -766,6 +896,14 @@ class MassUpdateView(ft.Container):
         self.btn_apply.text = f"APLICAR A {count} ARTÍCULOS"
         self.btn_apply.disabled = self._loading or (count == 0)
         self.btn_apply.update()
+        try:
+            if self.preview_table.columns:
+                header = self.preview_table.columns[0].label
+                if isinstance(header, ft.Checkbox):
+                    header.value = len(self._all_preview_data) > 0 and count == len(self._all_preview_data)
+                    header.update()
+        except Exception:
+            pass
 
     # -----------------------------
     # Apply
@@ -821,7 +959,7 @@ class MassUpdateView(ft.Container):
             self._set_loading(True)
             self.show_toast(f"Aplicando cambios a {len(ids_snapshot)} artículos…", "info")
 
-            affected = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self.db.mass_update_articles,
                 filters={},  # ignorado si ids viene cargado
                 target=target,
@@ -830,6 +968,12 @@ class MassUpdateView(ft.Container):
                 list_id=list_id,
                 ids=ids_snapshot,
             )
+            if isinstance(result, dict):
+                affected = int(result.get("updated_count") or 0)
+                skipped_invalid = int(result.get("skipped_invalid_factor") or 0)
+            else:
+                affected = int(result or 0)
+                skipped_invalid = 0
 
             # UI cleanup
             self.preview_table.rows.clear()
@@ -841,7 +985,20 @@ class MassUpdateView(ft.Container):
             self.btn_apply.update()
             self._show_preview_placeholder("Sin vista previa", "Genera la vista previa para ver articulos.")
 
-            self.show_toast(f"Actualización completada. {affected} artículos modificados.", "success")
+            if affected > 0 and skipped_invalid > 0:
+                self.show_toast(
+                    f"Actualización completada. {affected} artículos modificados. Omitidos por factor inválido: {skipped_invalid}.",
+                    "success",
+                )
+            elif affected > 0:
+                self.show_toast(f"Actualización completada. {affected} artículos modificados.", "success")
+            elif skipped_invalid > 0:
+                self.show_toast(
+                    f"No se modificaron artículos. Omitidos por factor inválido: {skipped_invalid}.",
+                    "warning",
+                )
+            else:
+                self.show_toast("No se modificaron artículos.", "info")
 
             # refrescar count sin bloquear UI
             try:

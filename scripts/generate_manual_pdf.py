@@ -431,11 +431,16 @@ def generate_manual():
     )
     pdf.section_title('2. Definir objetivo y ajuste')
     pdf.chapter_body(
-        "Elija qué desea actualizar (costo o lista de precios) y el tipo de ajuste: porcentaje, monto fijo o valor exacto."
+        "Elija el objetivo (Costo Base o una lista). "
+        "El cálculo siempre parte del costo: si ajusta Costo Base, todas las listas se recalculan desde allí; "
+        "si ajusta una lista, el sistema deriva el nuevo costo y luego recalcula todas las listas. "
+        "Puede usar porcentaje, monto fijo o valor exacto."
     )
     pdf.section_title('3. Vista previa y aplicación')
     pdf.chapter_body(
-        "Genere la vista previa, seleccione filas y aplique los cambios. Revise variaciones antes de confirmar."
+        "Genere la vista previa, seleccione filas y aplique los cambios. "
+        "En modo Costo Base verá una columna por cada lista activa con 'actual -> nuevo (variación)'. "
+        "Si falta una lista para un artículo se mostrará '—'."
     )
 
     # --- CAPITULO 15: RESOLUCIÓN DE FALLOS ---

@@ -1758,14 +1758,74 @@ class Database:
 
         return " AND ".join(filters), params
 
-    def _get_target_columns(self, target: str, list_id: Optional[int]) -> Tuple[str, str]:
-        """Returns (table, column_to_update)"""
-        if target == "COSTO":
-            return "app.articulo", "costo"
-        elif target == "LISTA_PRECIO" and list_id:
-            return "app.articulo_precio", "precio"
+    def _apply_mass_update_operation(self, current: Any, operation: str, value: Any) -> float:
+        try:
+            current_val = float(current or 0)
+        except Exception:
+            current_val = 0.0
+        try:
+            op_value = float(value or 0)
+        except Exception:
+            op_value = 0.0
+
+        if operation == "PCT_ADD":
+            new_val = current_val * (1 + op_value / 100.0)
+        elif operation == "PCT_SUB":
+            new_val = current_val * (1 - op_value / 100.0)
+        elif operation == "AMT_ADD":
+            new_val = current_val + op_value
+        elif operation == "AMT_SUB":
+            new_val = current_val - op_value
+        elif operation == "SET_VAL":
+            new_val = op_value
         else:
-            raise ValueError("Target inválido")
+            new_val = current_val
+        return max(0.0, new_val)
+
+    def _build_mass_update_sql_expr(self, base_expr: str, operation: str, value: float) -> Optional[str]:
+        val_sql = str(float(value))
+        if operation == "PCT_ADD":
+            return f"{base_expr} * (1 + {val_sql}/100.0)"
+        if operation == "PCT_SUB":
+            return f"{base_expr} * (1 - {val_sql}/100.0)"
+        if operation == "AMT_ADD":
+            return f"{base_expr} + {val_sql}"
+        if operation == "AMT_SUB":
+            return f"{base_expr} - {val_sql}"
+        if operation == "SET_VAL":
+            return f"{val_sql}"
+        return None
+
+    def _price_factor_from_tipo(self, tipo: Any, porcentaje: Any) -> float:
+        raw = str(tipo or "").strip().upper()
+        try:
+            pct = float(porcentaje or 0)
+        except Exception:
+            pct = 0.0
+        pct = max(0.0, pct)
+        if "DESC" in raw:
+            return 1.0 - (pct / 100.0)
+        return 1.0 + (pct / 100.0)
+
+    def _calc_price_from_cost_factor(self, cost: Any, factor: float) -> float:
+        try:
+            safe_cost = max(0.0, float(cost or 0))
+        except Exception:
+            safe_cost = 0.0
+        return max(0.0, safe_cost * factor)
+
+    def _calc_diff_pct(self, current: Any, new_value: Any) -> float:
+        try:
+            cur_val = float(current or 0)
+        except Exception:
+            cur_val = 0.0
+        try:
+            new_val = float(new_value or 0)
+        except Exception:
+            new_val = 0.0
+        if cur_val <= 0:
+            return 0.0
+        return ((new_val - cur_val) / cur_val) * 100.0
 
     def preview_mass_update(
         self,
@@ -1776,80 +1836,193 @@ class Database:
         list_id: Optional[int] = None,
         limit: Optional[int] = 5,
         offset: int = 0
-    ) -> List[Dict[str, Any]]:
-        """
-        Preview the effect of a mass update on a few articles.
-        Returns: [{id, nombre, current_val, new_val, change_pct}]
-        """
-        # Re-use filter building logic
-        # Note: fetch_articles uses 'advanced' dict for most filters
+    ) -> Dict[str, Any]:
         where_clause, params = self._build_article_filters(
             search=filters.get("search"),
             activo_only=filters.get("activo_only"),
             advanced=filters
         )
-        
-        # Determine query based on target
-        if target == "COSTO":
-            query = f"""
-                SELECT id, nombre, costo as current_val 
-                FROM app.articulo 
-                WHERE {where_clause} 
-                LIMIT %s OFFSET %s
-            """
-            query_params = params + [limit, offset]
-        elif target == "LISTA_PRECIO" and list_id:
-             # Convert list_id to int for safety
-            list_id_int = int(list_id)
-            query = f"""
-                SELECT a.id, a.nombre, ap.precio as current_val
-                FROM app.articulo a
-                JOIN app.articulo_precio ap ON ap.id_articulo = a.id
-                WHERE ap.id_lista_precio = %s AND {where_clause}
-                LIMIT %s OFFSET %s
-            """
-            query_params = [list_id_int] + params + [limit, offset]
-        else:
-            return []
 
-        results = []
+        limit_offset_sql = ""
+        paging_params: List[Any] = []
+        if limit is not None:
+            limit_offset_sql += " LIMIT %s"
+            paging_params.append(int(limit))
+        if offset > 0:
+            limit_offset_sql += " OFFSET %s"
+            paging_params.append(int(offset))
+
+        payload: Dict[str, Any] = {
+            "rows": [],
+            "meta": {
+                "target_mode": target,
+                "active_lists": [],
+                "selected_list": None,
+                "skipped_invalid_factor": 0,
+            },
+        }
+
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, query_params)
-                rows = cur.fetchall()
-                
-                for r in rows:
-                    art_id, name, current = r
-                    current = float(current or 0)
-                    
-                    if operation == "PCT_ADD":
-                        new_val = current * (1 + value / 100)
-                    elif operation == "PCT_SUB":
-                        new_val = current * (1 - value / 100)
-                    elif operation == "AMT_ADD":
-                        new_val = current + value
-                    elif operation == "AMT_SUB":
-                        new_val = current - value
-                    elif operation == "SET_VAL":
-                        new_val = value
-                    else:
-                        new_val = current
-                    
-                    # Ensure non-negative
-                    if new_val < 0: new_val = 0
-                    
-                    diff_pct = 0.0
-                    if current > 0:
-                        diff_pct = ((new_val - current) / current) * 100
-                    
-                    results.append({
-                        "id": art_id,
-                        "nombre": name,
-                        "current": current,
-                        "new": new_val,
-                        "diff_pct": diff_pct
-                    })
-        return results
+                if target == "COSTO":
+                    cur.execute(
+                        """
+                        SELECT id, nombre
+                        FROM ref.lista_precio
+                        WHERE activa = TRUE
+                        ORDER BY orden ASC, id ASC
+                        """
+                    )
+                    active_lists = _rows_to_dicts(cur)
+                    payload["meta"]["active_lists"] = active_lists
+
+                    query = f"""
+                        SELECT id, nombre, costo
+                        FROM app.articulo
+                        WHERE {where_clause}
+                        ORDER BY nombre ASC, id ASC
+                        {limit_offset_sql}
+                    """
+                    query_params = params + paging_params
+                    cur.execute(query, query_params)
+                    article_rows = cur.fetchall()
+
+                    article_ids = [int(r[0]) for r in article_rows]
+                    active_list_ids = [int(lp["id"]) for lp in active_lists]
+                    prices_by_article: Dict[int, Dict[int, Dict[str, Any]]] = {}
+                    if article_ids and active_list_ids:
+                        article_placeholders = ",".join(["%s"] * len(article_ids))
+                        list_placeholders = ",".join(["%s"] * len(active_list_ids))
+                        prices_sql = f"""
+                            SELECT
+                                ap.id_articulo,
+                                ap.id_lista_precio,
+                                ap.precio,
+                                ap.porcentaje,
+                                tp.tipo
+                            FROM app.articulo_precio ap
+                            LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
+                            WHERE ap.id_articulo IN ({article_placeholders})
+                              AND ap.id_lista_precio IN ({list_placeholders})
+                        """
+                        cur.execute(prices_sql, article_ids + active_list_ids)
+                        for p_row in cur.fetchall():
+                            art_id = int(p_row[0])
+                            lp_id = int(p_row[1])
+                            prices_by_article.setdefault(art_id, {})[lp_id] = {
+                                "precio": float(p_row[2] or 0),
+                                "porcentaje": float(p_row[3] or 0),
+                                "tipo": p_row[4],
+                            }
+
+                    rows: List[Dict[str, Any]] = []
+                    for art_row in article_rows:
+                        art_id = int(art_row[0])
+                        name = art_row[1]
+                        current_cost = float(art_row[2] or 0)
+                        new_cost = self._apply_mass_update_operation(current_cost, operation, value)
+                        list_changes: Dict[int, Optional[Dict[str, float]]] = {}
+                        article_prices = prices_by_article.get(art_id, {})
+
+                        for lp in active_lists:
+                            lp_id = int(lp["id"])
+                            price_info = article_prices.get(lp_id)
+                            if not price_info:
+                                list_changes[lp_id] = None
+                                continue
+
+                            current_price = float(price_info.get("precio") or 0)
+                            factor = self._price_factor_from_tipo(
+                                price_info.get("tipo"),
+                                price_info.get("porcentaje"),
+                            )
+                            new_price = self._calc_price_from_cost_factor(new_cost, factor)
+                            list_changes[lp_id] = {
+                                "current": current_price,
+                                "new": new_price,
+                                "diff_pct": self._calc_diff_pct(current_price, new_price),
+                            }
+
+                        rows.append(
+                            {
+                                "id": art_id,
+                                "nombre": name,
+                                "costo_current": current_cost,
+                                "costo_new": new_cost,
+                                "costo_diff_pct": self._calc_diff_pct(current_cost, new_cost),
+                                "list_changes": list_changes,
+                            }
+                        )
+
+                    payload["rows"] = rows
+                    return payload
+
+                if target == "LISTA_PRECIO" and list_id is not None:
+                    list_id_int = int(list_id)
+                    cur.execute(
+                        "SELECT id, nombre FROM ref.lista_precio WHERE id = %s",
+                        (list_id_int,),
+                    )
+                    selected = cur.fetchone()
+                    if selected:
+                        payload["meta"]["selected_list"] = {
+                            "id": int(selected[0]),
+                            "nombre": selected[1],
+                        }
+
+                    query = f"""
+                        SELECT
+                            a.id,
+                            a.nombre,
+                            a.costo,
+                            ap.precio,
+                            ap.porcentaje,
+                            tp.tipo
+                        FROM app.articulo a
+                        JOIN app.articulo_precio ap
+                          ON ap.id_articulo = a.id
+                         AND ap.id_lista_precio = %s
+                        LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
+                        WHERE {where_clause}
+                        ORDER BY a.nombre ASC, a.id ASC
+                        {limit_offset_sql}
+                    """
+                    query_params = [list_id_int] + params + paging_params
+                    cur.execute(query, query_params)
+                    rows: List[Dict[str, Any]] = []
+                    skipped_invalid_factor = 0
+
+                    for r in cur.fetchall():
+                        art_id = int(r[0])
+                        name = r[1]
+                        current_cost = float(r[2] or 0)
+                        current_price = float(r[3] or 0)
+                        factor = self._price_factor_from_tipo(r[5], r[4])
+
+                        new_selected_price = self._apply_mass_update_operation(current_price, operation, value)
+                        if factor <= 0:
+                            skipped_invalid_factor += 1
+                            continue
+
+                        new_cost = max(0.0, new_selected_price / factor)
+                        rows.append(
+                            {
+                                "id": art_id,
+                                "nombre": name,
+                                "costo_current": current_cost,
+                                "costo_new": new_cost,
+                                "costo_diff_pct": self._calc_diff_pct(current_cost, new_cost),
+                                "selected_current": current_price,
+                                "selected_new": new_selected_price,
+                                "selected_diff_pct": self._calc_diff_pct(current_price, new_selected_price),
+                            }
+                        )
+
+                    payload["rows"] = rows
+                    payload["meta"]["skipped_invalid_factor"] = skipped_invalid_factor
+                    return payload
+
+        return payload
 
     def mass_update_articles(
         self,
@@ -1859,17 +2032,15 @@ class Database:
         value: float,
         list_id: Optional[int] = None,
         ids: Optional[List[int]] = None
-    ) -> int:
-        """
-        Execute mass update on filtered articles or specific IDs.
-        Returns number of affected rows.
-        """
-        # Convert list_id to int for safety
+    ) -> Dict[str, int]:
         list_id_int = int(list_id) if list_id is not None else None
-        
+        summary = {"updated_count": 0, "skipped_invalid_factor": 0}
+
+        expr = self._build_mass_update_sql_expr("current_val", operation, value)
+        if not expr:
+            return summary
+
         if ids:
-            # Use parameterized subquery with proper quoting
-            # Build params list with all IDs
             id_placeholders = ",".join(["%s"] * len(ids))
             where_clause = f"id IN ({id_placeholders})"
             params = list(ids)
@@ -1879,86 +2050,147 @@ class Database:
                 activo_only=filters.get("activo_only"),
                 advanced=filters
             )
-        
-        updated_count = 0
-        
         with self._transaction() as cur:
-            # 1. Calculate new expression SQL - using only numeric literals
-            val_sql = str(float(value))
-            if operation == "PCT_ADD":
-                expr = f"current_val * (1 + {val_sql}/100.0)"
-            elif operation == "PCT_SUB":
-                expr = f"current_val * (1 - {val_sql}/100.0)"
-            elif operation == "AMT_ADD":
-                expr = f"current_val + {val_sql}"
-            elif operation == "AMT_SUB":
-                expr = f"current_val - {val_sql}"
-            elif operation == "SET_VAL":
-                expr = f"{val_sql}"
-            else:
-                return 0
-
-            # 2. Execute Update based on target using parameterized queries
             if target == "COSTO":
                 expr_cost = expr.replace("current_val", "costo")
-                # Build parameterized query: inject where_clause as SQL, but params separately
                 sql = f"""
-                    UPDATE app.articulo 
-                    SET costo = GREATEST(0, {expr_cost}), fecha_creacion = fecha_creacion
+                    UPDATE app.articulo
+                    SET costo = GREATEST(0, {expr_cost})
                     WHERE {where_clause}
                 """
                 cur.execute(sql, params)
-                updated_count = cur.rowcount
-                
-                # Auto-recalculate prices (MARGEN)
+                summary["updated_count"] = cur.rowcount
+
                 sql_prices = f"""
+                    WITH target_articles AS (
+                        SELECT id
+                        FROM app.articulo
+                        WHERE {where_clause}
+                    )
                     UPDATE app.articulo_precio ap
-                    SET precio = GREATEST(0, a.costo * (1 + ap.porcentaje/100.0)),
+                    SET precio = GREATEST(
+                            0,
+                            CASE
+                                WHEN COALESCE(tp.tipo, 'MARGEN') = 'DESCUENTO'
+                                    THEN a.costo * (1 - COALESCE(ap.porcentaje, 0) / 100.0)
+                                ELSE
+                                    a.costo * (1 + COALESCE(ap.porcentaje, 0) / 100.0)
+                            END
+                        ),
                         fecha_actualizacion = now()
                     FROM app.articulo a
-                    WHERE ap.id_articulo = a.id 
-                      AND ap.id_tipo_porcentaje = (SELECT id FROM ref.tipo_porcentaje WHERE tipo = 'MARGEN')
-                      AND a.id IN (SELECT id FROM app.articulo WHERE {where_clause})
+                    LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
+                    WHERE ap.id_articulo = a.id
+                      AND a.id IN (SELECT id FROM target_articles)
                 """
                 cur.execute(sql_prices, params)
-                
+
             elif target == "LISTA_PRECIO" and list_id_int:
-                expr_price = expr.replace("current_val", "precio")
-                sql = f"""
-                    UPDATE app.articulo_precio
-                    SET precio = GREATEST(0, {expr_price}),
-                        fecha_actualizacion = now()
-                    WHERE id_lista_precio = %s
-                      AND id_articulo IN (SELECT id FROM app.articulo WHERE {where_clause})
+                expr_selected = expr.replace("current_val", "ap.precio")
+                sql_cost = f"""
+                    WITH target_articles AS (
+                        SELECT id
+                        FROM app.articulo
+                        WHERE {where_clause}
+                    ),
+                    selected_base AS (
+                        SELECT
+                            a.id AS id_articulo,
+                            GREATEST(0, {expr_selected}) AS selected_new_price,
+                            CASE
+                                WHEN COALESCE(tp.tipo, 'MARGEN') = 'DESCUENTO'
+                                    THEN 1 - COALESCE(ap.porcentaje, 0) / 100.0
+                                ELSE
+                                    1 + COALESCE(ap.porcentaje, 0) / 100.0
+                            END AS factor
+                        FROM app.articulo a
+                        JOIN target_articles ta ON ta.id = a.id
+                        JOIN app.articulo_precio ap
+                          ON ap.id_articulo = a.id
+                         AND ap.id_lista_precio = %s
+                        LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
+                    ),
+                    invalid AS (
+                        SELECT id_articulo
+                        FROM selected_base
+                        WHERE factor <= 0
+                    ),
+                    valid AS (
+                        SELECT id_articulo, selected_new_price, factor
+                        FROM selected_base
+                        WHERE factor > 0
+                    ),
+                    updated_cost AS (
+                        UPDATE app.articulo a
+                        SET costo = GREATEST(0, v.selected_new_price / v.factor)
+                        FROM valid v
+                        WHERE a.id = v.id_articulo
+                        RETURNING a.id
+                    )
+                    SELECT
+                        (SELECT COUNT(*)::int FROM updated_cost) AS updated_count,
+                        (SELECT COUNT(*)::int FROM invalid) AS skipped_invalid_factor
                 """
-                sql_params = [list_id_int] + params
-                cur.execute(sql, sql_params)
-                updated_count = cur.rowcount
-                
-                # Auto-recalculate margins
-                sql_margin = f"""
+                cur.execute(sql_cost, params + [list_id_int])
+                stats_row = cur.fetchone()
+                if isinstance(stats_row, dict):
+                    summary["updated_count"] = int(stats_row.get("updated_count") or 0)
+                    summary["skipped_invalid_factor"] = int(stats_row.get("skipped_invalid_factor") or 0)
+                elif stats_row:
+                    summary["updated_count"] = int(stats_row[0] or 0)
+                    summary["skipped_invalid_factor"] = int(stats_row[1] or 0)
+
+                sql_prices = f"""
+                    WITH target_articles AS (
+                        SELECT id
+                        FROM app.articulo
+                        WHERE {where_clause}
+                    ),
+                    valid_articles AS (
+                        SELECT a.id
+                        FROM app.articulo a
+                        JOIN target_articles ta ON ta.id = a.id
+                        JOIN app.articulo_precio ap_sel
+                          ON ap_sel.id_articulo = a.id
+                         AND ap_sel.id_lista_precio = %s
+                        LEFT JOIN ref.tipo_porcentaje tp_sel ON tp_sel.id = ap_sel.id_tipo_porcentaje
+                        WHERE (
+                            CASE
+                                WHEN COALESCE(tp_sel.tipo, 'MARGEN') = 'DESCUENTO'
+                                    THEN 1 - COALESCE(ap_sel.porcentaje, 0) / 100.0
+                                ELSE
+                                    1 + COALESCE(ap_sel.porcentaje, 0) / 100.0
+                            END
+                        ) > 0
+                    )
                     UPDATE app.articulo_precio ap
-                    SET porcentaje = CASE 
-                            WHEN a.costo > 0 THEN ((ap.precio / a.costo) - 1) * 100 
-                            ELSE 0 
-                        END
+                    SET precio = GREATEST(
+                            0,
+                            CASE
+                                WHEN COALESCE(tp.tipo, 'MARGEN') = 'DESCUENTO'
+                                    THEN a.costo * (1 - COALESCE(ap.porcentaje, 0) / 100.0)
+                                ELSE
+                                    a.costo * (1 + COALESCE(ap.porcentaje, 0) / 100.0)
+                            END
+                        ),
+                        fecha_actualizacion = now()
                     FROM app.articulo a
+                    LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
                     WHERE ap.id_articulo = a.id
-                      AND ap.id_lista_precio = %s
-                      AND a.id IN (SELECT id FROM app.articulo WHERE {where_clause})
+                      AND a.id IN (SELECT id FROM valid_articles)
                 """
-                sql_margin_params = [list_id_int] + params
-                cur.execute(sql_margin, sql_margin_params)
-                
+                cur.execute(sql_prices, params + [list_id_int])
+
             self.log_activity("ARTICULO", "MASS_UPDATE", detalle={
                 "target": target,
                 "operation": operation,
                 "value": value,
-                "count": updated_count,
-                "list_id": list_id_int
+                "count": summary["updated_count"],
+                "list_id": list_id_int,
+                "skipped_invalid_factor": summary["skipped_invalid_factor"],
             })
 
-        return updated_count
+        return summary
 
     def fetch_articles(
         self,
