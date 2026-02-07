@@ -4501,7 +4501,12 @@ def main(page: ft.Page) -> None:
 
         return payload
 
-    def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+    def _authorize_afip_doc(
+        doc_row: Dict[str, Any],
+        *,
+        close_after: bool = False,
+        on_success: Optional[Callable[[], None]] = None,
+    ) -> None:
         if not _can_authorize_afip(doc_row):
             show_toast("El comprobante no está listo para autorizar.", kind="error")
             return
@@ -4633,6 +4638,8 @@ def main(page: ft.Page) -> None:
                     qr_data=qr_data,
                 )
                 show_toast("Facturado exitosamente", kind="success")
+                if callable(on_success):
+                    on_success()
                 if close_after:
                     close_form()
                 if hasattr(documentos_summary_table, "refresh"):
@@ -4645,16 +4652,26 @@ def main(page: ft.Page) -> None:
 
     _authorize_afip_doc_core = _authorize_afip_doc
 
-    def _confirm_afip_authorization(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+    def _confirm_afip_authorization(
+        doc_row: Dict[str, Any],
+        *,
+        close_after: bool = False,
+        on_success: Optional[Callable[[], None]] = None,
+    ) -> None:
         ask_confirm(
             "Autorizar AFIP",
             "Vas a facturar electrónicamente este comprobante en AFIP. Esta acción es irreversible y no se puede volver atrás. ¿Deseás continuar?",
             "Autorizar AFIP",
-            lambda: _authorize_afip_doc(doc_row, close_after=close_after),
+            lambda: _authorize_afip_doc(doc_row, close_after=close_after, on_success=on_success),
             button_color=COLOR_WARNING,
         )
 
-    def _confirm_document(doc_id: int, *, close_after: bool = False) -> None:
+    def _confirm_document(
+        doc_id: int,
+        *,
+        close_after: bool = False,
+        on_success: Optional[Callable[[], None]] = None,
+    ) -> None:
         def on_confirm_real():
             try:
                 if not db:
@@ -4663,6 +4680,8 @@ def main(page: ft.Page) -> None:
                 if db:
                     db.log_activity("DOCUMENTO", "CONFIRM", id_entidad=doc_id)
                 show_toast("Comprobante confirmado", kind="success")
+                if callable(on_success):
+                    on_success()
                 if close_after:
                     close_form()
                 if hasattr(documentos_summary_table, "refresh"):
@@ -4712,19 +4731,34 @@ def main(page: ft.Page) -> None:
         estado = str(doc_row.get("estado") or "").upper()
         return estado in (DocumentoEstado.CONFIRMADO.value, DocumentoEstado.PAGADO.value) and doc_row.get("codigo_afip") and not doc_row.get("cae")
 
-    def _authorize_afip_doc(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
-        _authorize_afip_doc_core(doc_row, close_after=close_after)
+    def _authorize_afip_doc(
+        doc_row: Dict[str, Any],
+        *,
+        close_after: bool = False,
+        on_success: Optional[Callable[[], None]] = None,
+    ) -> None:
+        _authorize_afip_doc_core(doc_row, close_after=close_after, on_success=on_success)
 
-    def _confirm_afip_authorization(doc_row: Dict[str, Any], *, close_after: bool = False) -> None:
+    def _confirm_afip_authorization(
+        doc_row: Dict[str, Any],
+        *,
+        close_after: bool = False,
+        on_success: Optional[Callable[[], None]] = None,
+    ) -> None:
         ask_confirm(
             "Autorizar AFIP",
             "Vas a facturar electrónicamente este comprobante en AFIP. Esta acción es irreversible y no se puede volver atrás. ¿Deseás continuar?",
             "Autorizar AFIP",
-            lambda: _authorize_afip_doc(doc_row, close_after=close_after),
+            lambda: _authorize_afip_doc(doc_row, close_after=close_after, on_success=on_success),
             button_color=COLOR_WARNING,
         )
 
-    def _confirm_document(doc_id: int, *, close_after: bool = False) -> None:
+    def _confirm_document(
+        doc_id: int,
+        *,
+        close_after: bool = False,
+        on_success: Optional[Callable[[], None]] = None,
+    ) -> None:
         def on_confirm_real():
             try:
                 if not db:
@@ -4733,6 +4767,8 @@ def main(page: ft.Page) -> None:
                 if db:
                     db.log_activity("DOCUMENTO", "CONFIRM", id_entidad=doc_id)
                 show_toast("Comprobante confirmado", kind="success")
+                if callable(on_success):
+                    on_success()
                 if close_after:
                     close_form()
                 if hasattr(documentos_summary_table, "refresh"):
@@ -8185,6 +8221,15 @@ def main(page: ft.Page) -> None:
             doc_data = db.get_document_full(edit_doc_id)
         elif copy_doc_id:
             doc_data = db.get_document_full(copy_doc_id)
+
+        active_doc_id_ref = {"value": int(edit_doc_id) if edit_doc_id else None}
+        current_doc_row_ref: Dict[str, Optional[Dict[str, Any]]] = {"value": None}
+        is_read_only_ref = {"value": False}
+        btn_add_line: Optional[ft.ElevatedButton] = None
+        btn_modal_print: Optional[ft.ElevatedButton] = None
+        btn_modal_confirm: Optional[ft.ElevatedButton] = None
+        btn_modal_afip: Optional[ft.ElevatedButton] = None
+        btn_modal_save: Optional[ft.ElevatedButton] = None
             
         if doc_data:
             # Ensure Entity exists
@@ -8626,6 +8671,8 @@ def main(page: ft.Page) -> None:
         lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
 
         def _add_line(_=None, update_ui=True, initial_data=None):
+            if is_read_only_ref["value"]:
+                return
             art_initial_items = [{"value": a["id"], "label": f"{a['nombre']} (Cod: {a['id']})"} for a in articulos]
             art_drop = AsyncSelect(
                 label="Artículo *", 
@@ -8962,6 +9009,7 @@ def main(page: ft.Page) -> None:
                 tooltip="Eliminar línea",
                 on_click=lambda e: _remove_line(e.control.parent)
             )
+            row_map["delete_btn"] = delete_btn
 
             # [Artículo, Lista, Cant, Precio, IVA, Desc %, Desc $, Total, Delete]
             row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, desc_pct_field, desc_imp_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
@@ -9006,12 +9054,16 @@ def main(page: ft.Page) -> None:
                  pass
         
         def _remove_line(row_to_remove):
+            if is_read_only_ref["value"]:
+                return
             lines_container.controls.remove(row_to_remove)
             lines_container.update()
             _recalc_total()
 
         def _on_global_list_change(e):
             """When global price list changes, update all line items that don't have a specific list set."""
+            if is_read_only_ref["value"]:
+                return
             new_global_list_id = dropdown_lista_global.value
             if not new_global_list_id: return 
 
@@ -9033,7 +9085,131 @@ def main(page: ft.Page) -> None:
         # (Manual wire for AsyncSelect global list is handled in its on_change)
         dropdown_lista_global.on_change = _on_global_list_change
 
+        def _set_control_locked(control: Any, locked: bool) -> None:
+            if control is None:
+                return
+            if hasattr(control, "disabled"):
+                _maybe_set(control, "disabled", locked)
+            if locked and hasattr(control, "read_only"):
+                _maybe_set(control, "read_only", True)
+
+        def _refresh_modal_action_buttons() -> None:
+            current_doc_id = active_doc_id_ref["value"]
+            doc_row = current_doc_row_ref["value"] or {}
+            can_manage_docs = CURRENT_USER_ROLE in ["ADMIN", "GERENTE"]
+
+            if btn_modal_print is not None:
+                btn_modal_print.visible = bool(current_doc_id)
+
+            if btn_modal_confirm is not None:
+                btn_modal_confirm.visible = bool(
+                    current_doc_id
+                    and can_manage_docs
+                    and doc_row
+                    and doc_row.get("estado") == DocumentoEstado.BORRADOR.value
+                )
+
+            if btn_modal_afip is not None:
+                btn_modal_afip.visible = bool(
+                    current_doc_id
+                    and can_manage_docs
+                    and doc_row
+                    and _can_authorize_afip(doc_row)
+                )
+
+            if btn_modal_save is not None:
+                btn_modal_save.visible = not is_read_only_ref["value"]
+                btn_modal_save.text = "Guardar cambios" if current_doc_id else ("Crear Comprobante" if not edit_doc_id else "Guardar")
+
+            if btn_add_line is not None:
+                btn_add_line.visible = not is_read_only_ref["value"]
+
+        def _set_form_read_only(read_only: bool = True) -> None:
+            is_read_only_ref["value"] = bool(read_only)
+            locked = is_read_only_ref["value"]
+
+            static_controls = [
+                field_fecha,
+                field_vto,
+                dropdown_tipo,
+                dropdown_entidad,
+                dropdown_lista_global,
+                dropdown_deposito,
+                field_numero,
+                field_sena,
+                field_obs,
+                field_direccion,
+                field_descuento_global_pct,
+                field_descuento_global_imp,
+                field_valor_declarado,
+                auto_valor_sync,
+                manual_mode,
+                sum_subtotal,
+                sum_iva,
+                sum_total,
+            ]
+            for ctrl in static_controls:
+                _set_control_locked(ctrl, locked)
+
+            for row in lines_container.controls:
+                row_map = row.data or {}
+                for key in ("art_drop", "lista_drop", "cant_field", "price_field", "iva_field", "desc_pct_field", "desc_imp_field", "delete_btn"):
+                    _set_control_locked(row_map.get(key), locked)
+
+            _set_control_locked(btn_add_line, locked)
+            _refresh_modal_action_buttons()
+            _safe_update_multiple(
+                field_fecha,
+                field_vto,
+                dropdown_tipo,
+                dropdown_entidad,
+                dropdown_lista_global,
+                dropdown_deposito,
+                field_numero,
+                field_sena,
+                field_obs,
+                field_direccion,
+                field_descuento_global_pct,
+                field_descuento_global_imp,
+                field_valor_declarado,
+                auto_valor_sync,
+                manual_mode,
+                sum_subtotal,
+                sum_iva,
+                sum_total,
+                btn_add_line,
+                btn_modal_print,
+                btn_modal_confirm,
+                btn_modal_afip,
+                btn_modal_save,
+            )
+
+        def _refresh_modal_doc_state() -> None:
+            current_doc_id = active_doc_id_ref["value"]
+            current_doc_row_ref["value"] = None
+            if current_doc_id:
+                try:
+                    current_doc_row_ref["value"] = db.fetch_documento_resumen_by_id(int(current_doc_id))
+                except Exception as exc:
+                    logger.warning(f"No se pudo refrescar estado de comprobante {current_doc_id}: {exc}")
+
+            doc_row = current_doc_row_ref["value"] or {}
+            doc_number = str(doc_row.get("numero_serie") or "").strip()
+            if doc_number:
+                field_numero.value = doc_number
+                _safe_update_control(field_numero)
+
+            is_non_draft = bool(doc_row and doc_row.get("estado") != DocumentoEstado.BORRADOR.value)
+            if is_non_draft and not is_read_only_ref["value"]:
+                _set_form_read_only(True)
+            else:
+                _refresh_modal_action_buttons()
+                _safe_update_multiple(btn_modal_print, btn_modal_confirm, btn_modal_afip, btn_modal_save, btn_add_line)
+
         def _save(_=None):
+            if is_read_only_ref["value"]:
+                show_toast("El comprobante está en solo lectura.", kind="warning")
+                return
             if not dropdown_tipo.value or not dropdown_entidad.value or not dropdown_deposito.value:
                 show_toast("Faltan campos obligatorios", kind="warning")
                 return
@@ -9114,19 +9290,19 @@ def main(page: ft.Page) -> None:
                 show_toast(str(exc), kind="error")
                 return
 
-            numero_serie_value = None
-            if edit_doc_id:
-                numero_val = (field_numero.value or "").strip()
-                numero_serie_value = numero_val if numero_val else None
+            numero_val = (field_numero.value or "").strip()
+            if not numero_val and current_doc_row_ref["value"]:
+                numero_val = str((current_doc_row_ref["value"] or {}).get("numero_serie") or "").strip()
+            numero_serie_value = numero_val if numero_val else None
+
+            current_doc_id = active_doc_id_ref["value"]
             doc_id = None
-            action = "INSERT"
-            success_message = "Comprobante creado con éxito"
+            action = "UPDATE" if current_doc_id else "INSERT"
+            success_message = "Comprobante actualizado con éxito" if current_doc_id else "Comprobante creado con éxito"
             try:
-                if edit_doc_id:
-                    action = "UPDATE"
-                    success_message = "Comprobante actualizado con éxito"
+                if current_doc_id:
                     db.update_document(
-                        doc_id=edit_doc_id,
+                        doc_id=int(current_doc_id),
                         id_tipo_documento=int(dropdown_tipo.value),
                         id_entidad_comercial=int(dropdown_entidad.value),
                         id_deposito=int(dropdown_deposito.value),
@@ -9147,7 +9323,7 @@ def main(page: ft.Page) -> None:
                             "total": _parse_float(sum_total.value, "Total Manual"),
                         } if manual_mode.value else None
                     )
-                    doc_id = edit_doc_id
+                    doc_id = int(current_doc_id)
                 else:
                     doc_id = db.create_document(
                         id_tipo_documento=int(dropdown_tipo.value),
@@ -9170,13 +9346,15 @@ def main(page: ft.Page) -> None:
                             "total": _parse_float(sum_total.value, "Total Manual"),
                         } if manual_mode.value else None
                     )
+                    if doc_id:
+                        active_doc_id_ref["value"] = int(doc_id)
                 if db and doc_id:
                     db.log_activity("DOCUMENTO", action, id_entidad=doc_id, detalle={"tipo": dropdown_tipo.value, "items": len(items)})
                 show_toast(success_message, kind="success")
-                close_form()
                 # Refresh tables if they are visible
                 documentos_summary_table.refresh()
                 refresh_all_stats()
+                _refresh_modal_doc_state()
             except Exception as ex:
                 show_toast(f"Error al guardar: {ex}", kind="error")
         if doc_data:
@@ -9218,6 +9396,95 @@ def main(page: ft.Page) -> None:
         if not doc_data:
             _recalc_total()
 
+        def _print_current_document(_=None):
+            current_doc_id = active_doc_id_ref["value"]
+            if not current_doc_id:
+                show_toast("Primero guardá el comprobante para poder imprimir.", kind="warning")
+                return
+            print_document_external(int(current_doc_id))
+
+        def _handle_modal_doc_state_change() -> None:
+            _refresh_modal_doc_state()
+            doc_row = current_doc_row_ref["value"] or {}
+            if doc_row and doc_row.get("estado") != DocumentoEstado.BORRADOR.value:
+                _set_form_read_only(True)
+
+        def _confirm_current_document(_=None):
+            current_doc_id = active_doc_id_ref["value"]
+            if not current_doc_id:
+                show_toast("Primero guardá el comprobante para poder confirmarlo.", kind="warning")
+                return
+            _confirm_document(int(current_doc_id), close_after=False, on_success=_handle_modal_doc_state_change)
+
+        def _authorize_current_document(_=None):
+            current_doc_id = active_doc_id_ref["value"]
+            if not current_doc_id:
+                show_toast("Primero guardá el comprobante para poder facturarlo.", kind="warning")
+                return
+            doc_row = current_doc_row_ref["value"]
+            if not doc_row:
+                doc_row = db.fetch_documento_resumen_by_id(int(current_doc_id))
+            if not doc_row:
+                show_toast("No se pudo obtener el estado actual del comprobante.", kind="error")
+                return
+            _confirm_afip_authorization(doc_row, close_after=False, on_success=_handle_modal_doc_state_change)
+
+        btn_add_line = ft.ElevatedButton(
+            "Agregar Línea",
+            icon=ft.icons.ADD,
+            on_click=_add_line,
+            bgcolor=COLOR_ACCENT,
+            color="white",
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+            ),
+        )
+        btn_modal_print = ft.ElevatedButton(
+            "Imprimir",
+            icon=ft.icons.PRINT_ROUNDED,
+            on_click=_print_current_document,
+            bgcolor="#F1F5F9",
+            color=COLOR_TEXT,
+            visible=False,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        btn_modal_confirm = ft.ElevatedButton(
+            "Confirmar",
+            icon=ft.icons.CHECK_CIRCLE,
+            on_click=_confirm_current_document,
+            bgcolor=COLOR_SUCCESS,
+            color="#FFFFFF",
+            visible=False,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        btn_modal_afip = ft.ElevatedButton(
+            "Facturar AFIP",
+            icon=ft.icons.SECURITY,
+            on_click=_authorize_current_document,
+            bgcolor=COLOR_WARNING,
+            color="#FFFFFF",
+            visible=False,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        btn_modal_save = ft.ElevatedButton(
+            "Guardar cambios" if active_doc_id_ref["value"] else "Crear Comprobante",
+            icon=ft.icons.CHECK,
+            on_click=_save,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                bgcolor=COLOR_ACCENT,
+                color=ft.Colors.WHITE,
+            ),
+        )
+        btn_modal_close = _cancel_button("Cerrar", on_click=close_form)
+        actions_row = ft.Row(
+            [
+                ft.Row([btn_modal_print, btn_modal_confirm, btn_modal_afip], spacing=8),
+                ft.Row([btn_modal_close, btn_modal_save], spacing=8),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
 
 
         # Custom Dialog Content (replacing generic open_form to control layout fully)
@@ -9243,18 +9510,7 @@ def main(page: ft.Page) -> None:
                         border=ft.border.all(1, "#E2E8F0"),
                         border_radius=8,
                     ),
-                    ft.Row([
-                         ft.ElevatedButton(
-                             "Agregar Línea", 
-                             icon=ft.icons.ADD, 
-                             on_click=_add_line, 
-                             bgcolor=COLOR_ACCENT,
-                             color="white",
-                             style=ft.ButtonStyle(
-                                 shape=ft.RoundedRectangleBorder(radius=8),
-                             )
-                         ),
-                    ], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([btn_add_line], alignment=ft.MainAxisAlignment.START),
                     ft.Divider(),
                     # Financial Footer
                     ft.Row([ft.Container(expand=True), auto_valor_sync, field_valor_declarado], alignment=ft.MainAxisAlignment.END, spacing=10),
@@ -9273,22 +9529,7 @@ def main(page: ft.Page) -> None:
                         ft.Column([sum_saldo], spacing=0),
                     ], alignment=ft.MainAxisAlignment.END, spacing=15),
                     ft.Container(height=10),
-                    ft.Row(
-                        [
-                            _cancel_button("Cancelar", on_click=close_form),
-                            ft.ElevatedButton(
-                                "Guardar" if edit_doc_id else "Crear Comprobante", 
-                                icon=ft.icons.CHECK,
-                                on_click=_save,
-                                style=ft.ButtonStyle(
-                                    shape=ft.RoundedRectangleBorder(radius=8),
-                                    bgcolor=COLOR_ACCENT,
-                                    color=ft.Colors.WHITE,
-                                )
-                            ),
-                        ],
-                        alignment=ft.MainAxisAlignment.END,
-                    ),
+                    actions_row,
                 ],
                 spacing=15,
             ),
@@ -9306,6 +9547,7 @@ def main(page: ft.Page) -> None:
         _form_content_area.content = dialog_content
         _form_actions_area.controls = [] # No actions, buttons are inside
         _form_header.visible = False # Hide header to use internal one
+        _refresh_modal_doc_state()
 
         # Clear native dialog just in case
         page.dialog = None

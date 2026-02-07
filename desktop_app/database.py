@@ -4505,6 +4505,14 @@ class Database:
                 cur.execute(query, params)
                 return _rows_to_dicts(cur)
 
+    def fetch_documento_resumen_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:
+        query = "SELECT * FROM app.v_documento_resumen WHERE id = %s LIMIT 1"
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (int(doc_id),))
+                rows = _rows_to_dicts(cur)
+                return rows[0] if rows else None
+
     def count_documentos_resumen(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
         filters = ["1=1"]
         params = []
