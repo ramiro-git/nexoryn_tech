@@ -10,6 +10,7 @@ import socket
 import sys
 import time
 import threading
+import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 from venv import logger
@@ -8669,6 +8670,185 @@ def main(page: ft.Page) -> None:
         
         # Use ListView with internal padding to prevent "first item cut-off" issue
         lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
+        duplicate_item_dialog = ft.AlertDialog(modal=True)
+
+        def _normalize_duplicate_text(value: Any) -> str:
+            text = str(value or "").strip().lower()
+            if not text:
+                return ""
+            normalized = unicodedata.normalize("NFKD", text)
+            clean = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+            return " ".join(clean.split())
+
+        def _find_article_by_value(value: Any) -> Optional[Dict[str, Any]]:
+            if value in (None, ""):
+                return None
+            try:
+                art_id = int(value)
+            except Exception:
+                return None
+            return next((a for a in articulos if int(a.get("id")) == art_id), None)
+
+        def _get_row_duplicate_keys(row: Any) -> Dict[str, str]:
+            row_map = getattr(row, "data", None) or {}
+            art_drop_ctrl = row_map.get("art_drop")
+            selected_value = getattr(art_drop_ctrl, "value", None)
+            code_key = _normalize_duplicate_text(selected_value)
+
+            selected_art = _find_article_by_value(selected_value)
+            article_name = str((selected_art or {}).get("nombre") or row_map.get("article_name") or "").strip()
+            name_key = _normalize_duplicate_text(article_name)
+
+            duplicate_desc = row_map.get("duplicate_desc") or article_name
+            desc_key = _normalize_duplicate_text(duplicate_desc)
+            return {"code": code_key, "name": name_key, "description": desc_key}
+
+        def _find_duplicate_target_row(source_row: Any) -> Optional[Any]:
+            source_keys = _get_row_duplicate_keys(source_row)
+            if not any(source_keys.values()):
+                return None
+            for candidate_row in lines_container.controls:
+                if candidate_row is source_row:
+                    continue
+                candidate_keys = _get_row_duplicate_keys(candidate_row)
+                if not any(candidate_keys.values()):
+                    continue
+                if any(
+                    source_keys[key] and source_keys[key] == candidate_keys[key]
+                    for key in ("code", "name", "description")
+                ):
+                    return candidate_row
+            return None
+
+        def _clear_line_for_duplicate(row_to_clear: Any, *, recalc: bool = True) -> None:
+            row_map = getattr(row_to_clear, "data", None) or {}
+            art_drop_ctrl = row_map.get("art_drop")
+            lista_drop_ctrl = row_map.get("lista_drop")
+            cant_field_ctrl = row_map.get("cant_field")
+            price_field_ctrl = row_map.get("price_field")
+            iva_field_ctrl = row_map.get("iva_field")
+            desc_pct_field_ctrl = row_map.get("desc_pct_field")
+            desc_imp_field_ctrl = row_map.get("desc_imp_field")
+            total_field_ctrl = row_map.get("total_field")
+            stock_text_ctrl = row_map.get("stock_text")
+
+            if art_drop_ctrl is not None:
+                art_drop_ctrl.value = None
+            if lista_drop_ctrl is not None:
+                lista_drop_ctrl.value = ""
+            if cant_field_ctrl is not None:
+                cant_field_ctrl.value = "1"
+            if price_field_ctrl is not None:
+                price_field_ctrl.value = "0,00"
+            if iva_field_ctrl is not None:
+                iva_field_ctrl.value = "0,00"
+            if desc_pct_field_ctrl is not None:
+                desc_pct_field_ctrl.value = "0,00"
+            if desc_imp_field_ctrl is not None:
+                desc_imp_field_ctrl.value = "0,00"
+            if total_field_ctrl is not None:
+                total_field_ctrl.value = "0,00"
+
+            fiscal_ref = row_map.get("fiscal_iva_rate_ref")
+            if isinstance(fiscal_ref, dict):
+                fiscal_ref["value"] = to_decimal("0")
+            discount_mode_ref = row_map.get("discount_mode_ref")
+            if isinstance(discount_mode_ref, dict):
+                discount_mode_ref["value"] = "percentage"
+
+            if stock_text_ctrl is not None:
+                stock_text_ctrl.value = "Stock: -"
+                stock_text_ctrl.color = COLOR_TEXT_MUTED
+                stock_text_ctrl.weight = ft.FontWeight.NORMAL
+
+            row_map["duplicate_desc"] = ""
+            row_map["article_name"] = ""
+
+            refresh_labels = row_map.get("refresh_lista_labels")
+            if callable(refresh_labels):
+                refresh_labels()
+            recalc_line = row_map.get("recalculate_line")
+            if callable(recalc_line):
+                recalc_line()
+
+            _safe_update_multiple(
+                art_drop_ctrl,
+                lista_drop_ctrl,
+                cant_field_ctrl,
+                price_field_ctrl,
+                iva_field_ctrl,
+                desc_pct_field_ctrl,
+                desc_imp_field_ctrl,
+                total_field_ctrl,
+                stock_text_ctrl,
+            )
+            if recalc:
+                _recalc_total()
+
+        def _merge_duplicate_rows(source_row: Any, target_row: Any) -> None:
+            source_map = getattr(source_row, "data", None) or {}
+            target_map = getattr(target_row, "data", None) or {}
+            source_qty_raw = getattr(source_map.get("cant_field"), "value", None)
+            target_qty_raw = getattr(target_map.get("cant_field"), "value", None)
+
+            try:
+                source_qty = _parse_int_quantity(source_qty_raw, "Cantidad")
+            except Exception:
+                source_qty = 0
+            try:
+                target_qty = _parse_int_quantity(target_qty_raw, "Cantidad")
+            except Exception:
+                target_qty = 0
+
+            merged_qty = target_qty + source_qty
+            target_qty_ctrl = target_map.get("cant_field")
+            if target_qty_ctrl is not None:
+                target_qty_ctrl.value = normalize_input_value(merged_qty, decimals=0, use_grouping=False) or "0"
+
+            recalc_target = target_map.get("recalculate_line")
+            if callable(recalc_target):
+                recalc_target()
+            check_stock_target = target_map.get("check_stock_warning")
+            if callable(check_stock_target):
+                check_stock_target()
+
+            _clear_line_for_duplicate(source_row, recalc=False)
+            _safe_update_multiple(target_qty_ctrl, lines_container)
+            _recalc_total()
+
+        def _ask_duplicate_item_confirmation(source_row: Any, target_row: Any) -> None:
+            def _close(_: Any = None) -> None:
+                _safe_page_close(page, duplicate_item_dialog, "duplicate_item_confirmation")
+
+            def _confirm_merge(_: Any) -> None:
+                _close(None)
+                _merge_duplicate_rows(source_row, target_row)
+
+            def _confirm_clear(_: Any) -> None:
+                _close(None)
+                _clear_line_for_duplicate(source_row)
+
+            duplicate_item_dialog.title = ft.Text("Artículo ya ingresado", size=20, weight=ft.FontWeight.BOLD)
+            duplicate_item_dialog.content = ft.Container(
+                content=ft.Text(
+                    "El artículo ya está en el comprobante. ¿Deseás volver a ingresarlo?",
+                    size=14,
+                    color=COLOR_TEXT_MUTED,
+                ),
+                padding=ft.padding.symmetric(vertical=10),
+            )
+            duplicate_item_dialog.shape = ft.RoundedRectangleBorder(radius=16)
+            duplicate_item_dialog.actions = [
+                _cancel_button("No", on_click=_confirm_clear),
+                ft.ElevatedButton(
+                    "Sí, sumar",
+                    bgcolor=COLOR_ACCENT,
+                    color="#FFFFFF",
+                    on_click=_confirm_merge,
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                ),
+            ]
+            _safe_page_open(page, duplicate_item_dialog, "duplicate_item_confirmation")
 
         def _add_line(_=None, update_ui=True, initial_data=None):
             if is_read_only_ref["value"]:
@@ -8889,7 +9069,18 @@ def main(page: ft.Page) -> None:
                     logger.warning(f"No se pudieron refrescar labels de listas con precios: {ex}")
 
             def _on_art_change(e):
+                current_row_map = row.data or {}
+                selected_art = _get_selected_article()
+                selected_name = str((selected_art or {}).get("nombre") or "").strip()
+                current_row_map["article_name"] = selected_name
+                current_row_map["duplicate_desc"] = selected_name
+
                 _refresh_lista_labels_with_prices()
+                if art_drop.value:
+                    duplicate_target = _find_duplicate_target_row(row)
+                    if duplicate_target is not None:
+                        _ask_duplicate_item_confirmation(row, duplicate_target)
+                        return
                 _sync_fiscal_iva_from_visible(source="article_change")
                 _update_price_from_list()
                 _check_stock_warning()
@@ -8988,6 +9179,12 @@ def main(page: ft.Page) -> None:
             cant_container = ft.Column([cant_field, stock_text], spacing=0, width=80)
 
             # Store callbacks for external updates
+            initial_article = _get_selected_article()
+            initial_article_name = str((initial_article or {}).get("nombre") or "").strip()
+            duplicate_desc_value = str((initial_data or {}).get("descripcion_historica") or "").strip()
+            if not duplicate_desc_value:
+                duplicate_desc_value = initial_article_name
+
             row_map = {
                 "update_price": _update_price_from_list,
                 "lista_drop": lista_drop,
@@ -9001,6 +9198,12 @@ def main(page: ft.Page) -> None:
                 "desc_imp_field": desc_imp_field,
                 "total_field": total_field,
                 "discount_mode_ref": line_discount_mode,
+                "recalculate_line": _update_line_total,
+                "check_stock_warning": _check_stock_warning,
+                "refresh_lista_labels": _refresh_lista_labels_with_prices,
+                "stock_text": stock_text,
+                "duplicate_desc": duplicate_desc_value,
+                "article_name": initial_article_name,
             }
 
             delete_btn = ft.IconButton(
