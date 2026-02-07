@@ -866,6 +866,11 @@ def main(page: ft.Page) -> None:
                 art = db.get_article_simple(item["id_articulo"])
                 item_copy = item.copy()
                 item_copy["articulo_nombre"] = art["nombre"] if art else f"Artículo {item['id_articulo']}"
+                raw_code = (art or {}).get("codigo")
+                article_code = str(raw_code).strip() if raw_code is not None else ""
+                if not article_code:
+                    article_code = str(item.get("id_articulo") or "-")
+                item_copy["articulo_codigo"] = article_code
                 items_data.append(item_copy)
 
             # Generate PDF with company config

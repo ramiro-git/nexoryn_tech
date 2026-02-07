@@ -5654,7 +5654,7 @@ class Database:
 
     def get_article_simple(self, article_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a single article by ID, regardless of active status."""
-        query = "SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE id_articulo = %s"
+        query = "SELECT id_articulo, id_articulo AS id, nombre, codigo, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE id_articulo = %s"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (article_id,))

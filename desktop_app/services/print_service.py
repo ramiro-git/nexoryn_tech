@@ -331,6 +331,7 @@ class InvoicePDF(BaseDocumentPDF):
         show_prices: bool = True,
     ):
         super().__init__(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
+        self.is_presupuesto = self._is_presupuesto_document()
         self.is_invoice = self._is_invoice_document()
         self.subtotal_bruto = self._resolve_subtotal_bruto()
         self.descuento_lineas = self._resolve_line_discount_total()
@@ -355,7 +356,20 @@ class InvoicePDF(BaseDocumentPDF):
         self._doc_type_label = doc_type
         self._doc_letter = letter
 
+    def header(self) -> None:
+        if self.is_presupuesto:
+            if self.page_no() <= 1:
+                self._draw_presupuesto_page_header()
+            else:
+                self._draw_presupuesto_continuation_header()
+            return
+        super().header()
+
     def build(self) -> None:
+        if self.is_presupuesto:
+            self._build_presupuesto()
+            return
+
         self._draw_document_info()
         
         if self.is_invoice:
@@ -367,6 +381,256 @@ class InvoicePDF(BaseDocumentPDF):
         self.ln(4)
         self._draw_totals_block()
         self._draw_footer_remarks()
+
+    def _build_presupuesto(self) -> None:
+        self._draw_presupuesto_items_table()
+        self._draw_presupuesto_totals_note_block()
+
+    def _resolve_presupuesto_client_name(self) -> str:
+        razon_social = str(self.entity.get("razon_social") or "").strip()
+        if razon_social:
+            return razon_social
+
+        nombre = str(self.entity.get("nombre") or "").strip()
+        apellido = str(self.entity.get("apellido") or "").strip()
+        nombre_apellido = f"{nombre} {apellido}".strip()
+        if nombre_apellido:
+            return nombre_apellido
+
+        nombre_completo = str(self.entity.get("nombre_completo") or "").strip()
+        return nombre_completo or "Consumidor Final"
+
+    def _presupuesto_table_headers(self) -> List[str]:
+        return ["Código", "Cant.", "Artículos", "Costo/Uni", "Importe"]
+
+    def _presupuesto_table_widths(self) -> List[float]:
+        table_width = max(self.w - self.l_margin - self.r_margin, 20)
+        return _distribute_width(table_width, [0.14, 0.10, 0.42, 0.17, 0.17])
+
+    def _draw_presupuesto_table_header(self) -> None:
+        headers = self._presupuesto_table_headers()
+        widths = self._presupuesto_table_widths()
+
+        self.set_x(self.l_margin)
+        self.set_font("helvetica", "B", 9)
+        self.set_fill_color(*COLOR_LIGHT_GRAY)
+        self.set_text_color(*COLOR_TEXT)
+        self.set_draw_color(*COLOR_BORDER)
+        for width, title in zip(widths, headers):
+            self.cell(width, 7, title, border=1, align="C", fill=True)
+        self.ln()
+        self.set_font("helvetica", "", 9)
+
+    def _draw_presupuesto_page_header(self) -> None:
+        number = self.doc.get("numero_serie") or "-"
+        date = self.doc.get("fecha") or datetime.now().strftime("%Y-%m-%d")
+
+        client_name = self._resolve_presupuesto_client_name()
+        domicilio = self.entity.get("domicilio") or self.doc.get("direccion_entrega") or "-"
+        provincia = self.entity.get("provincia") or "-"
+        telefono = self.entity.get("telefono") or "-"
+        condicion_iva = self.entity.get("condicion_iva") or "-"
+        cuit = self.entity.get("cuit") or "-"
+
+        content_width = self.w - self.l_margin - self.r_margin
+        left_x = self.l_margin
+
+        self.set_draw_color(*COLOR_TEXT)
+        self.set_text_color(*COLOR_TEXT)
+        self.set_y(10)
+        self.set_x(left_x)
+
+        self.set_font("helvetica", "B", 12)
+        self.cell(content_width * 0.62, 6, f"PRESUPUESTO N°: {number}", border=0, align="L")
+        self.set_font("helvetica", "B", 10)
+        self.cell(content_width * 0.38, 6, f"FECHA: {_format_date(date)}", border=0, align="R")
+        self.ln(5)
+
+        self.set_x(left_x)
+        self.set_font("helvetica", "B", 10)
+        self.cell(0, 5, "X", border=0, ln=1, align="C")
+
+        self.set_x(left_x)
+        self.set_font("helvetica", "B", 9)
+        self.cell(0, 5, "DOCUMENTO NO VÁLIDO COMO FACTURA", border=0, ln=1, align="C")
+        self.ln(1)
+
+        left_width = content_width * 0.62
+        right_width = content_width - left_width
+        self.set_font("helvetica", "", 9)
+        self.set_x(left_x)
+        client_text = _truncate_text_to_width(
+            self,
+            f"Cliente: {client_name}",
+            left_width - (getattr(self, "c_margin", 0.5) * 2),
+        )
+        dom_text = _truncate_text_to_width(
+            self,
+            f"Dom: {domicilio}",
+            right_width - (getattr(self, "c_margin", 0.5) * 2),
+        )
+        self.cell(left_width, 5, client_text, border=0, align="L")
+        self.cell(right_width, 5, dom_text, border=0, align="R")
+        self.ln()
+
+        details_widths = _distribute_width(content_width, [0.27, 0.23, 0.18, 0.32])
+        details = [
+            f"Provincia: {provincia}",
+            f"Teléfono: {telefono}",
+            f"IVA: {condicion_iva}",
+            f"C.U.I.T.: {cuit}",
+        ]
+        self.set_x(left_x)
+        for idx, (width, text) in enumerate(zip(details_widths, details)):
+            clipped = _truncate_text_to_width(
+                self,
+                text,
+                width - (getattr(self, "c_margin", 0.5) * 2),
+            )
+            self.cell(width, 5, clipped, border=0, align="R" if idx == 3 else "L")
+        self.ln(5)
+
+        line_y = self.get_y()
+        self.set_line_width(0.3)
+        self.line(self.l_margin, line_y, self.w - self.r_margin, line_y)
+        self.set_y(line_y + 1.5)
+
+        self._draw_presupuesto_table_header()
+
+    def _draw_presupuesto_continuation_header(self) -> None:
+        self.set_draw_color(*COLOR_TEXT)
+        self.set_text_color(*COLOR_TEXT)
+        self.set_y(10)
+        line_y = self.get_y() + 1
+        self.set_line_width(0.3)
+        self.line(self.l_margin, line_y, self.w - self.r_margin, line_y)
+        self.set_y(line_y + 1.5)
+        self._draw_presupuesto_table_header()
+
+    def _format_qty(self, qty: float) -> str:
+        if qty == int(qty):
+            return str(int(qty))
+        return f"{qty:.2f}"
+
+    def _draw_presupuesto_items_table(self) -> None:
+        widths = self._presupuesto_table_widths()
+        row_height = 7
+
+        if not self.items:
+            self.set_font("helvetica", "", 9)
+            self.set_text_color(*COLOR_TEXT_MUTED)
+            self.set_x(self.l_margin)
+            self.cell(sum(widths), 8, "No hay ítems para este comprobante.", border=1, align="C")
+            self.set_text_color(*COLOR_TEXT)
+            self.ln()
+            return
+
+        for idx, item in enumerate(self.items):
+            qty = _safe_float(item.get("cantidad"), 0.0)
+            unit = _safe_float(item.get("precio_unitario"), 0.0)
+            desc_imp = _safe_float(item.get("descuento_importe"), 0.0)
+            total = _safe_float(item.get("total_linea"), None)
+            if total is None:
+                base = qty * unit
+                sign = 1 if base >= 0 else -1
+                total = base - (sign * max(0.0, desc_imp))
+
+            code = str(item.get("articulo_codigo") or item.get("id_articulo") or "-")
+            article = (
+                item.get("descripcion_historica")
+                or item.get("articulo_nombre")
+                or item.get("descripcion")
+                or f"Artículo {item.get('id_articulo', '-')}"
+            )
+
+            page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
+            if self.get_y() + row_height > page_break_at:
+                self.add_page()
+
+            if idx % 2 == 0:
+                self.set_fill_color(*COLOR_LIGHT_GRAY)
+            else:
+                self.set_fill_color(*COLOR_WHITE)
+
+            self.set_x(self.l_margin)
+            self.set_draw_color(*COLOR_BORDER)
+
+            code_text = _truncate_text_to_width(
+                self,
+                code,
+                widths[0] - (getattr(self, "c_margin", 0.5) * 2),
+            )
+            article_text = _truncate_text_to_width(
+                self,
+                str(article),
+                widths[2] - (getattr(self, "c_margin", 0.5) * 2),
+            )
+
+            self.cell(widths[0], row_height, code_text, border=1, align="C", fill=True)
+            self.cell(widths[1], row_height, self._format_qty(qty), border=1, align="C", fill=True)
+            self.cell(widths[2], row_height, f" {article_text}", border=1, align="L", fill=True)
+            self.cell(widths[3], row_height, _format_money(unit) if self.show_prices else "---", border=1, align="R", fill=True)
+            self.cell(widths[4], row_height, _format_money(total) if self.show_prices else "---", border=1, align="R", fill=True)
+            self.ln()
+
+    def _draw_presupuesto_totals_note_block(self) -> None:
+        content_width = self.w - self.l_margin - self.r_margin
+        line_height = 6
+        required_height = 3 + line_height + line_height
+        page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
+        if self.get_y() + required_height > page_break_at:
+            self.add_page()
+
+        qty_total = sum(_safe_float(item.get("cantidad"), 0.0) for item in self.items)
+        desc_total = max(0.0, self.descuento_lineas) + max(0.0, self.descuento_global)
+        desc_pct = max(0.0, _safe_float(self.doc.get("descuento_porcentaje"), 0.0))
+        note = str(self.doc.get("observacion") or "-").strip() or "-"
+
+        sep_y = self.get_y() + 1
+        self.set_draw_color(*COLOR_TEXT)
+        self.set_line_width(0.3)
+        self.line(self.l_margin, sep_y, self.w - self.r_margin, sep_y)
+        self.set_y(sep_y + 2)
+
+        values = [
+            f"Cant/Prod: {self._format_qty(qty_total)}",
+            f"Neto: {_format_money(self.neto)}" if self.show_prices else "Neto: ---",
+            f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
+            (
+                f"%Desc: {format_percent(desc_pct, decimals=2)} {_format_money(self.descuento_global)}"
+                if self.show_prices
+                else "%Desc: ---"
+            ),
+            f"Total: {_format_money(self.total)}" if self.show_prices else "Total: ---",
+        ]
+        widths = _distribute_width(content_width, [0.17, 0.17, 0.16, 0.24, 0.26])
+
+        self.set_font("helvetica", "B", 9)
+        self.set_text_color(*COLOR_TEXT)
+        self.set_x(self.l_margin)
+        for idx, (width, text) in enumerate(zip(widths, values)):
+            max_width = width - (getattr(self, "c_margin", 0.5) * 2)
+            clipped = _truncate_text_to_width(
+                self,
+                text,
+                max_width,
+                suffix="",
+            )
+            if clipped != text:
+                clipped = clipped.rstrip(" ,.;:")
+                if not clipped:
+                    clipped = "-"
+            self.cell(width, line_height, clipped, border=0, align="R" if idx == 4 else "L")
+        self.ln()
+
+        self.set_font("helvetica", "", 9)
+        self.set_x(self.l_margin)
+        note_text = _truncate_text_to_width(
+            self,
+            f"Nota: {note}",
+            content_width - (getattr(self, "c_margin", 0.5) * 2),
+        )
+        self.cell(content_width, line_height, note_text, border=0, ln=1, align="L")
 
     def _resolve_neto(self) -> float:
         neto = _safe_float(self.doc.get("neto"), None)
@@ -446,6 +710,10 @@ class InvoicePDF(BaseDocumentPDF):
     def _is_invoice_document(self) -> bool:
         doc_type = str(self.doc.get("tipo_documento") or "").upper()
         return "FACTURA" in doc_type
+
+    def _is_presupuesto_document(self) -> bool:
+        doc_type = str(self.doc.get("tipo_documento") or "").strip().upper()
+        return doc_type == "PRESUPUESTO"
 
     def _draw_document_info(self) -> None:
         """Draw document number, date, and status."""
