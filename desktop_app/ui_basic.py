@@ -850,19 +850,23 @@ def main(page: ft.Page) -> None:
             # Recalcular desglose fiscal para impresión.
             # Esto evita que PDFs de documentos con IVA histórico en 0 (por detalle legado)
             # muestren un IVA incorrecto cuando el artículo sí tiene alícuota fiscal.
+            fiscal_lines: List[Dict[str, Any]] = []
             try:
                 fiscal_pricing = _build_doc_fiscal_pricing_for_afip(db, doc)
                 doc["neto"] = float(quantize_2(to_decimal(fiscal_pricing.get("neto"), to_decimal("0"))))
                 doc["iva_total"] = float(quantize_2(to_decimal(fiscal_pricing.get("iva_total"), to_decimal("0"))))
                 doc["total"] = float(quantize_2(to_decimal(fiscal_pricing.get("total"), to_decimal("0"))))
                 doc["iva_breakdown"] = fiscal_pricing.get("iva_breakdown") or []
+                raw_lines = fiscal_pricing.get("items") if isinstance(fiscal_pricing, dict) else []
+                fiscal_lines = raw_lines if isinstance(raw_lines, list) else []
             except Exception as exc:
                 logger.warning(f"No se pudo recalcular desglose fiscal para impresión: {exc}")
                 doc["iva_breakdown"] = doc.get("iva_breakdown") or []
+                fiscal_lines = []
             
             # Build Items Data
             items_data = []
-            for item in doc.get("items", []):
+            for idx, item in enumerate(doc.get("items", [])):
                 art = db.get_article_simple(item["id_articulo"])
                 item_copy = item.copy()
                 item_copy["articulo_nombre"] = art["nombre"] if art else f"Artículo {item['id_articulo']}"
@@ -871,6 +875,58 @@ def main(page: ft.Page) -> None:
                 if not article_code:
                     article_code = str(item.get("id_articulo") or "-")
                 item_copy["articulo_codigo"] = article_code
+
+                raw_unit_abbr = str((art or {}).get("unidad_abreviatura") or "").strip()
+                if raw_unit_abbr:
+                    unit_abbr = raw_unit_abbr.upper()
+                else:
+                    raw_unit_name = str((art or {}).get("unidad_medida") or "").strip()
+                    unit_abbr = raw_unit_name[:3].upper() if raw_unit_name else "UNI"
+                item_copy["unidad_abreviatura"] = unit_abbr or "UNI"
+
+                fiscal_line = fiscal_lines[idx] if idx < len(fiscal_lines) and isinstance(fiscal_lines[idx], dict) else {}
+                alicuota_iva = float(
+                    quantize_2(
+                        to_decimal(
+                            fiscal_line.get(
+                                "porcentaje_iva_fiscal",
+                                fiscal_line.get("porcentaje_iva", item.get("porcentaje_iva", 0)),
+                            ),
+                            to_decimal(item.get("porcentaje_iva"), to_decimal("0")),
+                        )
+                    )
+                )
+                bonificacion_pct = float(
+                    quantize_2(
+                        to_decimal(
+                            fiscal_line.get("descuento_porcentaje", item.get("descuento_porcentaje", 0)),
+                            to_decimal(item.get("descuento_porcentaje"), to_decimal("0")),
+                        )
+                    )
+                )
+                subtotal_sin_iva = float(
+                    quantize_2(
+                        to_decimal(
+                            fiscal_line.get(
+                                "neto_fiscal_linea",
+                                fiscal_line.get("linea_neta", item.get("total_linea", 0)),
+                            ),
+                            to_decimal(item.get("total_linea"), to_decimal("0")),
+                        )
+                    )
+                )
+                subtotal_con_iva = float(
+                    quantize_2(
+                        to_decimal(
+                            fiscal_line.get("linea_neta", item.get("total_linea", 0)),
+                            to_decimal(item.get("total_linea"), to_decimal("0")),
+                        )
+                    )
+                )
+                item_copy["afip_alicuota_iva"] = alicuota_iva
+                item_copy["afip_bonificacion_pct"] = bonificacion_pct
+                item_copy["afip_subtotal_sin_iva"] = subtotal_sin_iva
+                item_copy["afip_subtotal_con_iva"] = subtotal_con_iva
                 items_data.append(item_copy)
 
             # Generate PDF with company config
@@ -5414,11 +5470,110 @@ def main(page: ft.Page) -> None:
             )
             def _print_remito_with_options(include_prices: bool) -> None:
                 try:
+                    doc_for_print: Dict[str, Any] = dict(rem_row or {})
                     entity_detail = db.get_entity_detail(rem_row.get("id_entidad_comercial")) if db else {}
+                    items_data: List[Dict[str, Any]] = []
+                    for idx, line in enumerate(details or []):
+                        row = dict(line or {})
+                        row["nro_linea"] = row.get("nro_linea") or (idx + 1)
+                        row["articulo_nombre"] = (
+                            row.get("articulo_nombre")
+                            or row.get("descripcion_historica")
+                            or row.get("articulo")
+                            or f"Artículo {row.get('id_articulo', '-')}"
+                        )
+                        row["articulo_codigo"] = str(
+                            row.get("articulo_codigo")
+                            or row.get("id_articulo")
+                            or "-"
+                        ).strip() or "-"
+                        items_data.append(row)
+
+                    doc_lines: List[Dict[str, Any]] = []
+                    doc_summary: Dict[str, Any] = {}
+                    if db and rem_row.get("id_documento"):
+                        try:
+                            doc_id = int(rem_row.get("id_documento"))
+                            raw_doc_lines = db.fetch_documento_detalle(doc_id)
+                            doc_lines = raw_doc_lines if isinstance(raw_doc_lines, list) else []
+                            raw_doc_summary = db.fetch_documento_resumen_by_id(doc_id)
+                            doc_summary = raw_doc_summary if isinstance(raw_doc_summary, dict) else {}
+                        except Exception as exc:
+                            logger.warning(f"No se pudieron cargar datos del comprobante para remito: {exc}")
+
+                    if doc_summary:
+                        for key in ("neto", "total", "descuento_porcentaje", "descuento_importe"):
+                            value = doc_summary.get(key)
+                            if value is not None:
+                                doc_for_print[key] = value
+                        rem_obs = str(doc_for_print.get("observacion") or "").strip()
+                        doc_obs = str(doc_summary.get("observacion") or "").strip()
+                        if not rem_obs and doc_obs:
+                            doc_for_print["observacion"] = doc_obs
+
+                    if doc_lines:
+                        doc_lines_by_nro: Dict[int, Dict[str, Any]] = {}
+                        for doc_line in doc_lines:
+                            try:
+                                line_no = int((doc_line or {}).get("nro_linea"))
+                            except (TypeError, ValueError):
+                                continue
+                            doc_lines_by_nro[line_no] = doc_line
+
+                        for idx, row in enumerate(items_data):
+                            try:
+                                row_line_no = int(row.get("nro_linea"))
+                            except (TypeError, ValueError):
+                                row_line_no = None
+
+                            source_line: Optional[Dict[str, Any]] = None
+                            if row_line_no is not None:
+                                source_line = doc_lines_by_nro.get(row_line_no)
+                            if source_line is None and idx < len(doc_lines):
+                                source_line = doc_lines[idx]
+                            if not source_line:
+                                continue
+
+                            unit_price = source_line.get("precio_unitario")
+                            if unit_price is not None:
+                                row["precio_unitario"] = unit_price
+
+                            line_total = source_line.get("total_linea")
+                            if line_total is None and unit_price is not None:
+                                try:
+                                    qty_val = float(row.get("cantidad") or source_line.get("cantidad") or 0.0)
+                                    line_total = qty_val * float(unit_price)
+                                except (TypeError, ValueError):
+                                    line_total = None
+                            if line_total is not None:
+                                row["total_linea"] = line_total
+
+                            discount_amount = source_line.get("descuento_importe")
+                            if discount_amount is not None:
+                                row["descuento_importe"] = discount_amount
+                            discount_pct = source_line.get("descuento_porcentaje")
+                            if discount_pct is not None:
+                                row["descuento_porcentaje"] = discount_pct
+
+                            if not row.get("articulo_codigo"):
+                                row["articulo_codigo"] = str(
+                                    source_line.get("id_articulo")
+                                    or row.get("id_articulo")
+                                    or "-"
+                                )
+                            if not row.get("articulo_nombre"):
+                                row["articulo_nombre"] = (
+                                    source_line.get("articulo")
+                                    or source_line.get("descripcion_historica")
+                                    or source_line.get("descripcion")
+                                    or row.get("articulo")
+                                    or f"Artículo {source_line.get('id_articulo', '-')}"
+                                )
+
                     generate_pdf_and_open(
-                        rem_row,
+                        doc_for_print,
                         entity_detail or {},
-                        details,
+                        items_data,
                         kind="remito",
                         company_config=get_company_config(),
                         show_prices=include_prices,

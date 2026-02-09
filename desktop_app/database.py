@@ -5654,7 +5654,20 @@ class Database:
 
     def get_article_simple(self, article_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a single article by ID, regardless of active status."""
-        query = "SELECT id_articulo, id_articulo AS id, nombre, codigo, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE id_articulo = %s"
+        query = """
+            SELECT
+                id_articulo,
+                id_articulo AS id,
+                nombre,
+                codigo,
+                costo,
+                porcentaje_iva,
+                unidad_medida,
+                unidad_abreviatura,
+                activo
+            FROM app.v_articulo_detallado
+            WHERE id_articulo = %s
+        """
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (article_id,))
@@ -6164,7 +6177,8 @@ class Database:
                            d.observacion, d.numero_serie, d.descuento_porcentaje, d.descuento_importe,
                            d.fecha::text, d.fecha_vencimiento::text, d.id_lista_precio,
                            d.neto, d.subtotal, d.iva_total, d.total, d.sena, d.estado, d.cae,
-                           d.cae_vencimiento, d.cuit_emisor, d.qr_data, d.direccion_entrega, td.nombre, td.letra,
+                           d.cae_vencimiento, d.cuit_emisor, d.qr_data, d.punto_venta, d.tipo_comprobante_afip,
+                           d.direccion_entrega, td.nombre, td.letra,
                            d.valor_declarado
                     FROM app.documento d
                     JOIN ref.tipo_documento td ON td.id = d.id_tipo_documento
@@ -6181,9 +6195,10 @@ class Database:
                     "id_lista_precio": head[10], "neto": float(head[11]), "subtotal": float(head[12]),
                     "iva_total": float(head[13]), "total": float(head[14]), "sena": float(head[15]),
                     "estado": head[16], "cae": head[17], "cae_vencimiento": head[18],
-                    "cuit_emisor": head[19], "qr_data": head[20], "direccion_entrega": head[21],
-                    "tipo_documento": head[22], "letra": head[23],
-                    "valor_declarado": float(head[24])
+                    "cuit_emisor": head[19], "qr_data": head[20], "punto_venta": head[21],
+                    "tipo_comprobante_afip": head[22], "direccion_entrega": head[23],
+                    "tipo_documento": head[24], "letra": head[25],
+                    "valor_declarado": float(head[26])
                 }
                 
                 cur.execute("""

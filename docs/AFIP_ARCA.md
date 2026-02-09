@@ -68,6 +68,23 @@ AFIP_PUNTO_VENTA=3
 
 > La autorización es irreversible desde la UI. Verifica los datos antes de autorizar.
 
+## Impresión de Facturas (Formato AFIP Clásico)
+
+- Las **facturas** (`FACTURA A/B/C`) se imprimen con layout AFIP clásico:
+  - Encabezado con rótulo `ORIGINAL`
+  - Datos fiscales de emisor/receptor
+  - Tabla de ítems con columnas AFIP (código, unidad, bonificación, alícuota, subtotales)
+  - Matriz de importes e IVA por alícuota
+  - Bloque fiscal inferior con QR, estado, CAE y vencimiento
+- El layout aplica solo a facturas. `PRESUPUESTO` y `REMITO` mantienen su formato actual.
+- Si la factura no tiene CAE, se imprime igual con estado **Comprobante no autorizado**.
+- En numeración `Pto. Vta. / Comp. Nro` se prioriza:
+  1. payload del `qr_data` de AFIP (`ptoVta`, `nroCmp`)
+  2. datos locales del documento (`punto_venta`, `numero_serie`)
+- La opción de impresión con importes ocultos se mantiene:
+  - montos en `---`
+  - datos fiscales no monetarios visibles
+
 ## Troubleshooting
 
 ### `openssl no encontrado`
