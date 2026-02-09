@@ -16,6 +16,7 @@ El sistema profesional de backups está implementado en `BackupManager` + `Backu
 - Backups FULL (mensuales) con `pg_dump -F c`
 - Backups DIFERENCIALES (semanales) por tablas con cambios desde el último FULL
 - Backups INCREMENTALES (diarios) por tablas con cambios desde el último backup (full/dif/inc)
+- Backup `MANUAL` disponible desde UI profesional (internamente usa flujo equivalente a `FULL`)
 - Cadena de restauración: FULL + DIFERENCIAL + INCREMENTALES
 - Validación por existencia de archivos y checksum SHA-256
 - Scheduler integrado vía APScheduler al iniciar la app
@@ -48,11 +49,13 @@ Configuración en `seguridad.config_sistema`:
 
 ## Scheduler Integrado
 
-**Horarios por defecto (hora local):**
+**Horarios por defecto:**
 - **FULL**: Día 1 de cada mes a las 00:00
 - **DIFERENCIAL**: Domingos a las 23:30
 - **INCREMENTAL**: Diariamente a las 23:00
 - **Validación**: Diariamente a las 01:00
+
+En UI básica, el scheduler profesional se inicializa con timezone `America/Argentina/Buenos_Aires`.
 
 **Edición desde UI:**
 - El panel **Respaldos** permite cambiar días y horas.
@@ -65,10 +68,12 @@ Al iniciar la app, se detectan backups faltantes y se ejecutan en orden `FULL �
 ## Uso desde la UI
 
 En el panel **Respaldos** puedes:
-- Ejecutar backups manuales (FULL/DIF/INC).
+- Ejecutar backups manuales (FULL/DIF/INC/MANUAL).
 - Ver historial y métricas.
 - Validar backups existentes.
 - Configurar horarios y retención.
+
+> Nota: en la implementación actual, `MANUAL` dispara el mismo flujo de generación que `FULL`.
 
 ## Restauración
 
@@ -140,8 +145,9 @@ La configuración se guarda en `backup_cloud_config`.
 
 - La UI permite definir retención (FULL meses / DIF semanas / INC días).
 - La configuración se guarda en `backup_retention`.
-- **No hay purga automática** en el sistema incremental actual.
-- Existe `purge_invalid_backups()` para limpiar registros huérfanos (archivos faltantes).
+- **No hay purga automática por política de retención** en el sistema incremental actual.
+- Sí existe limpieza de registros huérfanos (archivo físico faltante) mediante `purge_invalid_backups()`.
+- Esa limpieza de huérfanos se ejecuta en el arranque/uso de flujos principales (startup de UI básica y carga del panel de backups profesional).
 
 ## Configuración
 

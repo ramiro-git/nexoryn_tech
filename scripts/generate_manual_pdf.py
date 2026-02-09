@@ -1,4 +1,5 @@
 from fpdf import FPDF
+from fpdf.enums import XPos, YPos
 import datetime
 import re
 from pathlib import Path
@@ -11,20 +12,31 @@ class ManualPDF(FPDF):
     def header(self):
         self.set_font('helvetica', 'B', 15)
         self.set_text_color(99, 102, 241) # Indigo 500
-        self.cell(0, 10, 'NEXORYN TECH - Manual Maestro', border=False, ln=True, align='R')
+        self.cell(
+            0, 10, sanitize_text('NEXORYN TECH - Manual Maestro'),
+            border=False, align='R',
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         self.ln(10)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('helvetica', 'I', 8)
         self.set_text_color(128)
-        self.cell(0, 10, f'Página {self.page_no()} | Generado: {self.generated_at}', 0, 0, 'C')
+        self.cell(
+            0, 10, sanitize_text(f'Página {self.page_no()} | Generado: {self.generated_at}'),
+            border=0, align='C',
+            new_x=XPos.RIGHT, new_y=YPos.TOP,
+        )
 
     def chapter_title(self, label):
         self.set_font('helvetica', 'B', 16)
         self.set_text_color(30, 41, 59) # Slate 800
         self.ln(5)
-        self.cell(0, 10, label, ln=True, align='L')
+        self.cell(
+            0, 10, sanitize_text(label), align='L',
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         self.ln(4)
         self.set_draw_color(226, 232, 240)
         self.line(self.get_x(), self.get_y(), self.get_x() + 190, self.get_y())
@@ -34,40 +46,52 @@ class ManualPDF(FPDF):
         self.set_font('helvetica', 'B', 12)
         self.set_text_color(79, 70, 229) # Indigo 600
         self.ln(3)
-        self.cell(0, 8, label, ln=True, align='L')
+        self.cell(
+            0, 8, sanitize_text(label), align='L',
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         self.ln(2)
 
     def subsection_title(self, label):
         self.set_font('helvetica', 'B', 11)
         self.set_text_color(30, 41, 59) # Slate 800
         self.ln(2)
-        self.cell(0, 7, label, ln=True, align='L')
+        self.cell(
+            0, 7, sanitize_text(label), align='L',
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         self.ln(1)
 
     def chapter_body(self, text):
         self.set_font('helvetica', '', 11)
         self.set_text_color(51, 65, 85) # Slate 700
-        self.multi_cell(0, 7, text)
+        self.multi_cell(0, 7, sanitize_text(text))
         self.ln()
 
     def add_shortcut(self, key, description):
         self.set_font('helvetica', 'B', 10)
         self.set_text_color(79, 70, 229)
-        self.cell(45, 7, key, border=False)
+        self.cell(
+            45, 7, sanitize_text(key), border=False,
+            new_x=XPos.RIGHT, new_y=YPos.TOP,
+        )
         self.set_font('helvetica', '', 10)
         self.set_text_color(51, 65, 85)
-        self.cell(0, 7, f' - {description}', border=False, ln=True)
+        self.cell(
+            0, 7, sanitize_text(f' - {description}'), border=False,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
 
     def bullet_item(self, text):
         self.set_font('helvetica', '', 11)
         self.set_text_color(51, 65, 85)
-        self.multi_cell(0, 6, f"- {text}")
+        self.multi_cell(0, 6, sanitize_text(f"- {text}"))
         self.ln(1)
 
     def quote_line(self, text):
         self.set_font('helvetica', 'I', 10)
         self.set_text_color(100, 116, 139)
-        self.multi_cell(0, 6, f"> {text}")
+        self.multi_cell(0, 6, sanitize_text(f"> {text}"))
         self.ln(1)
 
     def code_block(self, text):
@@ -75,7 +99,7 @@ class ManualPDF(FPDF):
         self.set_text_color(30, 41, 59)
         self.set_fill_color(241, 245, 249)
         self.set_draw_color(226, 232, 240)
-        self.multi_cell(0, 5, text, border=1, fill=True)
+        self.multi_cell(0, 5, sanitize_text(text), border=1, fill=True)
         self.ln(2)
 
     def error_box(self, title, text):
@@ -83,9 +107,12 @@ class ManualPDF(FPDF):
         self.set_draw_color(239, 68, 68)  # Red 500
         self.set_text_color(153, 27, 27) # Red 800
         self.set_font('helvetica', 'B', 11)
-        self.cell(0, 8, f" ALERTA: {title}", border='TLR', ln=True, fill=True)
+        self.cell(
+            0, 8, sanitize_text(f" ALERTA: {title}"), border='TLR', fill=True,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
         self.set_font('helvetica', '', 10)
-        self.multi_cell(0, 6, text, border='BLR', fill=True)
+        self.multi_cell(0, 6, sanitize_text(text), border='BLR', fill=True)
         self.ln(5)
 
 def sanitize_text(text):
@@ -190,21 +217,38 @@ def generate_manual():
     pdf.set_y(60)
     pdf.set_font('helvetica', 'B', 45)
     pdf.set_text_color(99, 102, 241)
-    pdf.cell(0, 20, 'Manual Maestro', ln=True, align='C')
+    pdf.cell(
+        0, 20, sanitize_text('Manual Maestro'), align='C',
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
     pdf.set_font('helvetica', 'B', 28)
     pdf.set_text_color(30, 41, 59)
-    pdf.cell(0, 15, 'Sistema Nexoryn Tech', ln=True, align='C')
+    pdf.cell(
+        0, 15, sanitize_text('Sistema Nexoryn Tech'), align='C',
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
     pdf.ln(10)
     pdf.set_font('helvetica', '', 16)
     pdf.set_text_color(100, 116, 139)
-    pdf.cell(0, 10, 'Guía de Operación y Resolución de Problemas', ln=True, align='C')
+    pdf.cell(
+        0, 10, sanitize_text('Guía de Operación y Resolución de Problemas'), align='C',
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
     
     pdf.set_y(220)
     pdf.set_font('helvetica', 'B', 12)
     pdf.set_text_color(30, 41, 59)
-    pdf.cell(0, 10, 'Sistema de Gestión Integral', ln=True, align='C')
+    pdf.cell(
+        0, 10, sanitize_text('Sistema de Gestión Integral'), align='C',
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
     pdf.set_font('helvetica', '', 10)
-    pdf.cell(0, 10, 'Este manual le guiará en el uso del sistema Nexoryn Tech, que gestiona las áreas de AFIP, Inventario y Cuentas.', ln=True, align='C')
+    pdf.cell(
+        0, 10,
+        sanitize_text('Este manual le guiará en el uso del sistema Nexoryn Tech, que gestiona las áreas de AFIP, Inventario y Cuentas.'),
+        align='C',
+        new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+    )
 
     pdf.add_page()
 
@@ -489,7 +533,11 @@ def generate_manual():
     pdf.ln(15)
     pdf.set_font('helvetica', 'I', 10)
     pdf.set_text_color(100, 116, 139)
-    pdf.multi_cell(0, 10, 'Este manual es una herramienta dinámica. Si detecta un error no documentado, comuníquese con soporte para su inclusión.', align='C')
+    pdf.multi_cell(
+        0, 10,
+        sanitize_text('Este manual es una herramienta dinámica. Si detecta un error no documentado, comuníquese con soporte para su inclusión.'),
+        align='C',
+    )
 
     output_path = "MANUAL_MAESTRO_NEXORYN_TECH.pdf"
     pdf.output(output_path)

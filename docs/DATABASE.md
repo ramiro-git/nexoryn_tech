@@ -41,7 +41,9 @@ Módulo de utilidad que centraliza la conexión para scripts. Usa `.env` si exis
 
 ## Sincronización Automática del Esquema (SchemaSync)
 
-La app ejecuta una sincronización **temprana** del esquema antes de abrir el pool de conexiones.
+La app ejecuta la verificación de esquema en ambos modos de UI, pero en distinto momento de arranque:
+- **UI básica (`desktop_app/ui_basic.py`)**: corre un sync temprano antes de crear `Database`.
+- **UI avanzada (`desktop_app/ui_advanced.py`)**: corre dentro del flujo de mantenimiento inicial.
 
 **Cómo funciona:**
 - Lee la versión del encabezado de `database/database.sql` (`-- Version: X.X`).
@@ -57,10 +59,15 @@ La app ejecuta una sincronización **temprana** del esquema antes de abrir el po
 - El esquema usa `pg_advisory_lock` al inicio del archivo para evitar concurrencia entre instancias.
 
 ## Migraciones en Runtime (Database._run_migrations)
-Al inicializar `Database`, se aplican migraciones seguras en caliente:
+Al inicializar `Database`, se aplican migraciones idempotentes en caliente:
 - `app.pago.id_documento` se vuelve nullable (para pagos de cuenta corriente).
 - `app.movimiento_articulo.stock_resultante` se agrega si falta.
 - `app.documento_detalle.descuento_importe` se agrega si falta y se normaliza `NULL -> 0`.
+- `app.articulo.codigo` se agrega si falta, se normaliza (`NULLIF(TRIM(codigo), '')`) y se completa con `id::text` cuando falta.
+- Se crean índices sobre `app.articulo.codigo`:
+  - `idx_articulo_codigo`
+  - `idx_articulo_codigo_lower_trgm` (GIN sobre `lower(codigo)`).
+- Se refresca la vista `app.v_articulo_detallado` para incluir `codigo` y estructura vigente.
 - Se actualiza el trigger `app.fn_sync_stock_resumen` para persistir `stock_resultante`.
 
 ## Descuentos en comprobantes
@@ -125,8 +132,8 @@ Se inicia un `LogArchiver` en segundo plano:
 - Archiva a `.jsonl.gz` y luego elimina los registros antiguos.
 - Ejecuta `seguridad.mantener_particiones_log()` si la función existe.
 
-## Actualizaciones en Tiempo Real (solo UI avanzada)
-La UI avanzada usa polling cada 5 segundos sobre `seguridad.log_actividad` mediante `Database.check_recent_activity()` para refrescar la vista activa.
+## Actualizaciones en Tiempo Real (UI básica y avanzada)
+La UI básica y la UI avanzada usan polling cada 5 segundos sobre `seguridad.log_actividad` mediante `Database.check_recent_activity()` para refrescar la vista activa.
 
 ## Variables de Entorno Relevantes
 - `DATABASE_URL` o `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.

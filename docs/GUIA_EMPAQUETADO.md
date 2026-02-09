@@ -22,7 +22,7 @@ flet pack desktop_app/main.py --name "NexorynTech" --add-data "database;database
 flet pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png" --add-data "database;database"
 ```
 
-> Nota: `requirements.txt` incluye las dependencias `jaraco.*` necesarias para evitar el error de PyInstaller `Failed to execute script 'pyi_rth_pkgres'`.
+> Nota: el proyecto ya incluye `pyinstaller` en `requirements.txt`. Si cambias versiones de dependencias, valida el empaquetado en una máquina limpia antes de distribuir.
 
 ---
 
