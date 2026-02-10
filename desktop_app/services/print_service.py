@@ -1065,6 +1065,7 @@ class AfipInvoicePDF(BaseDocumentPDF):
     ):
         super().__init__(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
         self._doc_type_full = self._resolve_doc_type_label()
+        self._doc_letter = self._resolve_doc_letter()
         self._qr_payload = _extract_afip_qr_payload(self.doc.get("qr_data"))
         self._voucher_point, self._voucher_number = self._resolve_voucher_numbers()
         self.neto_gravado = _safe_float(self.doc.get("neto"), 0.0) or 0.0
@@ -1095,6 +1096,24 @@ class AfipInvoicePDF(BaseDocumentPDF):
         if letter:
             return f"{base} {letter}".strip()
         return base
+
+    def _resolve_doc_letter(self) -> str:
+        letter = str(self.doc.get("letra") or "").strip().upper()
+        if letter in {"A", "B", "C", "M"}:
+            return letter
+
+        doc_type = str(self.doc.get("tipo_documento") or "").strip().upper()
+        parts = [p for p in doc_type.split(" ") if p]
+        if parts and parts[-1] in {"A", "B", "C", "M"}:
+            return parts[-1]
+
+        label_parts = [p for p in str(self._doc_type_full or "").split(" ") if p]
+        if label_parts and label_parts[-1] in {"A", "B", "C", "M"}:
+            return label_parts[-1]
+        return ""
+
+    def _should_discriminate_iva(self) -> bool:
+        return self._doc_letter not in {"B", "C"}
 
     def _resolve_voucher_numbers(self) -> Tuple[str, str]:
         qr_pto = _safe_int(self._qr_payload.get("ptoVta"), None)
@@ -1316,19 +1335,32 @@ class AfipInvoicePDF(BaseDocumentPDF):
         self._draw_fiscal_footer_block()
 
     def _draw_items_table(self) -> None:
-        headers = [
-            "Código",
-            "Producto",
-            "Cantidad",
-            "Unidad",
-            "Precio unitario",
-            "% Bonificación",
-            "Subtotal",
-            "Alícuota IVA",
-            "Subtotal c/IVA",
-        ]
+        discriminate_iva = self._should_discriminate_iva()
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        widths = _distribute_width(table_width, [0.10, 0.24, 0.08, 0.08, 0.12, 0.10, 0.10, 0.08, 0.10])
+        if discriminate_iva:
+            headers = [
+                "Código",
+                "Producto",
+                "Cantidad",
+                "Unidad",
+                "Precio unitario",
+                "% Bonificación",
+                "Subtotal",
+                "Alícuota IVA",
+                "Subtotal c/IVA",
+            ]
+            widths = _distribute_width(table_width, [0.10, 0.24, 0.08, 0.08, 0.12, 0.10, 0.10, 0.08, 0.10])
+        else:
+            headers = [
+                "Código",
+                "Producto",
+                "Cantidad",
+                "Unidad",
+                "Precio unitario",
+                "% Bonificación",
+                "Importe",
+            ]
+            widths = _distribute_width(table_width, [0.11, 0.36, 0.09, 0.08, 0.14, 0.10, 0.12])
         row_height = 6
         start_x = self.l_margin
 
@@ -1387,18 +1419,30 @@ class AfipInvoicePDF(BaseDocumentPDF):
             if subtotal_with_iva is None:
                 subtotal_with_iva = _safe_float(item.get("total_linea"), 0.0) or 0.0
 
-            values = [
-                _truncate_text_to_width(self, code_text, widths[0] - 1.5),
-                _truncate_text_to_width(self, str(product_text), widths[1] - 1.5),
-                qty_text,
-                _truncate_text_to_width(self, unit_text, widths[3] - 1.5),
-                self._display_amount(unit_price),
-                format_percent(bonif_pct, decimals=2),
-                self._display_amount(subtotal_no_iva),
-                format_percent(alicuota, decimals=2),
-                self._display_amount(subtotal_with_iva),
-            ]
-            aligns = ["C", "L", "C", "C", "R", "R", "R", "C", "R"]
+            if discriminate_iva:
+                values = [
+                    _truncate_text_to_width(self, code_text, widths[0] - 1.5),
+                    _truncate_text_to_width(self, str(product_text), widths[1] - 1.5),
+                    qty_text,
+                    _truncate_text_to_width(self, unit_text, widths[3] - 1.5),
+                    self._display_amount(unit_price),
+                    format_percent(bonif_pct, decimals=2),
+                    self._display_amount(subtotal_no_iva),
+                    format_percent(alicuota, decimals=2),
+                    self._display_amount(subtotal_with_iva),
+                ]
+                aligns = ["C", "L", "C", "C", "R", "R", "R", "C", "R"]
+            else:
+                values = [
+                    _truncate_text_to_width(self, code_text, widths[0] - 1.5),
+                    _truncate_text_to_width(self, str(product_text), widths[1] - 1.5),
+                    qty_text,
+                    _truncate_text_to_width(self, unit_text, widths[3] - 1.5),
+                    self._display_amount(unit_price),
+                    format_percent(bonif_pct, decimals=2),
+                    self._display_amount(subtotal_with_iva),
+                ]
+                aligns = ["C", "L", "C", "C", "R", "R", "R"]
 
             self.set_x(start_x)
             for width, value, align in zip(widths, values, aligns):
@@ -1410,18 +1454,27 @@ class AfipInvoicePDF(BaseDocumentPDF):
         self._table_header_drawer = None
 
     def _draw_totals_matrix(self) -> None:
-        rows = [
-            ("Importe neto no gravado", self.importe_no_gravado),
-            ("Importe neto gravado", self.neto_gravado),
-            ("IVA 27%", self.iva_amounts.get(27.0, 0.0)),
-            ("IVA 21%", self.iva_amounts.get(21.0, 0.0)),
-            ("IVA 10.5%", self.iva_amounts.get(10.5, 0.0)),
-            ("IVA 5%", self.iva_amounts.get(5.0, 0.0)),
-            ("IVA 2.5%", self.iva_amounts.get(2.5, 0.0)),
-            ("IVA 0%", self.iva_amounts.get(0.0, 0.0)),
-            ("Importe otros tributos", self.importe_otros_tributos),
-            ("Importe total", self.total),
-        ]
+        if self._should_discriminate_iva():
+            rows = [
+                ("Importe neto no gravado", self.importe_no_gravado),
+                ("Importe neto gravado", self.neto_gravado),
+                ("IVA 27%", self.iva_amounts.get(27.0, 0.0)),
+                ("IVA 21%", self.iva_amounts.get(21.0, 0.0)),
+                ("IVA 10.5%", self.iva_amounts.get(10.5, 0.0)),
+                ("IVA 5%", self.iva_amounts.get(5.0, 0.0)),
+                ("IVA 2.5%", self.iva_amounts.get(2.5, 0.0)),
+                ("IVA 0%", self.iva_amounts.get(0.0, 0.0)),
+                ("Importe otros tributos", self.importe_otros_tributos),
+                ("Importe total", self.total),
+            ]
+        else:
+            subtotal_iva_incluido = self.total - self.importe_no_gravado - self.importe_otros_tributos
+            rows = [
+                ("Importe neto no gravado", self.importe_no_gravado),
+                ("Subtotal (IVA incluido)", subtotal_iva_incluido),
+                ("Importe otros tributos", self.importe_otros_tributos),
+                ("Importe total", self.total),
+            ]
 
         row_height = 6
         table_width = 104
