@@ -564,6 +564,60 @@ class GenericTable:
         self._snack_text = ft.Text("")
         self._snack = ft.SnackBar(content=self._snack_text, open=False)
 
+    def _get_current_page(self) -> Optional[ft.Page]:
+        if self.root and getattr(self.root, "page", None) is not None:
+            return self.root.page
+        page = getattr(self, "page", None)
+        if page is not None:
+            return page
+        return None
+
+    def _open_page_dialog(self, dialog: ft.Control, context: str = "dialog") -> bool:
+        page = self._get_current_page()
+        if page is None:
+            return False
+
+        try:
+            overlay = getattr(page, "overlay", None)
+            if isinstance(overlay, list):
+                if dialog not in overlay:
+                    overlay.append(dialog)
+            elif hasattr(page, "dialog"):
+                page.dialog = dialog
+
+            if hasattr(dialog, "open"):
+                dialog.open = True
+
+            page.update()
+            return True
+        except AssertionError as exc:
+            logger.debug("GenericTable dialog open skipped (%s): %s", context, exc)
+        except Exception as exc:
+            if self._is_event_loop_closed(exc):
+                logger.debug("GenericTable dialog open skipped (%s): event loop closed", context)
+            else:
+                logger.exception("GenericTable dialog open failed (%s)", context)
+        return False
+
+    def _close_page_dialog(self, dialog: ft.Control, context: str = "dialog") -> bool:
+        page = self._get_current_page()
+        if page is None:
+            return False
+
+        try:
+            if hasattr(dialog, "open"):
+                dialog.open = False
+            page.update()
+            return True
+        except AssertionError as exc:
+            logger.debug("GenericTable dialog close skipped (%s): %s", context, exc)
+        except Exception as exc:
+            if self._is_event_loop_closed(exc):
+                logger.debug("GenericTable dialog close skipped (%s): event loop closed", context)
+            else:
+                logger.exception("GenericTable dialog close failed (%s)", context)
+        return False
+
     def _open_export_dialog(self) -> None:
         self.export_format = ft.Dropdown(
             label="Formato",
@@ -594,20 +648,12 @@ class GenericTable:
         _style_input(self.export_scope)
 
         def close_dlg(e):
-            if hasattr(self.root.page, "close"):
-                self.root.page.close(self.export_dialog)
-            else:
-                self.export_dialog.open = False
-                self.root.page.update()
+            self._close_page_dialog(self.export_dialog, context="export_close")
 
         def confirm_export(e):
             fmt = self.export_format.value
             scope = self.export_scope.value
-            if hasattr(self.root.page, "close"):
-                self.root.page.close(self.export_dialog)
-            else:
-                self.export_dialog.open = False
-                self.root.page.update()
+            self._close_page_dialog(self.export_dialog, context="export_confirm")
             
             self._perform_export(fmt, scope)
 
@@ -641,13 +687,7 @@ class GenericTable:
             print("Error: GenericTable not attached to page")
             return
 
-        page = self.root.page
-        if hasattr(page, "open"):
-            page.open(self.export_dialog)
-        else:
-            page.dialog = self.export_dialog
-            self.export_dialog.open = True
-            page.update()
+        self._open_page_dialog(self.export_dialog, context="export_open")
 
     def _perform_export(self, fmt: str, scope: str) -> None:
         self.progress_bar.visible = True
@@ -1677,8 +1717,7 @@ class GenericTable:
             return
 
         def do_delete(_: Any) -> None:
-            self._confirm_dialog.open = False
-            self.update()
+            self._close_page_dialog(self._confirm_dialog, context="confirm_delete")
             self._mass_delete()
 
         self._confirm_dialog.title = ft.Text("Confirmar eliminación")
@@ -1694,23 +1733,12 @@ class GenericTable:
     def _open_dialog(self) -> None:
         if not self.root or getattr(self.root, "page", None) is None:
             return
-        
-        if hasattr(self.root.page, "open"):
-            self.root.page.open(self._confirm_dialog)
-        else:
-            self._confirm_dialog.open = True
-            self.root.page.dialog = self._confirm_dialog
-            self.root.page.update()
+        self._open_page_dialog(self._confirm_dialog, context="confirm_open")
 
     def _close_dialog(self) -> None:
         if not self.root or getattr(self.root, "page", None) is None:
             return
-            
-        if hasattr(self.root.page, "close"):
-            self.root.page.close(self._confirm_dialog)
-        else:
-            self._confirm_dialog.open = False
-            self.root.page.update()
+        self._close_page_dialog(self._confirm_dialog, context="confirm_close")
 
     def _mass_delete(self) -> None:
         targets = [rid for rid in self.selected_ids]
@@ -1831,12 +1859,7 @@ class GenericTable:
             
             # Call update
             # Cierre robusto e inmediato antes del callback para mejor UX
-            try:
-                if self.root and self.root.page:
-                    self.root.page.close(self._edit_dialog)
-                self._edit_dialog.open = False
-                self.update()
-            except:
+            if not self._close_page_dialog(self._edit_dialog, context="inline_edit_save"):
                 logger.debug("Error cerrando diálogo de edición")
 
             try:
@@ -1849,18 +1872,8 @@ class GenericTable:
                 self._notify(f"Error: {ex}", kind="error")
 
         def close(e):
-            try:
-                if self.root and self.root.page and hasattr(self.root.page, "close"):
-                    self.root.page.close(self._edit_dialog)
-                self._edit_dialog.open = False
-                self.update()
-            except:
-                # Fallback manual
-                self._edit_dialog.open = False
-                try:
-                    self.update()
-                except Exception:
-                    logger.debug("Error actualizando UI tras cerrar diálogo (fallback)")
+            if not self._close_page_dialog(self._edit_dialog, context="inline_edit_cancel"):
+                logger.debug("Error actualizando UI tras cerrar diálogo (fallback)")
 
         # Build Input - Use inline_editor if available
         input_control: ft.Control
@@ -1972,12 +1985,7 @@ class GenericTable:
         ]
         
         if self.root and self.root.page:
-            if hasattr(self.root.page, "open"):
-                self.root.page.open(self._edit_dialog)
-            else:
-                self.root.page.dialog = self._edit_dialog
-                self._edit_dialog.open = True
-                self.root.page.update()
+            self._open_page_dialog(self._edit_dialog, context="inline_edit_open")
 
     def set_export_visibility(self, visible: bool) -> None:
         """updates the visibility of the export button immediately."""
