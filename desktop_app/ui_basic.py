@@ -1300,6 +1300,28 @@ def main(page: ft.Page) -> None:
 
     confirm_dialog = ft.AlertDialog(modal=True)
     print_options_dialog = ft.AlertDialog(modal=True)
+    discount_limit_dialog = ft.AlertDialog(modal=True)
+
+    def show_discount_limit_modal(message: str) -> None:
+        def close(_: Any = None) -> None:
+            _safe_page_close(page, discount_limit_dialog, "discount_limit_modal")
+
+        discount_limit_dialog.title = ft.Text("Descuento inválido", size=20, weight=ft.FontWeight.BOLD)
+        discount_limit_dialog.content = ft.Container(
+            content=ft.Text(message, size=14, color=COLOR_TEXT_MUTED),
+            padding=ft.padding.symmetric(vertical=10),
+        )
+        discount_limit_dialog.shape = ft.RoundedRectangleBorder(radius=16)
+        discount_limit_dialog.actions = [
+            ft.ElevatedButton(
+                "Entendido",
+                bgcolor=COLOR_WARNING,
+                color="#FFFFFF",
+                on_click=close,
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+            ),
+        ]
+        _safe_page_open(page, discount_limit_dialog, "discount_limit_modal")
 
     def ask_confirm(title: str, message: str, confirm_label: str, on_confirm, button_color: str = None) -> None:
         def close(_: Any) -> None:
@@ -9244,6 +9266,28 @@ def main(page: ft.Page) -> None:
                     continue
             return subtotal_neto_lineas
 
+        def _discount_limit_message(
+            *,
+            mode: Any,
+            descuento_porcentaje: Any,
+            descuento_importe: Any,
+            max_importe: Any,
+            scope_label: str,
+        ) -> Optional[str]:
+            mode_norm = mode if mode in ("percentage", "amount") else "percentage"
+            pct_val = max(to_decimal("0"), to_decimal(descuento_porcentaje))
+            imp_val = max(to_decimal("0"), to_decimal(descuento_importe))
+            max_importe_val = max(to_decimal("0"), abs(to_decimal(max_importe)))
+
+            if mode_norm == "percentage" and pct_val > to_decimal("100"):
+                return f"{scope_label}: el descuento no puede superar el 100%."
+
+            if mode_norm == "amount" and imp_val > max_importe_val:
+                max_text = _dec_to_input(max_importe_val, use_grouping=True)
+                return f"{scope_label}: el descuento no puede ser mayor al precio ({max_text})."
+
+            return None
+
         def _sync_global_discount_pair_from_mode(
             active_field: Optional[ft.TextField] = None,
             normalize_active: bool = False,
@@ -9362,12 +9406,30 @@ def main(page: ft.Page) -> None:
 
         def _on_global_desc_pct_commit(_):
             global_discount_mode["value"] = "percentage"
+            limit_msg = _discount_limit_message(
+                mode="percentage",
+                descuento_porcentaje=field_descuento_global_pct.value,
+                descuento_importe=field_descuento_global_imp.value,
+                max_importe=_base_neto_lineas(),
+                scope_label="Descuento global",
+            )
+            if limit_msg:
+                show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
             _sync_global_discount_pair_from_mode(active_field=field_descuento_global_pct, normalize_active=True)
             _recalc_total()
             return True
 
         def _on_global_desc_imp_commit(_):
             global_discount_mode["value"] = "amount"
+            limit_msg = _discount_limit_message(
+                mode="amount",
+                descuento_porcentaje=field_descuento_global_pct.value,
+                descuento_importe=field_descuento_global_imp.value,
+                max_importe=_base_neto_lineas(),
+                scope_label="Descuento global",
+            )
+            if limit_msg:
+                show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
             _sync_global_discount_pair_from_mode(active_field=field_descuento_global_imp, normalize_active=True)
             _recalc_total()
             return True
@@ -9851,6 +9913,21 @@ def main(page: ft.Page) -> None:
                 _update_line_total()
                 _recalc_total()
 
+            def _line_discount_limit_message() -> Optional[str]:
+                try:
+                    c_cant = _parse_int_quantity(cant_field.value, "Cantidad")
+                    c_price = _parse_float(price_field.value, "Precio")
+                except Exception:
+                    return None
+                base_line = to_decimal(c_cant) * to_decimal(c_price)
+                return _discount_limit_message(
+                    mode=line_discount_mode["value"],
+                    descuento_porcentaje=desc_pct_field.value,
+                    descuento_importe=desc_imp_field.value,
+                    max_importe=base_line,
+                    scope_label="Descuento de línea",
+                )
+
             cant_field.on_change = lambda _: (_check_stock_warning(), _update_line_total(), _recalc_total())
             art_drop.on_change = _chain_handler_and_focus(_on_art_change, art_drop)
             def _on_lista_change(e):
@@ -9870,12 +9947,18 @@ def main(page: ft.Page) -> None:
 
             def _on_desc_pct_commit(_):
                 line_discount_mode["value"] = "percentage"
+                limit_msg = _line_discount_limit_message()
+                if limit_msg:
+                    show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
                 _update_line_total(active_field=desc_pct_field, normalize_active=True)
                 _recalc_total()
                 return True
 
             def _on_desc_imp_commit(_):
                 line_discount_mode["value"] = "amount"
+                limit_msg = _line_discount_limit_message()
+                if limit_msg:
+                    show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
                 _update_line_total(active_field=desc_imp_field, normalize_active=True)
                 _recalc_total()
                 return True
@@ -10218,7 +10301,7 @@ def main(page: ft.Page) -> None:
                 _normalize_field_numeric(row_map.get("desc_imp_field"), decimals=2, use_grouping=True)
             
             items = []
-            for row in lines_container.controls:
+            for idx, row in enumerate(lines_container.controls, start=1):
                 row_map = row.data or {}
                 art_id = row_map["art_drop"].value
                 if not art_id: continue
@@ -10233,16 +10316,38 @@ def main(page: ft.Page) -> None:
                 try:
                     fiscal_iva_ref = row_map.get("fiscal_iva_rate_ref") or {}
                     fiscal_iva_rate = float(to_decimal(fiscal_iva_ref.get("value", 0)))
+                    cantidad_val = _parse_int_quantity(row_map["cant_field"].value, "Cantidad")
+                    precio_unitario_val = _parse_float(row_map["price_field"].value, "Precio Unitario")
+                    descuento_pct_val = _parse_float(row_map["desc_pct_field"].value, "Desc. %")
+                    descuento_imp_val = _parse_float(row_map["desc_imp_field"].value, "Desc. $")
+                    descuento_mode_val = (row_map.get("discount_mode_ref") or {}).get("value", "percentage")
+                    base_line = to_decimal(cantidad_val) * to_decimal(precio_unitario_val)
+                    line_limit_msg = _discount_limit_message(
+                        mode=descuento_mode_val,
+                        descuento_porcentaje=descuento_pct_val,
+                        descuento_importe=descuento_imp_val,
+                        max_importe=base_line,
+                        scope_label=f"Línea {idx}",
+                    )
+                    if line_limit_msg:
+                        show_discount_limit_modal(
+                            f"{line_limit_msg} Se ajustó al máximo permitido. Revisá y guardá nuevamente."
+                        )
+                        recalculate_line = row_map.get("recalculate_line")
+                        if callable(recalculate_line):
+                            recalculate_line(normalize_active=True)
+                        _recalc_total()
+                        return
                     items.append({
                         "id_articulo": int(art_id),
                         "id_lista_precio": int(item_lista) if item_lista and item_lista != "" else None,
-                        "cantidad": _parse_int_quantity(row_map["cant_field"].value, "Cantidad"),
-                        "precio_unitario": _parse_float(row_map["price_field"].value, "Precio Unitario"),
+                        "cantidad": cantidad_val,
+                        "precio_unitario": precio_unitario_val,
                         # Persistimos siempre la alícuota fiscal real, no el 0 visual del modo IVA incluido.
                         "porcentaje_iva": fiscal_iva_rate,
-                        "descuento_porcentaje": _parse_float(row_map["desc_pct_field"].value, "Desc. %"),
-                        "descuento_importe": _parse_float(row_map["desc_imp_field"].value, "Desc. $"),
-                        "descuento_mode": (row_map.get("discount_mode_ref") or {}).get("value", "percentage"),
+                        "descuento_porcentaje": descuento_pct_val,
+                        "descuento_importe": descuento_imp_val,
+                        "descuento_mode": descuento_mode_val,
                     })
                 except ValueError as exc:
                     show_toast(str(exc), kind="error")
@@ -10260,6 +10365,20 @@ def main(page: ft.Page) -> None:
                 desc_global_imp = _parse_float(field_descuento_global_imp.value, "Desc. Global $")
             except ValueError as exc:
                 show_toast(str(exc), kind="error")
+                return
+            global_limit_msg = _discount_limit_message(
+                mode=global_discount_mode["value"],
+                descuento_porcentaje=desc_global_pct,
+                descuento_importe=desc_global_imp,
+                max_importe=_base_neto_lineas(),
+                scope_label="Descuento global",
+            )
+            if global_limit_msg:
+                show_discount_limit_modal(
+                    f"{global_limit_msg} Se ajustó al máximo permitido. Revisá y guardá nuevamente."
+                )
+                _sync_global_discount_pair_from_mode(normalize_active=True)
+                _recalc_total()
                 return
 
             numero_val = (field_numero.value or "").strip()
