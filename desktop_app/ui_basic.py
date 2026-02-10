@@ -9829,28 +9829,40 @@ def main(page: ft.Page) -> None:
                 
                 if not art_id_val:
                     return
-                
-                art_id = int(art_id_val)
-                art = next((a for a in articulos if a["id"] == art_id), None)
-                if not art:
+
+                try:
+                    art_id = int(art_id_val)
+                except Exception:
                     return
-                
+
                 final_price = 0.0
-                prices = db.fetch_article_prices(art_id)
+                try:
+                    prices = db.fetch_article_prices(art_id) if db else []
+                except Exception as ex:
+                    logger.warning(f"No se pudieron obtener precios para el artículo {art_id}: {ex}")
+                    prices = []
                 
                 if prices:
                     if lid and lid != "":
                         # Usar la lista seleccionada
                         p_obj = next((p for p in prices if str(p["id_lista_precio"]) == str(lid)), None)
-                        if p_obj and p_obj.get("precio"):
-                            final_price = float(p_obj["precio"])
+                        if p_obj:
+                            raw_price = p_obj.get("precio")
+                            if raw_price not in (None, ""):
+                                try:
+                                    final_price = float(raw_price)
+                                except Exception:
+                                    logger.warning(
+                                        f"Precio inválido en lista {lid} para artículo {art_id}: {raw_price}"
+                                    )
                 
                 # Removed 'First available' usage and Cost fallback
                 # If no list selected, price stays 0.0 unless manually edited
                 
                 price_field.value = _dec_to_input(final_price, use_grouping=True)
                 _update_line_total()
-                page.update()
+                _safe_update_control(price_field)
+                _safe_update_control(total_field)
                 _recalc_total()
             
             stock_text = ft.Text("Stock: -", size=10, color=COLOR_TEXT_MUTED)
