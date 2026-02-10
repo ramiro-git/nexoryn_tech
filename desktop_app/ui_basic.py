@@ -8646,6 +8646,7 @@ def main(page: ft.Page) -> None:
         btn_modal_confirm: Optional[ft.ElevatedButton] = None
         btn_modal_afip: Optional[ft.ElevatedButton] = None
         btn_modal_save: Optional[ft.ElevatedButton] = None
+        btn_modal_close: Optional[ft.ElevatedButton] = None
             
         if doc_data:
             # Ensure Entity exists
@@ -8711,6 +8712,32 @@ def main(page: ft.Page) -> None:
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
         lista_initial_items = [{"value": l["id"], "label": l["nombre"]} for l in listas]
         field_saldo = ft.Text("", size=12, color=COLOR_ACCENT, weight=ft.FontWeight.W_500)
+        comprobante_border_color = "#334155"
+        comprobante_focus_color = "#1D4ED8"
+        comprobante_selection_color = "#BFDBFE"
+        comprobante_bgcolor = "#F8FAFC"
+        comprobante_button_border_color = "#64748B"
+        comprobante_button_focus_color = "#F59E0B"
+        comprobante_button_focus_overlay = "#FDE68A"
+        comprobante_button_focus_shadow = "#FCD34D"
+        comprobante_async_select_style = {
+            "bgcolor": comprobante_bgcolor,
+            "border_color": comprobante_border_color,
+            "focused_border_color": comprobante_focus_color,
+            "border_width": 2,
+        }
+
+        def _style_comprobante_control(control: Any) -> None:
+            if control is None:
+                return
+            _maybe_set(control, "border_color", comprobante_border_color)
+            _maybe_set(control, "focused_border_color", comprobante_focus_color)
+            _maybe_set(control, "border_width", 2)
+            _maybe_set(control, "focused_border_width", 2)
+            _maybe_set(control, "filled", True)
+            _maybe_set(control, "bgcolor", comprobante_bgcolor)
+            _maybe_set(control, "cursor_color", comprobante_focus_color)
+            _maybe_set(control, "selection_color", comprobante_selection_color)
         
         def _update_entidad_info(e=None, preserve_values=False):
             if dropdown_entidad.value:
@@ -8759,11 +8786,13 @@ def main(page: ft.Page) -> None:
             label="Entidad *",
             loader=entity_loader,
             width=500,
-            on_change=lambda _: _update_entidad_info(None),
-            initial_items=ent_initial_items
+            on_change=None,
+            initial_items=ent_initial_items,
+            keyboard_accessible=True,
+            **comprobante_async_select_style,
         )
 
-        dropdown_deposito = ft.Dropdown(label="Depósito *", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito)
+        dropdown_deposito = ft.Dropdown(label="Depósito *", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito); _style_comprobante_control(dropdown_deposito)
         
         # Lista de precios global (opcional, se aplica a todos los ítems)
         dropdown_lista_global = AsyncSelect(
@@ -8771,9 +8800,11 @@ def main(page: ft.Page) -> None:
             loader=price_list_loader,
             width=500,
             initial_items=lista_initial_items,
+            keyboard_accessible=True,
+            **comprobante_async_select_style,
         )
         
-        field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs)
+        field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs); _maybe_set(field_obs, "shift_enter", True)
         field_direccion = ft.TextField(label="Dirección de Entrega *", expand=True); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
         _style_input(field_numero)
@@ -8781,6 +8812,18 @@ def main(page: ft.Page) -> None:
         field_descuento_global_imp = ft.TextField(label="Desc. Global $", width=130, value="0,00"); _style_input(field_descuento_global_imp)
         field_sena = ft.TextField(label="Seña $", width=120, value="0,00", on_change=lambda _: _recalc_total()); _style_input(field_sena)
         field_valor_declarado = ft.TextField(label="Valor Declarado $", width=140, value="0,00"); _style_input(field_valor_declarado)
+        for comprobante_ctrl in [
+            field_fecha,
+            field_vto,
+            field_obs,
+            field_direccion,
+            field_numero,
+            field_descuento_global_pct,
+            field_descuento_global_imp,
+            field_sena,
+            field_valor_declarado,
+        ]:
+            _style_comprobante_control(comprobante_ctrl)
         global_discount_mode = {"value": "percentage"}
         
         # Automatic sync for declared value
@@ -8793,6 +8836,7 @@ def main(page: ft.Page) -> None:
             else:
                 field_valor_declarado.read_only = False
             page.update()
+            _refresh_keyboard_navigation_order()
         
         auto_valor_sync.on_change = _on_auto_sync_change
 
@@ -8831,7 +8875,7 @@ def main(page: ft.Page) -> None:
             label="Tipo *", 
             options=[ft.dropdown.Option(str(t["id"]), t["nombre"]) for t in allowed_tipos], 
             width=200,
-        ); _style_input(dropdown_tipo)
+        ); _style_input(dropdown_tipo); _style_comprobante_control(dropdown_tipo)
         
         if doc_data:
             dropdown_tipo.value = str(doc_data["id_tipo_documento"])
@@ -8881,6 +8925,277 @@ def main(page: ft.Page) -> None:
         sum_saldo = ft.TextField(value="0,00", width=140, read_only=True, text_align=ft.TextAlign.RIGHT, text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, color=COLOR_WARNING), label="SALDO")
         sum_desc_lineas = ft.TextField(value="0,00", width=130, read_only=True, text_align=ft.TextAlign.RIGHT, label="Desc. Líneas $")
         sum_desc_global = ft.TextField(value="0,00", width=130, read_only=True, text_align=ft.TextAlign.RIGHT, label="Desc. Global $")
+        for resumen_ctrl in [sum_subtotal, sum_iva, sum_total, sum_saldo, sum_desc_lineas, sum_desc_global]:
+            _style_comprobante_control(resumen_ctrl)
+        keyboard_nav_state: Dict[str, List[Any]] = {"all": [], "capture": []}
+
+        def _control_name(control: Any) -> str:
+            return str(type(control).__name__) if control is not None else ""
+
+        def _is_action_button(control: Any) -> bool:
+            if control is None:
+                return False
+            return _control_name(control) in {
+                "ElevatedButton",
+                "FilledButton",
+                "OutlinedButton",
+                "TextButton",
+                "IconButton",
+            }
+
+        control_state_enum = getattr(ft, "ControlState", None)
+        control_state_default = getattr(control_state_enum, "DEFAULT", None)
+        control_state_focused = getattr(control_state_enum, "FOCUSED", None)
+
+        def _state_value(default_value: Any, focused_value: Any) -> Any:
+            if control_state_default is None or control_state_focused is None:
+                return default_value
+            return {
+                control_state_default: default_value,
+                control_state_focused: focused_value,
+            }
+
+        def _style_comprobante_button_focus(control: Any, *, primary: bool = False) -> None:
+            if control is None or not _is_action_button(control):
+                return
+            base_style = getattr(control, "style", None)
+            if not isinstance(base_style, ft.ButtonStyle):
+                base_style = ft.ButtonStyle()
+
+            default_side_color = comprobante_button_border_color if not primary else COLOR_ACCENT
+            _maybe_set(
+                base_style,
+                "side",
+                _state_value(
+                    ft.BorderSide(width=2, color=default_side_color),
+                    ft.BorderSide(width=2, color=comprobante_button_focus_color),
+                ),
+            )
+            _maybe_set(
+                base_style,
+                "overlay_color",
+                _state_value("#00000000", comprobante_button_focus_overlay),
+            )
+            _maybe_set(
+                base_style,
+                "shadow_color",
+                _state_value("#00000000", comprobante_button_focus_shadow),
+            )
+            _maybe_set(control, "style", base_style)
+
+        def _is_focus_eligible(control: Any) -> bool:
+            if control is None:
+                return False
+            if hasattr(control, "visible") and getattr(control, "visible") is False:
+                return False
+            if hasattr(control, "disabled") and bool(getattr(control, "disabled")):
+                return False
+            if not _is_action_button(control) and hasattr(control, "read_only") and bool(getattr(control, "read_only")):
+                return False
+            return True
+
+        def _set_focus_tab_index(control: Any, tab_index: int) -> None:
+            if control is None:
+                return
+            if isinstance(control, AsyncSelect) and hasattr(control, "set_tab_index"):
+                try:
+                    control.set_tab_index(tab_index)
+                    return
+                except Exception:
+                    pass
+            _maybe_set(control, "tab_index", tab_index)
+
+        def _focus_control(control: Any) -> bool:
+            if control is None:
+                return False
+            if isinstance(control, AsyncSelect):
+                try:
+                    control.focus()
+                    return True
+                except Exception:
+                    return False
+            focus_fn = getattr(control, "focus", None)
+            if callable(focus_fn):
+                try:
+                    focus_fn()
+                    return True
+                except Exception:
+                    pass
+            if hasattr(page, "set_focus"):
+                try:
+                    page.set_focus(control)
+                    return True
+                except Exception:
+                    pass
+            return False
+
+        def _list_line_rows() -> List[Any]:
+            try:
+                return list(lines_container.controls)
+            except Exception:
+                return []
+
+        def _modal_action_buttons_in_order() -> List[Any]:
+            return [
+                btn_modal_print,
+                btn_modal_confirm,
+                btn_modal_afip,
+                btn_modal_close,
+                btn_modal_save,
+            ]
+
+        def _get_preferred_action_button() -> Optional[Any]:
+            if _is_focus_eligible(btn_modal_save):
+                return btn_modal_save
+            for control in _modal_action_buttons_in_order():
+                if _is_focus_eligible(control):
+                    return control
+            return None
+
+        def _style_comprobante_action_buttons() -> None:
+            _style_comprobante_button_focus(btn_add_line)
+            _style_comprobante_button_focus(btn_modal_print)
+            _style_comprobante_button_focus(btn_modal_confirm)
+            _style_comprobante_button_focus(btn_modal_afip)
+            _style_comprobante_button_focus(btn_modal_close)
+            _style_comprobante_button_focus(btn_modal_save, primary=True)
+
+            for row in _list_line_rows():
+                row_map = getattr(row, "data", None) or {}
+                _style_comprobante_button_focus(row_map.get("delete_btn"))
+
+        def _is_placeholder_line_row(row_map: Dict[str, Any]) -> bool:
+            art_drop_ctrl = row_map.get("art_drop")
+            lista_drop_ctrl = row_map.get("lista_drop")
+            cant_field_ctrl = row_map.get("cant_field")
+            price_field_ctrl = row_map.get("price_field")
+            iva_field_ctrl = row_map.get("iva_field")
+            desc_pct_ctrl = row_map.get("desc_pct_field")
+            desc_imp_ctrl = row_map.get("desc_imp_field")
+
+            art_val = str(getattr(art_drop_ctrl, "value", "") or "").strip()
+            lista_val = str(getattr(lista_drop_ctrl, "value", "") or "").strip()
+            cant_val = str(getattr(cant_field_ctrl, "value", "") or "").strip()
+            price_val = str(getattr(price_field_ctrl, "value", "") or "").strip()
+            iva_val = str(getattr(iva_field_ctrl, "value", "") or "").strip()
+            desc_pct_val = str(getattr(desc_pct_ctrl, "value", "") or "").strip()
+            desc_imp_val = str(getattr(desc_imp_ctrl, "value", "") or "").strip()
+
+            return (
+                art_val == ""
+                and lista_val in {"", "0"}
+                and cant_val in {"", "1", "1,00", "1.00"}
+                and price_val in {"", "0", "0,00", "0.00"}
+                and iva_val in {"", "0", "0,00", "0.00"}
+                and desc_pct_val in {"", "0", "0,00", "0.00"}
+                and desc_imp_val in {"", "0", "0,00", "0.00"}
+            )
+
+        def _refresh_keyboard_navigation_order() -> None:
+            _style_comprobante_action_buttons()
+            ordered_controls: List[Any] = []
+            placeholder_line_control_ids: set = set()
+
+            def _append(control: Any) -> None:
+                if _is_focus_eligible(control):
+                    ordered_controls.append(control)
+
+            # Header
+            for control in [
+                field_fecha,
+                field_vto,
+                dropdown_tipo,
+                dropdown_entidad,
+                dropdown_lista_global,
+                dropdown_deposito,
+                field_numero,
+                field_sena,
+                field_obs,
+                field_direccion,
+            ]:
+                _append(control)
+
+            # Dynamic lines
+            for row in _list_line_rows():
+                row_map = getattr(row, "data", None) or {}
+                is_placeholder_row = _is_placeholder_line_row(row_map)
+                for key in ("art_drop", "lista_drop", "cant_field", "price_field", "iva_field", "desc_pct_field", "desc_imp_field", "delete_btn"):
+                    line_control = row_map.get(key)
+                    _append(line_control)
+                    if is_placeholder_row and line_control is not None:
+                        placeholder_line_control_ids.add(id(line_control))
+
+            # Footer
+            for control in [
+                auto_valor_sync,
+                field_valor_declarado,
+                field_descuento_global_pct,
+                field_descuento_global_imp,
+                manual_mode,
+                sum_subtotal,
+                sum_iva,
+                sum_total,
+            ]:
+                _append(control)
+
+            # Actions
+            for control in [
+                btn_add_line,
+                btn_modal_print,
+                btn_modal_confirm,
+                btn_modal_afip,
+                btn_modal_close,
+                btn_modal_save,
+            ]:
+                _append(control)
+
+            keyboard_nav_state["all"] = ordered_controls
+            capture_controls = [
+                ctrl
+                for ctrl in ordered_controls
+                if not _is_action_button(ctrl) and id(ctrl) not in placeholder_line_control_ids
+            ]
+            if not capture_controls:
+                capture_controls = [ctrl for ctrl in ordered_controls if not _is_action_button(ctrl)]
+            keyboard_nav_state["capture"] = capture_controls
+
+            for index, control in enumerate(ordered_controls, start=1):
+                _set_focus_tab_index(control, index)
+
+        def _focus_next_capture_from(current_control: Any) -> bool:
+            _refresh_keyboard_navigation_order()
+            capture_controls = keyboard_nav_state.get("capture", [])
+            if not capture_controls:
+                action_control = _get_preferred_action_button()
+                if action_control is not None:
+                    return _focus_control(action_control)
+                return False
+            if current_control in capture_controls:
+                current_index = capture_controls.index(current_control)
+                is_last_capture = current_index >= len(capture_controls) - 1
+                if is_last_capture:
+                    action_control = _get_preferred_action_button()
+                    if action_control is not None:
+                        return _focus_control(action_control)
+                next_control = capture_controls[(current_index + 1) % len(capture_controls)]
+            else:
+                next_control = capture_controls[0]
+            return _focus_control(next_control)
+
+        def _chain_handler_and_focus(handler: Optional[Callable[[Any], Any]], current_control: Any) -> Callable[[Any], None]:
+            def _wrapped(event: Any) -> None:
+                result: Any = None
+                if callable(handler):
+                    try:
+                        result = handler(event)
+                    except Exception as exc:
+                        logger.warning(f"Fallo al ejecutar handler de teclado: {exc}")
+                        return
+                if result is False:
+                    return
+                _focus_next_capture_from(current_control)
+
+            return _wrapped
 
         if doc_data:
             sum_subtotal.value = normalize_input_value(doc_data.get("total", 0), decimals=2, use_grouping=True)
@@ -9033,8 +9348,7 @@ def main(page: ft.Page) -> None:
                  _recalc_total() # Restore auto values
              else:
                  page.update()
-
-        manual_mode.on_change = toggle_manual
+             _refresh_keyboard_navigation_order()
 
         def _on_global_desc_pct_change(_):
             global_discount_mode["value"] = "percentage"
@@ -9050,30 +9364,37 @@ def main(page: ft.Page) -> None:
             global_discount_mode["value"] = "percentage"
             _sync_global_discount_pair_from_mode(active_field=field_descuento_global_pct, normalize_active=True)
             _recalc_total()
+            return True
 
         def _on_global_desc_imp_commit(_):
             global_discount_mode["value"] = "amount"
             _sync_global_discount_pair_from_mode(active_field=field_descuento_global_imp, normalize_active=True)
             _recalc_total()
+            return True
 
         def _on_sena_commit(_):
             _normalize_field_numeric(field_sena, decimals=2, use_grouping=True)
             _recalc_total()
+            return True
 
         def _on_valor_declarado_commit(_):
             _normalize_field_numeric(field_valor_declarado, decimals=2, use_grouping=True)
+            return True
 
         for manual_field in [sum_subtotal, sum_iva, sum_total]:
-            manual_field.on_submit = lambda _, fld=manual_field: _normalize_field_numeric(fld, decimals=2, use_grouping=True)
+            manual_field.on_submit = _chain_handler_and_focus(
+                lambda _, fld=manual_field: _normalize_field_numeric(fld, decimals=2, use_grouping=True),
+                manual_field,
+            )
             if hasattr(manual_field, "on_blur"):
                 manual_field.on_blur = lambda _, fld=manual_field: _normalize_field_numeric(fld, decimals=2, use_grouping=True)  # type: ignore[attr-defined]
 
         field_descuento_global_pct.on_change = _on_global_desc_pct_change
         field_descuento_global_imp.on_change = _on_global_desc_imp_change
-        field_descuento_global_pct.on_submit = _on_global_desc_pct_commit
-        field_descuento_global_imp.on_submit = _on_global_desc_imp_commit
-        field_sena.on_submit = _on_sena_commit
-        field_valor_declarado.on_submit = _on_valor_declarado_commit
+        field_descuento_global_pct.on_submit = _chain_handler_and_focus(_on_global_desc_pct_commit, field_descuento_global_pct)
+        field_descuento_global_imp.on_submit = _chain_handler_and_focus(_on_global_desc_imp_commit, field_descuento_global_imp)
+        field_sena.on_submit = _chain_handler_and_focus(_on_sena_commit, field_sena)
+        field_valor_declarado.on_submit = _chain_handler_and_focus(_on_valor_declarado_commit, field_valor_declarado)
         if hasattr(field_descuento_global_pct, "on_blur"):
             field_descuento_global_pct.on_blur = _on_global_desc_pct_commit  # type: ignore[attr-defined]
         if hasattr(field_descuento_global_imp, "on_blur"):
@@ -9082,6 +9403,18 @@ def main(page: ft.Page) -> None:
             field_sena.on_blur = _on_sena_commit  # type: ignore[attr-defined]
         if hasattr(field_valor_declarado, "on_blur"):
             field_valor_declarado.on_blur = _on_valor_declarado_commit  # type: ignore[attr-defined]
+
+        # Keyboard flow for header fields
+        field_fecha.on_submit = _chain_handler_and_focus(field_fecha.on_submit, field_fecha)
+        field_vto.on_submit = _chain_handler_and_focus(field_vto.on_submit, field_vto)
+        field_obs.on_submit = _chain_handler_and_focus(field_obs.on_submit, field_obs)
+        field_direccion.on_submit = _chain_handler_and_focus(field_direccion.on_submit, field_direccion)
+        field_numero.on_submit = _chain_handler_and_focus(field_numero.on_submit, field_numero)
+
+        dropdown_tipo.on_change = _chain_handler_and_focus(dropdown_tipo.on_change, dropdown_tipo)
+        dropdown_entidad.on_change = _chain_handler_and_focus(lambda _: _update_entidad_info(None), dropdown_entidad)
+        dropdown_deposito.on_change = _chain_handler_and_focus(dropdown_deposito.on_change, dropdown_deposito)
+        manual_mode.on_change = _chain_handler_and_focus(toggle_manual, manual_mode)
         
         # Use ListView with internal padding to prevent "first item cut-off" issue
         lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
@@ -9273,7 +9606,9 @@ def main(page: ft.Page) -> None:
                 label="Artículo *", 
                 loader=article_loader, 
                 expand=True,
-                initial_items=art_initial_items
+                initial_items=art_initial_items,
+                keyboard_accessible=True,
+                **comprobante_async_select_style,
             )
             initial_articulo_id = str(initial_data["id_articulo"]) if initial_data and initial_data.get("id_articulo") else None
             initial_fiscal_iva = to_decimal((initial_data or {}).get("porcentaje_iva"), to_decimal("0"))
@@ -9311,13 +9646,15 @@ def main(page: ft.Page) -> None:
                 loader=item_price_list_loader,
                 width=220,
                 initial_items=lista_initial_items,
+                keyboard_accessible=True,
+                **comprobante_async_select_style,
             )
-            cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field)
-            price_field = ft.TextField(label="Precio *",width=90, value="0,00"); _style_input(price_field)
-            iva_field = ft.TextField(label="IVA % *", width=60, value="0,00"); _style_input(iva_field)
-            desc_pct_field = ft.TextField(label="Desc. %", width=90, value="0,00"); _style_input(desc_pct_field)
-            desc_imp_field = ft.TextField(label="Desc. $", width=100, value="0,00"); _style_input(desc_imp_field)
-            total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field)
+            cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field); _style_comprobante_control(cant_field)
+            price_field = ft.TextField(label="Precio *",width=90, value="0,00"); _style_input(price_field); _style_comprobante_control(price_field)
+            iva_field = ft.TextField(label="IVA % *", width=60, value="0,00"); _style_input(iva_field); _style_comprobante_control(iva_field)
+            desc_pct_field = ft.TextField(label="Desc. %", width=90, value="0,00"); _style_input(desc_pct_field); _style_comprobante_control(desc_pct_field)
+            desc_imp_field = ft.TextField(label="Desc. $", width=100, value="0,00"); _style_input(desc_imp_field); _style_comprobante_control(desc_imp_field)
+            total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field); _style_comprobante_control(total_field)
             line_discount_mode = {"value": "percentage"}
             quantity_warning_guard = {"raw": None, "ts": 0.0}
             
@@ -9495,7 +9832,7 @@ def main(page: ft.Page) -> None:
                     duplicate_target = _find_duplicate_target_row(row)
                     if duplicate_target is not None:
                         _ask_duplicate_item_confirmation(row, duplicate_target)
-                        return
+                        return False
                 _sync_fiscal_iva_from_visible(source="article_change")
                 _update_price_from_list()
                 _check_stock_warning()
@@ -9503,6 +9840,7 @@ def main(page: ft.Page) -> None:
                 # Automation: if an article is selected and this is the last line, add a new one
                 if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
                     _add_line()
+                return True
             
             def _on_value_change(_):
                 _update_line_total()
@@ -9514,10 +9852,11 @@ def main(page: ft.Page) -> None:
                 _recalc_total()
 
             cant_field.on_change = lambda _: (_check_stock_warning(), _update_line_total(), _recalc_total())
-            art_drop.on_change = _on_art_change
+            art_drop.on_change = _chain_handler_and_focus(_on_art_change, art_drop)
             def _on_lista_change(e):
                 _update_price_from_list()
-            lista_drop.on_change = _on_lista_change
+                return True
+            lista_drop.on_change = _chain_handler_and_focus(_on_lista_change, lista_drop)
             
             def _on_desc_pct_change(_):
                 line_discount_mode["value"] = "percentage"
@@ -9533,22 +9872,26 @@ def main(page: ft.Page) -> None:
                 line_discount_mode["value"] = "percentage"
                 _update_line_total(active_field=desc_pct_field, normalize_active=True)
                 _recalc_total()
+                return True
 
             def _on_desc_imp_commit(_):
                 line_discount_mode["value"] = "amount"
                 _update_line_total(active_field=desc_imp_field, normalize_active=True)
                 _recalc_total()
+                return True
 
             def _on_price_commit(_):
                 _normalize_field_numeric(price_field, decimals=2, use_grouping=True)
                 _update_line_total()
                 _recalc_total()
+                return True
 
             def _on_iva_commit(_):
                 _normalize_field_numeric(iva_field, decimals=2, use_grouping=True)
                 _sync_fiscal_iva_from_visible(source="user")
                 _update_line_total()
                 _recalc_total()
+                return True
 
             def _on_cantidad_commit(_):
                 try:
@@ -9562,22 +9905,23 @@ def main(page: ft.Page) -> None:
                         quantity_warning_guard["raw"] == raw_value
                         and (now_ts - float(quantity_warning_guard["ts"] or 0.0)) < 0.8
                     ):
-                        return
+                        return False
                     quantity_warning_guard["raw"] = raw_value
                     quantity_warning_guard["ts"] = now_ts
                     show_toast(str(exc), kind="warning")
-                    return
+                    return False
                 _check_stock_warning()
                 _update_line_total()
                 _recalc_total()
+                return True
 
             desc_pct_field.on_change = _on_desc_pct_change
             desc_imp_field.on_change = _on_desc_imp_change
-            desc_pct_field.on_submit = _on_desc_pct_commit
-            desc_imp_field.on_submit = _on_desc_imp_commit
-            price_field.on_submit = _on_price_commit
-            iva_field.on_submit = _on_iva_commit
-            cant_field.on_submit = _on_cantidad_commit
+            desc_pct_field.on_submit = _chain_handler_and_focus(_on_desc_pct_commit, desc_pct_field)
+            desc_imp_field.on_submit = _chain_handler_and_focus(_on_desc_imp_commit, desc_imp_field)
+            price_field.on_submit = _chain_handler_and_focus(_on_price_commit, price_field)
+            iva_field.on_submit = _chain_handler_and_focus(_on_iva_commit, iva_field)
+            cant_field.on_submit = _chain_handler_and_focus(_on_cantidad_commit, cant_field)
 
             price_field.on_change = _on_value_change
             iva_field.on_change = _on_iva_change
@@ -9627,6 +9971,7 @@ def main(page: ft.Page) -> None:
                 tooltip="Eliminar línea",
                 on_click=lambda e: _remove_line(e.control.parent)
             )
+            _style_comprobante_button_focus(delete_btn)
             row_map["delete_btn"] = delete_btn
 
             # [Artículo, Lista, Cant, Precio, IVA, Desc %, Desc $, Total, Delete]
@@ -9639,6 +9984,7 @@ def main(page: ft.Page) -> None:
             if update_ui:
                 lines_container.update()
                 _recalc_total()
+            _refresh_keyboard_navigation_order()
             
             # Initial Run
             if initial_data:
@@ -9670,6 +10016,7 @@ def main(page: ft.Page) -> None:
             if not initial_data and dropdown_lista_global.value and art_drop.value:
                  # Case where we might need to refresh if art was set differently
                  pass
+            _refresh_keyboard_navigation_order()
         
         def _remove_line(row_to_remove):
             if is_read_only_ref["value"]:
@@ -9677,13 +10024,15 @@ def main(page: ft.Page) -> None:
             lines_container.controls.remove(row_to_remove)
             lines_container.update()
             _recalc_total()
+            _refresh_keyboard_navigation_order()
 
         def _on_global_list_change(e):
             """When global price list changes, update all line items that don't have a specific list set."""
             if is_read_only_ref["value"]:
-                return
+                return False
             new_global_list_id = dropdown_lista_global.value
-            if not new_global_list_id: return 
+            if not new_global_list_id:
+                return False
 
             for row in lines_container.controls:
                 row_map = row.data
@@ -9699,9 +10048,11 @@ def main(page: ft.Page) -> None:
             
             page.update()
             _recalc_total()
+            _refresh_keyboard_navigation_order()
+            return True
 
         # (Manual wire for AsyncSelect global list is handled in its on_change)
-        dropdown_lista_global.on_change = _on_global_list_change
+        dropdown_lista_global.on_change = _chain_handler_and_focus(_on_global_list_change, dropdown_lista_global)
 
         def _set_control_locked(control: Any, locked: bool) -> None:
             if control is None:
@@ -9741,6 +10092,7 @@ def main(page: ft.Page) -> None:
 
             if btn_add_line is not None:
                 btn_add_line.visible = not is_read_only_ref["value"]
+            _refresh_keyboard_navigation_order()
 
         def _set_form_read_only(read_only: bool = True) -> None:
             is_read_only_ref["value"] = bool(read_only)
@@ -9801,6 +10153,7 @@ def main(page: ft.Page) -> None:
                 btn_modal_afip,
                 btn_modal_save,
             )
+            _refresh_keyboard_navigation_order()
 
         def _refresh_modal_doc_state() -> None:
             current_doc_id = active_doc_id_ref["value"]
@@ -9823,6 +10176,7 @@ def main(page: ft.Page) -> None:
             else:
                 _refresh_modal_action_buttons()
                 _safe_update_multiple(btn_modal_print, btn_modal_confirm, btn_modal_afip, btn_modal_save, btn_add_line)
+            _refresh_keyboard_navigation_order()
 
         def _save(_=None):
             if is_read_only_ref["value"]:
@@ -10095,6 +10449,7 @@ def main(page: ft.Page) -> None:
             ),
         )
         btn_modal_close = _cancel_button("Cerrar", on_click=close_form)
+        _style_comprobante_action_buttons()
         actions_row = ft.Row(
             [
                 ft.Row([btn_modal_print, btn_modal_confirm, btn_modal_afip], spacing=8),
@@ -10175,6 +10530,8 @@ def main(page: ft.Page) -> None:
             page.overlay.remove(form_dialog)
         page.overlay.append(form_dialog)
         page.update()
+        _refresh_keyboard_navigation_order()
+        _focus_control(field_fecha)
 
     def wire_live_search(table: GenericTable):
         for flt in table.advanced_filters:

@@ -56,7 +56,19 @@ class AsyncSelect(ft.Column):
         label_size: int = 13,
         label_weight: ft.FontWeight = ft.FontWeight.BOLD,
         horizontal_alignment: ft.CrossAxisAlignment = ft.CrossAxisAlignment.STRETCH,
+        keyboard_accessible: bool = False,
     ):
+        # Flet Control.__init__ may call property setters (e.g. disabled) before
+        # this constructor body continues. Pre-initialize attributes used there.
+        self._trigger: Optional[ft.Control] = None
+        self._keyboard_trigger: Optional[ft.Control] = None
+        self._keyboard_trigger_container: Optional[ft.Container] = None
+        self._trigger_label: Optional[ft.Text] = None
+        self._trigger_icon: Optional[ft.Icon] = None
+        self._keyboard_text_only = False
+        self._keyboard_focused = False
+        self._disabled = bool(disabled)
+
         super().__init__(spacing=2, expand=expand, width=width, disabled=disabled, horizontal_alignment=horizontal_alignment)
         self.loader = loader
         if bgcolor is None:
@@ -92,6 +104,7 @@ class AsyncSelect(ft.Column):
         self.label_color = label_color
         self.label_size = label_size
         self.label_weight = label_weight
+        self.keyboard_accessible = bool(keyboard_accessible)
 
         # State
         self._query = ""
@@ -104,10 +117,10 @@ class AsyncSelect(ft.Column):
         self._selected_label = ""
         self._debounce_task: Optional[asyncio.Task] = None
         self._cache: Dict[str, Tuple[List[Dict[str, Any]], bool]] = {}
-        self._disabled = disabled
+        self._disabled = bool(disabled)
+        self._tab_index: Optional[int] = None
 
         # Controls placeholders
-        self._trigger: Optional[ft.Container] = None
         self._search_field: Optional[ft.TextField] = None
         self._options_list: Optional[ft.ListView] = None
         self._dialog: Optional[ft.AlertDialog] = None
@@ -127,33 +140,106 @@ class AsyncSelect(ft.Column):
             )
         self.controls.append(self._trigger)
 
+    def _safe_set(self, obj: Any, name: str, value: Any) -> None:
+        if obj is None:
+            return
+        if not hasattr(obj, name):
+            return
+        try:
+            setattr(obj, name, value)
+        except Exception:
+            pass
+
+    def _build_trigger_content(self, text_color: str, text_weight: Optional[ft.FontWeight]) -> ft.Row:
+        self._trigger_label = ft.Text(
+            self._selected_label or self.placeholder,
+            color=text_color,
+            size=14,
+            weight=text_weight,
+            no_wrap=True,
+            expand=True,
+        )
+        self._trigger_icon = ft.Icon(
+            ft.icons.ARROW_DROP_DOWN,
+            color="#475569",
+            size=24,
+        )
+        return ft.Row(
+            [
+                self._trigger_label,
+                self._trigger_icon,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    def _build_keyboard_button_style(self) -> ft.ButtonStyle:
+        style_kwargs: Dict[str, Any] = {
+            "shape": ft.RoundedRectangleBorder(radius=self.border_radius),
+            "padding": ft.padding.only(left=12, right=8),
+            "bgcolor": self.bgcolor,
+        }
+        try:
+            # Keep side neutral: visible border is managed by the outer container
+            # to avoid size/style drift across Flet versions.
+            style_kwargs["side"] = ft.BorderSide(width=0, color=self.bgcolor or "transparent")
+        except Exception:
+            pass
+        try:
+            return ft.ButtonStyle(**style_kwargs)
+        except TypeError:
+            style_kwargs.pop("side", None)
+            try:
+                return ft.ButtonStyle(**style_kwargs)
+            except Exception:
+                return ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=self.border_radius))
+
     def _build_trigger(self):
         is_selected = bool(self._selected_label)
         text_color = self.text_color if is_selected else self.placeholder_color
         text_weight = self.text_weight if is_selected else self.placeholder_weight
-        
-        return ft.Container(
+        trigger_content = self._build_trigger_content(text_color, text_weight)
+
+        if self.keyboard_accessible:
+            try:
+                trigger_button = ft.TextButton(
+                    content=trigger_content,
+                    on_click=self._on_trigger_click,
+                    disabled=self._disabled,
+                    style=self._build_keyboard_button_style(),
+                )
+                self._keyboard_text_only = False
+            except TypeError:
+                self._keyboard_text_only = True
+                self._trigger_label = None
+                self._trigger_icon = None
+                trigger_button = ft.TextButton(
+                    text=self._selected_label or self.placeholder,
+                    on_click=self._on_trigger_click,
+                    disabled=self._disabled,
+                    style=self._build_keyboard_button_style(),
+                )
+            self._keyboard_trigger = trigger_button
+            self._safe_set(trigger_button, "expand", True)
+            self._safe_set(trigger_button, "on_focus", self._on_keyboard_focus)
+            self._safe_set(trigger_button, "on_blur", self._on_keyboard_blur)
+            self._safe_set(trigger_button, "tab_index", self._tab_index)
+            trigger_container = ft.Container(
+                content=trigger_button,
+                width=self.width,
+                height=50,
+                border=ft.border.all(self._keyboard_border_width(), self._keyboard_border_color()),
+                border_radius=self.border_radius,
+                bgcolor=self.bgcolor,
+                alignment=ft.alignment.center_left,
+            )
+            self._keyboard_trigger_container = trigger_container
+            return trigger_container
+
+        trigger_container = ft.Container(
             on_click=self._on_trigger_click,
             disabled=self._disabled,
-            content=ft.Row(
-                [
-                    ft.Text(
-                        self._selected_label or self.placeholder,
-                        color=text_color,
-                        size=14,
-                        weight=text_weight,
-                        no_wrap=True,
-                        expand=True,
-                    ),
-                    ft.Icon(
-                        ft.icons.ARROW_DROP_DOWN,
-                        color="#475569",
-                        size=24,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+            content=trigger_content,
             padding=ft.padding.only(left=12, right=8),
             border=ft.border.all(self.border_width, self.border_color),
             border_radius=self.border_radius,
@@ -162,6 +248,8 @@ class AsyncSelect(ft.Column):
             height=50,
             alignment=ft.alignment.center_left,
         )
+        self._safe_set(trigger_container, "tab_index", self._tab_index)
+        return trigger_container
 
     @property
     def on_change(self):
@@ -178,9 +266,18 @@ class AsyncSelect(ft.Column):
     @disabled.setter
     def disabled(self, v):
         self._disabled = bool(v)
-        if hasattr(self, '_trigger') and self._trigger:
-            self._trigger.disabled = self._disabled
-            self._safe_update(self._trigger, "disabled_trigger")
+        keyboard_trigger = getattr(self, "_keyboard_trigger", None)
+        keyboard_trigger_container = getattr(self, "_keyboard_trigger_container", None)
+        trigger = getattr(self, "_trigger", None)
+        if keyboard_trigger is not None:
+            self._safe_set(keyboard_trigger, "disabled", self._disabled)
+            self._safe_update(keyboard_trigger, "disabled_keyboard_trigger")
+        if keyboard_trigger_container is not None:
+            self._safe_set(keyboard_trigger_container, "disabled", self._disabled)
+            self._refresh_keyboard_trigger_visual()
+        if trigger is not None:
+            self._safe_set(trigger, "disabled", self._disabled)
+            self._safe_update(trigger, "disabled_trigger")
 
     @property
     def value(self):
@@ -190,11 +287,38 @@ class AsyncSelect(ft.Column):
     def value(self, v):
         self._value = v
         self._update_selected_label()
-        if self._trigger:
-            self._trigger.content.controls[0].value = self._selected_label or self.placeholder
-            self._trigger.content.controls[0].color = self.text_color if self._selected_label else self.placeholder_color
-            self._trigger.content.controls[0].weight = self.text_weight if self._selected_label else self.placeholder_weight
+        if self._trigger_label is not None:
+            self._trigger_label.value = self._selected_label or self.placeholder
+            self._trigger_label.color = self.text_color if self._selected_label else self.placeholder_color
+            self._trigger_label.weight = self.text_weight if self._selected_label else self.placeholder_weight
+        elif self._keyboard_text_only and self._keyboard_trigger is not None and hasattr(self._keyboard_trigger, "text"):
+            self._safe_set(self._keyboard_trigger, "text", self._selected_label or self.placeholder)
         self._safe_update(self, "value_update")
+
+    def set_tab_index(self, tab_index: Optional[int]) -> None:
+        self._tab_index = tab_index
+        self._safe_set(self._keyboard_trigger, "tab_index", tab_index)
+        self._safe_set(self._trigger, "tab_index", tab_index)
+        self._safe_update(self, "tab_index_update")
+
+    def focus(self) -> None:
+        target = self._keyboard_trigger or self._trigger
+        focus_fn = getattr(target, "focus", None)
+        if callable(focus_fn):
+            try:
+                focus_fn()
+                return
+            except Exception:
+                pass
+        page = self._get_page()
+        if page and hasattr(page, "set_focus") and target is not None:
+            try:
+                page.set_focus(target)
+            except Exception:
+                pass
+
+    def focus_trigger(self) -> None:
+        self.focus()
 
     def update(self):
         try:
@@ -275,6 +399,47 @@ class AsyncSelect(ft.Column):
         # or by a separate loader call if not in current view items.
         pass
 
+    def _keyboard_border_color(self) -> str:
+        if self._disabled:
+            return "#94A3B8"
+        if self._keyboard_focused:
+            return self.focused_border_color
+        return self.border_color
+
+    def _keyboard_border_width(self) -> int:
+        return int(getattr(self, "border_width", 2) or 2)
+
+    def _refresh_keyboard_trigger_visual(self) -> None:
+        trigger_container = getattr(self, "_keyboard_trigger_container", None)
+        if trigger_container is None:
+            return
+        self._safe_set(
+            trigger_container,
+            "border",
+            ft.border.all(self._keyboard_border_width(), self._keyboard_border_color()),
+        )
+        self._safe_set(trigger_container, "bgcolor", self.bgcolor)
+        if self._keyboard_focused and not self._disabled:
+            try:
+                self._safe_set(
+                    trigger_container,
+                    "shadow",
+                    ft.BoxShadow(blur_radius=0, spread_radius=1, color=self.focused_border_color),
+                )
+            except Exception:
+                self._safe_set(trigger_container, "shadow", None)
+        else:
+            self._safe_set(trigger_container, "shadow", None)
+        self._safe_update(trigger_container, "keyboard_trigger_visual")
+
+    def _on_keyboard_focus(self, _e: Any) -> None:
+        self._keyboard_focused = True
+        self._refresh_keyboard_trigger_visual()
+
+    def _on_keyboard_blur(self, _e: Any) -> None:
+        self._keyboard_focused = False
+        self._refresh_keyboard_trigger_visual()
+
     def _get_cache_key(self, query, offset):
         return f"{query}|{offset}"
 
@@ -334,12 +499,11 @@ class AsyncSelect(ft.Column):
             self._update_dialog_ui()
 
     def _update_trigger_icon(self, loading):
-        if self._trigger:
-            icon = self._trigger.content.controls[1]
-            icon.size = 24
-            icon.color = "#475569"
-            icon.icon = ft.icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.icons.ARROW_DROP_DOWN
-            self._safe_update(self._trigger, "trigger_icon")
+        if self._trigger_icon is not None:
+            self._trigger_icon.size = 24
+            self._trigger_icon.color = "#475569"
+            self._trigger_icon.icon = ft.icons.HOURGLASS_EMPTY_ROUNDED if loading else ft.icons.ARROW_DROP_DOWN
+            self._safe_update(self, "trigger_icon")
 
     def _on_search_change(self, e):
         new_query = e.control.value
@@ -377,11 +541,12 @@ class AsyncSelect(ft.Column):
             self._on_change_callback(self._value)
 
         # Update trigger manualy before general update
-        if self._trigger:
-            text_field = self._trigger.content.controls[0]
-            text_field.value = self._selected_label
-            text_field.color = self.text_color
-            text_field.weight = self.text_weight
+        if self._trigger_label is not None:
+            self._trigger_label.value = self._selected_label
+            self._trigger_label.color = self.text_color
+            self._trigger_label.weight = self.text_weight
+        elif self._keyboard_text_only and self._keyboard_trigger is not None and hasattr(self._keyboard_trigger, "text"):
+            self._safe_set(self._keyboard_trigger, "text", self._selected_label)
 
         self._safe_update(self, "option_click")
 
@@ -603,8 +768,13 @@ class AsyncSelect(ft.Column):
         is_selected = str(option.get("value")) == str(self._value)
         
         def on_item_hover(e):
-            e.control.bgcolor = "#F1F5F9" if e.data == "true" else ("#EEF2FF" if is_selected else None)
-            e.control.update()
+            hovered_control = getattr(e, "control", None)
+            if hovered_control is None:
+                return
+            hovered_control.bgcolor = "#F1F5F9" if e.data == "true" else ("#EEF2FF" if is_selected else None)
+            # Hover events can arrive after the option row was unmounted.
+            # Use safe update to avoid "Control must be added to the page first".
+            self._safe_update(hovered_control, "option_hover")
 
         return ft.Container(
             content=ft.Row([
