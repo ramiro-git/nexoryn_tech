@@ -10261,19 +10261,19 @@ def main(page: ft.Page) -> None:
                 _safe_update_multiple(btn_modal_print, btn_modal_confirm, btn_modal_afip, btn_modal_save, btn_add_line)
             _refresh_keyboard_navigation_order()
 
-        def _save(_=None):
+        def _save(_=None) -> bool:
             if is_read_only_ref["value"]:
                 show_toast("El comprobante está en solo lectura.", kind="warning")
-                return
+                return False
             if not dropdown_tipo.value or not dropdown_entidad.value or not dropdown_deposito.value:
                 show_toast("Faltan campos obligatorios", kind="warning")
-                return
+                return False
             if not (field_vto.value and str(field_vto.value).strip()):
                 show_toast("La fecha de vencimiento es obligatoria", kind="warning")
-                return
+                return False
             if not (field_direccion.value and str(field_direccion.value).strip()):
                 show_toast("La dirección de entrega es obligatoria", kind="warning")
-                return
+                return False
 
             # Normalización final para persistir formato consistente sin forzar durante tipeo.
             _normalize_field_numeric(field_descuento_global_pct, decimals=2, use_grouping=True)
@@ -10291,7 +10291,7 @@ def main(page: ft.Page) -> None:
                     _normalize_quantity_field(row_map.get("cant_field"), label="Cantidad")
                 except ValueError as exc:
                     show_toast(str(exc), kind="error")
-                    return
+                    return False
                 _normalize_field_numeric(row_map.get("price_field"), decimals=2, use_grouping=True)
                 _normalize_field_numeric(row_map.get("iva_field"), decimals=2, use_grouping=True)
                 sync_fiscal = row_map.get("sync_fiscal_iva")
@@ -10299,6 +10299,16 @@ def main(page: ft.Page) -> None:
                     sync_fiscal(source="user")
                 _normalize_field_numeric(row_map.get("desc_pct_field"), decimals=2, use_grouping=True)
                 _normalize_field_numeric(row_map.get("desc_imp_field"), decimals=2, use_grouping=True)
+
+            def _resolve_discount_mode(raw_mode: Any, pct_val: float, imp_val: float) -> str:
+                mode = "amount" if str(raw_mode).lower() == "amount" else "percentage"
+                # Fallback defensivo: si el estado UI de modo no se actualizó,
+                # inferimos por el campo efectivamente usado.
+                if mode == "percentage" and pct_val <= 0 and imp_val > 0:
+                    return "amount"
+                if mode == "amount" and imp_val <= 0 and pct_val > 0:
+                    return "percentage"
+                return mode
             
             items = []
             for idx, row in enumerate(lines_container.controls, start=1):
@@ -10320,7 +10330,14 @@ def main(page: ft.Page) -> None:
                     precio_unitario_val = _parse_float(row_map["price_field"].value, "Precio Unitario")
                     descuento_pct_val = _parse_float(row_map["desc_pct_field"].value, "Desc. %")
                     descuento_imp_val = _parse_float(row_map["desc_imp_field"].value, "Desc. $")
-                    descuento_mode_val = (row_map.get("discount_mode_ref") or {}).get("value", "percentage")
+                    discount_mode_ref = row_map.get("discount_mode_ref") or {}
+                    descuento_mode_val = _resolve_discount_mode(
+                        discount_mode_ref.get("value", "percentage"),
+                        descuento_pct_val,
+                        descuento_imp_val,
+                    )
+                    if isinstance(discount_mode_ref, dict):
+                        discount_mode_ref["value"] = descuento_mode_val
                     base_line = to_decimal(cantidad_val) * to_decimal(precio_unitario_val)
                     line_limit_msg = _discount_limit_message(
                         mode=descuento_mode_val,
@@ -10337,7 +10354,7 @@ def main(page: ft.Page) -> None:
                         if callable(recalculate_line):
                             recalculate_line(normalize_active=True)
                         _recalc_total()
-                        return
+                        return False
                     items.append({
                         "id_articulo": int(art_id),
                         "id_lista_precio": int(item_lista) if item_lista and item_lista != "" else None,
@@ -10351,11 +10368,11 @@ def main(page: ft.Page) -> None:
                     })
                 except ValueError as exc:
                     show_toast(str(exc), kind="error")
-                    return
+                    return False
             
             if not items:
                 show_toast("El comprobante debe tener al menos una línea", kind="warning")
-                return
+                return False
 
             # Determinar id_lista_precio del documento
             gl_val = dropdown_lista_global.value
@@ -10365,9 +10382,15 @@ def main(page: ft.Page) -> None:
                 desc_global_imp = _parse_float(field_descuento_global_imp.value, "Desc. Global $")
             except ValueError as exc:
                 show_toast(str(exc), kind="error")
-                return
+                return False
+            global_mode_to_persist = _resolve_discount_mode(
+                global_discount_mode["value"],
+                desc_global_pct,
+                desc_global_imp,
+            )
+            global_discount_mode["value"] = global_mode_to_persist
             global_limit_msg = _discount_limit_message(
-                mode=global_discount_mode["value"],
+                mode=global_mode_to_persist,
                 descuento_porcentaje=desc_global_pct,
                 descuento_importe=desc_global_imp,
                 max_importe=_base_neto_lineas(),
@@ -10379,7 +10402,7 @@ def main(page: ft.Page) -> None:
                 )
                 _sync_global_discount_pair_from_mode(normalize_active=True)
                 _recalc_total()
-                return
+                return False
 
             numero_val = (field_numero.value or "").strip()
             if not numero_val and current_doc_row_ref["value"]:
@@ -10402,6 +10425,7 @@ def main(page: ft.Page) -> None:
                         numero_serie=numero_serie_value,
                         descuento_porcentaje=desc_global_pct,
                         descuento_importe=desc_global_imp,
+                        descuento_global_mode=global_mode_to_persist,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
                         direccion_entrega=field_direccion.value,
@@ -10425,6 +10449,7 @@ def main(page: ft.Page) -> None:
                         numero_serie=numero_serie_value,
                         descuento_porcentaje=desc_global_pct,
                         descuento_importe=desc_global_imp,
+                        descuento_global_mode=global_mode_to_persist,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
                         direccion_entrega=field_direccion.value,
@@ -10446,8 +10471,10 @@ def main(page: ft.Page) -> None:
                 documentos_summary_table.refresh()
                 refresh_all_stats()
                 _refresh_modal_doc_state()
+                return True
             except Exception as ex:
                 show_toast(f"Error al guardar: {ex}", kind="error")
+                return False
         if doc_data:
             # Add existing items
             for item in doc_data["items"]:
@@ -10504,6 +10531,12 @@ def main(page: ft.Page) -> None:
             current_doc_id = active_doc_id_ref["value"]
             if not current_doc_id:
                 show_toast("Primero guardá el comprobante para poder confirmarlo.", kind="warning")
+                return
+            if not _save():
+                return
+            current_doc_id = active_doc_id_ref["value"]
+            if not current_doc_id:
+                show_toast("No se pudo guardar el comprobante antes de confirmar.", kind="error")
                 return
             _confirm_document(int(current_doc_id), close_after=False, on_success=_handle_modal_doc_state_change)
 

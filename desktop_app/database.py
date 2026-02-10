@@ -5475,6 +5475,7 @@ class Database:
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
                         numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
                         descuento_importe: float = 0,
+                        descuento_global_mode: str = "percentage",
                         fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
                         id_lista_precio: Optional[int] = None,
                         direccion_entrega: Optional[str] = None,
@@ -5512,7 +5513,7 @@ class Database:
             items=items,
             descuento_global_porcentaje=descuento_porcentaje,
             descuento_global_importe=descuento_importe,
-            descuento_global_mode="percentage",
+            descuento_global_mode="amount" if str(descuento_global_mode).lower() == "amount" else "percentage",
             sena=sena,
             pricing_mode="tax_included",
         )
@@ -6238,6 +6239,7 @@ class Database:
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
                         numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
                         descuento_importe: float = 0,
+                        descuento_global_mode: str = "percentage",
                         fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
                         id_lista_precio: Optional[int] = None,
                         direccion_entrega: Optional[str] = None,
@@ -6249,7 +6251,7 @@ class Database:
             items=items,
             descuento_global_porcentaje=descuento_porcentaje,
             descuento_global_importe=descuento_importe,
-            descuento_global_mode="percentage",
+            descuento_global_mode="amount" if str(descuento_global_mode).lower() == "amount" else "percentage",
             sena=sena,
             pricing_mode="tax_included",
         )
