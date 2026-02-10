@@ -300,12 +300,10 @@ def generate_manual():
     pdf.add_shortcut('Rueda del Ratón', 'Scroll vertical lento/rápido.')
     pdf.add_shortcut('Shift + Rueda', 'Scroll horizontal (ideal para tablas con muchas columnas).')
     pdf.add_shortcut('Doble clic en celda', 'Abre el editor instantáneo si la columna es editable.')
-    pdf.add_shortcut('Ctrl + F', 'Busca rápidamente dentro de la tabla.')
-    pdf.add_shortcut('Enter', 'En comprobantes, avanza por campos y ejecuta el botón enfocado.')
-    pdf.add_shortcut('Esc', 'Cancela la acción o cierra el modal actual.')
-    pdf.add_shortcut('Ctrl + S', 'En algunas pantallas, guarda el borrador.')
+    pdf.add_shortcut('Enter', 'En comprobantes, avanza por campos; en botones, ejecuta la acción enfocada.')
     pdf.add_shortcut('Tab / Shift+Tab', 'En comprobantes, recorre campos, selectores y botones del modal.')
-    pdf.add_shortcut('Alt + [Letra]', 'Navega entre las pestañas del menú lateral.')
+    pdf.add_shortcut('Shift + Enter', 'En Observaciones (comprobantes), inserta salto de línea.')
+    pdf.add_shortcut('Esc', 'Cancela la acción o cierra el modal actual (cuando aplica).')
 
     pdf.section_title('Seguridad por inactividad')
     pdf.chapter_body(
@@ -523,12 +521,10 @@ def generate_manual():
     # --- RESUMEN DE ATAJOS ---
     pdf.ln(10)
     pdf.chapter_title('16. Resumen Final de Atajos')
-    pdf.add_shortcut('Enter', 'En comprobantes, avanza por campos y ejecuta el botón enfocado.')
-    pdf.add_shortcut('Esc', 'Cancela la acción o cierra el modal actual.')
-    pdf.add_shortcut('Ctrl + S', 'En algunas pantallas, guarda el borrador.')
+    pdf.add_shortcut('Enter', 'En comprobantes, avanza por campos; en botones, ejecuta la acción enfocada.')
     pdf.add_shortcut('Tab / Shift+Tab', 'En comprobantes, recorre campos, selectores y botones del modal.')
-    pdf.add_shortcut('Alt + [Letra]', 'Navega entre las pestañas del menú lateral.')
-    pdf.add_shortcut('Botón Actualizar', 'Recarga los datos de la tabla o la vista actual.')
+    pdf.add_shortcut('Shift + Enter', 'En Observaciones (comprobantes), inserta salto de línea.')
+    pdf.add_shortcut('Esc', 'Cancela la acción o cierra el modal actual (cuando aplica).')
 
     pdf.ln(15)
     pdf.set_font('helvetica', 'I', 10)
