@@ -8814,7 +8814,10 @@ def main(page: ft.Page) -> None:
             **comprobante_async_select_style,
         )
 
-        dropdown_deposito = ft.Dropdown(label="Depósito *", options=[ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos], width=200); _style_input(dropdown_deposito); _style_comprobante_control(dropdown_deposito)
+        deposito_options = [ft.dropdown.Option(str(d["id"]), d["nombre"]) for d in depositos]
+        dropdown_deposito = ft.Dropdown(label="Depósito *", options=deposito_options, width=200); _style_input(dropdown_deposito); _style_comprobante_control(dropdown_deposito)
+        if depositos:
+            dropdown_deposito.value = str(depositos[0]["id"])
         
         # Lista de precios global (opcional, se aplica a todos los ítems)
         dropdown_lista_global = AsyncSelect(

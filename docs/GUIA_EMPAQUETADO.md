@@ -126,3 +126,32 @@ Carpeta_App/
     ├── mi_certificado.crt
     └── mi_llave.key
 ```
+
+---
+
+## 6. Generación del Manual PDF
+
+El Manual Maestro ahora se genera desde una fuente única en Markdown:
+
+- Fuente: `docs/MANUAL_OPERATIVO.md`
+- Generador: `scripts/generate_manual_pdf.py`
+- Salida por defecto: `MANUAL_MAESTRO_NEXORYN_TECH.pdf`
+
+### Comando estándar
+
+```powershell
+python scripts/generate_manual_pdf.py
+```
+
+### Comando con rutas explícitas
+
+```powershell
+python scripts/generate_manual_pdf.py --source docs/MANUAL_OPERATIVO.md --output MANUAL_MAESTRO_NEXORYN_TECH.pdf
+```
+
+### Regla operativa de mantenimiento
+
+Cuando cambie un flujo operativo del sistema:
+
+1. Actualizar primero `docs/MANUAL_OPERATIVO.md`.
+2. Regenerar luego `MANUAL_MAESTRO_NEXORYN_TECH.pdf` con el script.
