@@ -2071,7 +2071,14 @@ class Database:
                     SET precio = GREATEST(
                             0,
                             CASE
-                                WHEN COALESCE(tp.tipo, 'MARGEN') = 'DESCUENTO'
+                                WHEN COALESCE(
+                                    (
+                                        SELECT tp.tipo
+                                        FROM ref.tipo_porcentaje tp
+                                        WHERE tp.id = ap.id_tipo_porcentaje
+                                    ),
+                                    'MARGEN'
+                                ) = 'DESCUENTO'
                                     THEN a.costo * (1 - COALESCE(ap.porcentaje, 0) / 100.0)
                                 ELSE
                                     a.costo * (1 + COALESCE(ap.porcentaje, 0) / 100.0)
@@ -2079,7 +2086,6 @@ class Database:
                         ),
                         fecha_actualizacion = now()
                     FROM app.articulo a
-                    LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
                     WHERE ap.id_articulo = a.id
                       AND a.id IN (SELECT id FROM target_articles)
                 """
@@ -2167,7 +2173,14 @@ class Database:
                     SET precio = GREATEST(
                             0,
                             CASE
-                                WHEN COALESCE(tp.tipo, 'MARGEN') = 'DESCUENTO'
+                                WHEN COALESCE(
+                                    (
+                                        SELECT tp.tipo
+                                        FROM ref.tipo_porcentaje tp
+                                        WHERE tp.id = ap.id_tipo_porcentaje
+                                    ),
+                                    'MARGEN'
+                                ) = 'DESCUENTO'
                                     THEN a.costo * (1 - COALESCE(ap.porcentaje, 0) / 100.0)
                                 ELSE
                                     a.costo * (1 + COALESCE(ap.porcentaje, 0) / 100.0)
@@ -2175,7 +2188,6 @@ class Database:
                         ),
                         fecha_actualizacion = now()
                     FROM app.articulo a
-                    LEFT JOIN ref.tipo_porcentaje tp ON tp.id = ap.id_tipo_porcentaje
                     WHERE ap.id_articulo = a.id
                       AND a.id IN (SELECT id FROM valid_articles)
                 """
