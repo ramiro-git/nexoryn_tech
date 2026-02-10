@@ -9483,7 +9483,7 @@ def main(page: ft.Page) -> None:
             if art_drop_ctrl is not None:
                 art_drop_ctrl.value = None
             if lista_drop_ctrl is not None:
-                lista_drop_ctrl.value = ""
+                lista_drop_ctrl.value = None
             if cant_field_ctrl is not None:
                 cant_field_ctrl.value = "1"
             if price_field_ctrl is not None:
