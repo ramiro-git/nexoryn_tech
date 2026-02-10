@@ -1632,7 +1632,8 @@ class RemitoPDF(BaseDocumentPDF):
                 width - (c_margin * 2),
             )
             self.cell(width, 5, clipped, border=0, align="R" if idx == 2 else "L")
-        self.ln(1)
+        # Advance by full row height to avoid overlap with the IVA row.
+        self.ln(5)
 
         # Render IVA condition on its own row to avoid truncation.
         self.set_x(left_x)
