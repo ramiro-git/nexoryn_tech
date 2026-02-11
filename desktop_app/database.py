@@ -5612,7 +5612,13 @@ class Database:
     def list_entidades_simple(self, limit: int = 200, only_active: bool = True) -> List[Dict[str, Any]]:
         where = "WHERE activo = True" if only_active else ""
         # Use parameterized query for LIMIT
-        query = f"SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada {where} ORDER BY nombre_completo ASC LIMIT %s"
+        query = f"""
+            SELECT id, nombre_completo, tipo, activo, domicilio
+            FROM app.v_entidad_detallada
+            {where}
+            ORDER BY nombre_completo ASC
+            LIMIT %s
+        """
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (int(limit),))
@@ -5620,7 +5626,11 @@ class Database:
 
     def get_entity_simple(self, entity_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a single entity by ID, regardless of active status."""
-        query = "SELECT id, nombre_completo, tipo, activo FROM app.v_entidad_detallada WHERE id = %s"
+        query = """
+            SELECT id, nombre_completo, tipo, activo, domicilio
+            FROM app.v_entidad_detallada
+            WHERE id = %s
+        """
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (entity_id,))

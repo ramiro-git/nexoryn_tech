@@ -1477,6 +1477,41 @@ def main(page: ft.Page) -> None:
             )
         return build
 
+    def _entity_tipo_label(tipo: Any) -> str:
+        tipo_upper = str(tipo or "").strip().upper()
+        if tipo_upper == "CLIENTE":
+            return "Cliente"
+        if tipo_upper == "PROVEEDOR":
+            return "Proveedor"
+        if tipo_upper == "AMBOS":
+            return "Cliente/Proveedor"
+        return ""
+
+    def _format_entity_option(
+        row: Dict[str, Any],
+        *,
+        include_tipo: bool = True,
+        force_tipo: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        entity_id = row.get("id")
+        entity_id_text = str(entity_id).strip() if entity_id is not None else ""
+        name = str(row.get("nombre_completo") or row.get("razon_social") or "").strip() or "Sin nombre"
+        tipo_label = force_tipo if force_tipo is not None else (_entity_tipo_label(row.get("tipo")) if include_tipo else "")
+        tipo_suffix = f" ({tipo_label})" if tipo_label else ""
+        primary = f"{name} (Cod: {entity_id_text}){tipo_suffix}" if entity_id_text else f"{name}{tipo_suffix}"
+
+        address = str(row.get("domicilio") or "").strip() or "Sin dirección"
+        secondary = f"Dirección: {address}"
+        full_label = f"{primary}\n{secondary}"
+        selected_label = f"{address}: {name} ({entity_id_text}){tipo_suffix}" if entity_id_text else f"{address}: {name}{tipo_suffix}"
+
+        return {
+            "value": entity_id,
+            "label": full_label,
+            "selected_label": selected_label,
+            "tooltip": full_label,
+        }
+
     # --- AsyncSelect Loaders ---
     def article_loader(query, offset, limit):
         if not db: return [], False
@@ -1487,13 +1522,13 @@ def main(page: ft.Page) -> None:
     def entity_loader(query, offset, limit):
         if not db: return [], False
         rows = db.fetch_entities(search=query, offset=offset, limit=limit)
-        items = [{"value": r["id"], "label": f"{r['nombre_completo']} ({r['tipo']})"} for r in rows]
+        items = [_format_entity_option(r, include_tipo=True) for r in rows]
         return items, len(rows) >= limit
 
     def supplier_loader(query, offset, limit):
         if not db: return [], False
         rows = db.fetch_entities(search=query, tipo="PROVEEDOR", offset=offset, limit=limit)
-        items = [{"value": r["id"], "label": f"{r['nombre_completo']} (Proveedor)"} for r in rows]
+        items = [_format_entity_option(r, include_tipo=False, force_tipo="Proveedor") for r in rows]
         return items, len(rows) >= limit
 
     def price_list_loader(query, offset, limit):
@@ -3478,7 +3513,18 @@ def main(page: ft.Page) -> None:
         nuevo_articulo_rubro.options = [ft.dropdown.Option(r, r) for r in rubros_values]
         nuevo_articulo_tipo_iva.options = [ft.dropdown.Option(str(t["id"]), f"{t['descripcion']} ({t['porcentaje']}%)") for t in tipos_iva_values]
         nuevo_articulo_unidad.options = [ft.dropdown.Option(str(u["id"]), f"{u['nombre']} ({u['abreviatura']})") for u in unidades_values]
-        nuevo_articulo_proveedor.options = [ft.dropdown.Option("", "—")] + [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in proveedores_values]
+        try:
+            supplier_rows = db.fetch_entities(tipo="PROVEEDOR", limit=500, offset=0)
+            supplier_options: List[Dict[str, Any]] = [
+                {"value": "", "label": "—", "selected_label": "—", "tooltip": "—"}
+            ]
+            supplier_options.extend(
+                _format_entity_option(row, include_tipo=False, force_tipo="Proveedor")
+                for row in supplier_rows
+            )
+            nuevo_articulo_proveedor.options = supplier_options
+        except Exception:
+            nuevo_articulo_proveedor.options = [ft.dropdown.Option("", "—")] + [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in proveedores_values]
         nuevo_articulo_ubicacion.options = [ft.dropdown.Option(d["nombre"], d["nombre"]) for d in depositos]
         if depositos:
             nuevo_articulo_ubicacion.value = depositos[0]["nombre"]
@@ -5663,9 +5709,11 @@ def main(page: ft.Page) -> None:
             ]
             
             ent_list = db.list_entidades_simple()
-            shared_ent_options = [ft.dropdown.Option("0", "Todas")] + [
-                ft.dropdown.Option(str(e["id"]), f"{e['nombre_completo']} ({e['tipo']})") for e in ent_list
+            shared_ent_options: List[Dict[str, Any]] = [
+                {"value": "0", "label": "Todas", "selected_label": "Todas", "tooltip": "Todas"}
             ]
+            for entity in ent_list:
+                shared_ent_options.append(_format_entity_option(entity, include_tipo=True))
             
             doc_adv_entidad.options = shared_ent_options
             pago_adv_entidad.options = shared_ent_options
@@ -5751,7 +5799,10 @@ def main(page: ft.Page) -> None:
         tipo_options = [ft.dropdown.Option("Todos", "Todos")] + [ft.dropdown.Option(t["nombre"], t["nombre"]) for t in tipos_doc]
         
         entidades = db.list_entidades_simple()
-        ent_options = [ft.dropdown.Option("0", "Todas")] + [ft.dropdown.Option(str(e["id"]), f"{e['nombre_completo']} ({e['tipo']})") for e in entidades]
+        ent_options = [ft.dropdown.Option("0", "Todas")]
+        for entity in entidades:
+            option = _format_entity_option(entity, include_tipo=True)
+            ent_options.append(ft.dropdown.Option(str(option["value"]), option["label"]))
     except:
         tipo_options = [ft.dropdown.Option("Todos", "Todos")]
         ent_options = [ft.dropdown.Option("0", "Todas")]
@@ -6373,7 +6424,7 @@ def main(page: ft.Page) -> None:
             label="Entidad *", 
             loader=entity_loader, 
             width=400,
-            initial_items=[{"value": e["id"], "label": e["nombre_completo"]} for e in entidades]
+            initial_items=[_format_entity_option(e, include_tipo=True) for e in entidades]
         )
         
         doc_totals: Dict[str, float] = {}
@@ -8803,7 +8854,7 @@ def main(page: ft.Page) -> None:
                 except Exception as ex:
                     logger.error(f"Error updating entity info: {ex}")
         
-        ent_initial_items = [{"value": e["id"], "label": f"{e['nombre_completo']} ({e['tipo']})"} for e in entidades]
+        ent_initial_items = [_format_entity_option(e, include_tipo=True) for e in entidades]
         dropdown_entidad = AsyncSelect(
             label="Entidad *",
             loader=entity_loader,

@@ -115,6 +115,7 @@ class AsyncSelect(ft.Column):
         self._loading_more = False
         self._error: Optional[str] = None
         self._selected_label = ""
+        self._selected_tooltip = ""
         self._debounce_task: Optional[asyncio.Task] = None
         self._cache: Dict[str, Tuple[List[Dict[str, Any]], bool]] = {}
         self._disabled = bool(disabled)
@@ -128,6 +129,7 @@ class AsyncSelect(ft.Column):
         self._loading_more_indicator: Optional[ft.Control] = None
         self._empty_text: Optional[ft.Text] = None
         self._error_row: Optional[ft.Row] = None
+        self._dialog_card_container: Optional[ft.Container] = None
         self._page_ref = page_ref
 
         # Build UI
@@ -151,12 +153,17 @@ class AsyncSelect(ft.Column):
             pass
 
     def _build_trigger_content(self, text_color: str, text_weight: Optional[ft.FontWeight]) -> ft.Row:
+        trigger_text = self._selected_label or self.placeholder
+        trigger_tooltip = self._selected_tooltip or trigger_text
         self._trigger_label = ft.Text(
-            self._selected_label or self.placeholder,
+            trigger_text,
             color=text_color,
             size=14,
             weight=text_weight,
             no_wrap=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            tooltip=trigger_tooltip,
             expand=True,
         )
         self._trigger_icon = ft.Icon(
@@ -224,6 +231,7 @@ class AsyncSelect(ft.Column):
             self._safe_set(trigger_button, "on_focus", self._on_keyboard_focus)
             self._safe_set(trigger_button, "on_blur", self._on_keyboard_blur)
             self._safe_set(trigger_button, "tab_index", self._tab_index)
+            self._safe_set(trigger_button, "tooltip", self._selected_tooltip or self._selected_label or self.placeholder)
             trigger_container = ft.Container(
                 content=trigger_button,
                 width=self.width,
@@ -247,6 +255,7 @@ class AsyncSelect(ft.Column):
             width=self.width,
             height=50,
             alignment=ft.alignment.center_left,
+            tooltip=self._selected_tooltip or self._selected_label or self.placeholder,
         )
         self._safe_set(trigger_container, "tab_index", self._tab_index)
         return trigger_container
@@ -287,12 +296,17 @@ class AsyncSelect(ft.Column):
     def value(self, v):
         self._value = v
         self._update_selected_label()
+        trigger_text = self._selected_label or self.placeholder
+        trigger_tooltip = self._selected_tooltip or trigger_text
         if self._trigger_label is not None:
-            self._trigger_label.value = self._selected_label or self.placeholder
+            self._trigger_label.value = trigger_text
             self._trigger_label.color = self.text_color if self._selected_label else self.placeholder_color
             self._trigger_label.weight = self.text_weight if self._selected_label else self.placeholder_weight
+            self._safe_set(self._trigger_label, "tooltip", trigger_tooltip)
         elif self._keyboard_text_only and self._keyboard_trigger is not None and hasattr(self._keyboard_trigger, "text"):
-            self._safe_set(self._keyboard_trigger, "text", self._selected_label or self.placeholder)
+            self._safe_set(self._keyboard_trigger, "text", trigger_text)
+        self._safe_set(self._keyboard_trigger, "tooltip", trigger_tooltip)
+        self._safe_set(self._trigger, "tooltip", trigger_tooltip)
         self._safe_update(self, "value_update")
 
     def set_tab_index(self, tab_index: Optional[int]) -> None:
@@ -377,8 +391,32 @@ class AsyncSelect(ft.Column):
     def options(self, v):
         items = []
         for opt in (v or []):
-            if hasattr(opt, 'key') and hasattr(opt, 'text'):
-                items.append({"value": opt.key, "label": opt.text})
+            if isinstance(opt, dict):
+                value = opt.get("value", opt.get("key"))
+                if value is None:
+                    continue
+                label = str(opt.get("label", opt.get("text", "")))
+                selected_label = str(opt.get("selected_label", "")).strip() or (label.splitlines()[0] if label else "")
+                tooltip = str(opt.get("tooltip", "")).strip() or label or selected_label
+                items.append(
+                    {
+                        "value": value,
+                        "label": label,
+                        "selected_label": selected_label,
+                        "tooltip": tooltip,
+                    }
+                )
+            elif hasattr(opt, 'key') and hasattr(opt, 'text'):
+                label = str(opt.text or "")
+                selected_label = label.splitlines()[0] if label else ""
+                items.append(
+                    {
+                        "value": opt.key,
+                        "label": label,
+                        "selected_label": selected_label,
+                        "tooltip": label or selected_label,
+                    }
+                )
         self._items = items
         self._cache.clear()
         self._update_selected_label()
@@ -387,17 +425,22 @@ class AsyncSelect(ft.Column):
     def _update_selected_label(self):
         if self._value is None:
             self._selected_label = ""
+            self._selected_tooltip = ""
             return
         
         # Try to find in current items
         for opt in self._items:
             if str(opt.get("value")) == str(self._value):
-                self._selected_label = opt.get("label", "")
+                label = str(opt.get("label", ""))
+                first_line = label.splitlines()[0] if label else ""
+                self._selected_label = str(opt.get("selected_label", "")).strip() or first_line or str(self._value)
+                self._selected_tooltip = str(opt.get("tooltip", "")).strip() or label or self._selected_label
                 return
         
         # NOTE: Initial label resolution needs to be handled by the parent 
         # or by a separate loader call if not in current view items.
-        pass
+        self._selected_label = ""
+        self._selected_tooltip = ""
 
     def _keyboard_border_color(self) -> str:
         if self._disabled:
@@ -534,7 +577,10 @@ class AsyncSelect(ft.Column):
 
     def _on_option_click(self, option):
         self._value = option.get("value")
-        self._selected_label = option.get("label", "")
+        selected_label = str(option.get("selected_label", "")).strip()
+        option_label = str(option.get("label", ""))
+        self._selected_label = selected_label or (option_label.splitlines()[0] if option_label else "")
+        self._selected_tooltip = str(option.get("tooltip", "")).strip() or option_label or self._selected_label
         self._close_dialog()
 
         if self._on_change_callback:
@@ -545,8 +591,11 @@ class AsyncSelect(ft.Column):
             self._trigger_label.value = self._selected_label
             self._trigger_label.color = self.text_color
             self._trigger_label.weight = self.text_weight
+            self._safe_set(self._trigger_label, "tooltip", self._selected_tooltip or self._selected_label)
         elif self._keyboard_text_only and self._keyboard_trigger is not None and hasattr(self._keyboard_trigger, "text"):
             self._safe_set(self._keyboard_trigger, "text", self._selected_label)
+        self._safe_set(self._keyboard_trigger, "tooltip", self._selected_tooltip or self._selected_label)
+        self._safe_set(self._trigger, "tooltip", self._selected_tooltip or self._selected_label)
 
         self._safe_update(self, "option_click")
 
@@ -586,6 +635,8 @@ class AsyncSelect(ft.Column):
         
         # Get page reference - try self.page first, then traverse parent hierarchy
         page = self._get_page()
+        if self._dialog_card_container is not None:
+            self._dialog_card_container.width = self._resolve_dialog_width()
         
         if page:
             # IMPORTANT: Clear Flet's internal dialog to avoid conflicts
@@ -631,6 +682,27 @@ class AsyncSelect(ft.Column):
             depth += 1
         print(f"[AsyncSelect] Could not find page after {depth} levels")
         return None
+
+    def _resolve_dialog_width(self) -> int:
+        base_width = 450
+        min_width = 420
+        max_width = 760
+
+        preferred = base_width
+        control_width = getattr(self, "width", None)
+        if isinstance(control_width, (int, float)):
+            preferred = max(preferred, int(control_width) + 140)
+
+        page = self._get_page()
+        viewport_cap: Optional[int] = None
+        if page is not None:
+            page_width = getattr(page, "width", None)
+            if isinstance(page_width, (int, float)):
+                viewport_cap = max(320, int(page_width) - 24)
+
+        max_allowed = min(max_width, viewport_cap) if viewport_cap is not None else max_width
+        min_allowed = min(min_width, max_allowed)
+        return max(min_allowed, min(preferred, max_allowed))
 
     def _close_dialog(self, _e=None):
         if self._dialog:
@@ -710,32 +782,33 @@ class AsyncSelect(ft.Column):
 
         # Usamos un Container manual en el overlay que se comporta como un modal
         # pero SIN ser un ft.AlertDialog, para que no cierre otros diálogos.
+        self._dialog_card_container = ft.Container(
+            width=self._resolve_dialog_width(),
+            height=550,
+            bgcolor="#FFFFFF",
+            padding=ft.padding.all(16),
+            content=ft.Column([
+                ft.Row([
+                    ft.Text((f"Seleccionar {self.label.replace('Filtrar ', '').replace('*', '').strip().lower()}..." + (" *" if "*" in self.label else "")) if self.label else "Seleccionar...", size=18, weight=ft.FontWeight.BOLD, color="#1E293B"),
+                    ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=24, on_click=self._close_dialog)
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                self._search_field,
+                ft.Divider(height=1, color="#F1F5F9"),
+                self._loading_indicator,
+                self._error_row,
+                ft.Container(
+                    content=self._options_list,
+                    expand=True,
+                ),
+                self._empty_text,
+                self._loading_more_indicator,
+            ], spacing=10)
+        )
         self._dialog = ft.Container(
             content=ft.Card(
                 elevation=30, # Higher elevation for search
                 shape=ft.RoundedRectangleBorder(radius=16),
-                content=ft.Container(
-                    width=450,
-                    height=550,
-                    bgcolor="#FFFFFF",
-                    padding=ft.padding.all(16),
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Text((f"Seleccionar {self.label.replace('Filtrar ', '').replace('*', '').strip().lower()}..." + (" *" if "*" in self.label else "")) if self.label else "Seleccionar...", size=18, weight=ft.FontWeight.BOLD, color="#1E293B"),
-                            ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=24, on_click=self._close_dialog)
-                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        self._search_field,
-                        ft.Divider(height=1, color="#F1F5F9"),
-                        self._loading_indicator,
-                        self._error_row,
-                        ft.Container(
-                            content=self._options_list,
-                            expand=True,
-                        ),
-                        self._empty_text,
-                        self._loading_more_indicator,
-                    ], spacing=10)
-                )
+                content=self._dialog_card_container
             ),
             bgcolor="#40000000", # Slightly lighter dimming for search
             alignment=ft.Alignment(0, 0),
@@ -766,7 +839,9 @@ class AsyncSelect(ft.Column):
 
     def _build_option_item(self, option):
         is_selected = str(option.get("value")) == str(self._value)
-        
+        option_label = str(option.get("label", ""))
+        option_tooltip = str(option.get("tooltip", "")).strip() or option_label
+
         def on_item_hover(e):
             hovered_control = getattr(e, "control", None)
             if hovered_control is None:
@@ -778,7 +853,15 @@ class AsyncSelect(ft.Column):
 
         return ft.Container(
             content=ft.Row([
-                ft.Text(option.get("label", ""), size=14, color="#1E293B", expand=True),
+                ft.Text(
+                    option_label,
+                    size=14,
+                    color="#1E293B",
+                    expand=True,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                    tooltip=option_tooltip,
+                ),
                 ft.Icon(ft.icons.CHECK_ROUNDED, size=16, color=self.focused_border_color, visible=is_selected)
             ]),
             padding=ft.padding.symmetric(horizontal=12, vertical=10),
