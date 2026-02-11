@@ -9004,6 +9004,13 @@ def main(page: ft.Page) -> None:
         for resumen_ctrl in [sum_subtotal, sum_iva, sum_total, sum_saldo, sum_desc_lineas, sum_desc_global]:
             _style_comprobante_control(resumen_ctrl)
         keyboard_nav_state: Dict[str, List[Any]] = {"all": [], "capture": []}
+        modal_focus_state: Dict[str, Any] = {
+            "current_control": None,
+            "cursor_index": None,
+            "prev_keyboard_handler": None,
+            "keyboard_page_ref": None,
+            "tracked_controls": set(),
+        }
 
         def _control_name(control: Any) -> str:
             return str(type(control).__name__) if control is not None else ""
@@ -9082,11 +9089,18 @@ def main(page: ft.Page) -> None:
             _maybe_set(control, "tab_index", tab_index)
 
         def _focus_control(control: Any) -> bool:
+            def _remember_focus_target(target: Any) -> None:
+                modal_focus_state["current_control"] = target
+                ordered_controls = keyboard_nav_state.get("all", [])
+                if target in ordered_controls:
+                    modal_focus_state["cursor_index"] = ordered_controls.index(target)
+
             if control is None:
                 return False
             if isinstance(control, AsyncSelect):
                 try:
                     control.focus()
+                    _remember_focus_target(control)
                     return True
                 except Exception:
                     return False
@@ -9094,22 +9108,97 @@ def main(page: ft.Page) -> None:
             if callable(focus_fn):
                 try:
                     focus_fn()
+                    _remember_focus_target(control)
                     return True
                 except Exception:
                     pass
             if hasattr(page, "set_focus"):
                 try:
                     page.set_focus(control)
+                    _remember_focus_target(control)
                     return True
                 except Exception:
                     pass
             return False
+
+        def _is_modal_keydown_event(event: Any) -> bool:
+            event_type = str(
+                getattr(event, "event_type", "") or getattr(event, "type", "") or getattr(event, "data", "")
+            ).strip().lower()
+            if not event_type:
+                return True
+            if event_type in {"keyup", "up", "key_up"}:
+                return False
+            if event_type in {"keydown", "down", "key_down"}:
+                return True
+            return "up" not in event_type
+
+        def _forward_modal_previous_keyboard_handler(event: Any) -> None:
+            previous_handler = modal_focus_state.get("prev_keyboard_handler")
+            if callable(previous_handler):
+                try:
+                    previous_handler(event)
+                except Exception:
+                    logger.debug("Fallo delegando keyboard handler previo del modal", exc_info=True)
+
+        def _is_own_modal_keyboard_handler(handler: Any) -> bool:
+            if handler is None:
+                return False
+            if handler is _on_modal_keyboard_event:
+                return True
+            return (
+                getattr(handler, "__self__", None) is None
+                and getattr(handler, "__name__", "") == "_on_modal_keyboard_event"
+            )
+
+        def _bind_modal_focus_tracker(control: Any) -> None:
+            if control is None:
+                return
+            tracked_controls = modal_focus_state.get("tracked_controls")
+            if not isinstance(tracked_controls, set):
+                tracked_controls = set()
+                modal_focus_state["tracked_controls"] = tracked_controls
+            control_id = id(control)
+            if control_id in tracked_controls:
+                return
+            if not hasattr(control, "on_focus"):
+                return
+            original_on_focus = getattr(control, "on_focus", None)
+
+            def _tracked_focus(event: Any, ctrl: Any = control, original: Any = original_on_focus) -> None:
+                modal_focus_state["current_control"] = ctrl
+                ordered_controls = keyboard_nav_state.get("all", [])
+                if ctrl in ordered_controls:
+                    modal_focus_state["cursor_index"] = ordered_controls.index(ctrl)
+                if callable(original):
+                    try:
+                        original(event)
+                    except Exception:
+                        logger.debug("Fallo handler original on_focus en modal comprobante", exc_info=True)
+
+            try:
+                _maybe_set(control, "on_focus", _tracked_focus)
+                tracked_controls.add(control_id)
+            except Exception:
+                pass
 
         def _list_line_rows() -> List[Any]:
             try:
                 return list(lines_container.controls)
             except Exception:
                 return []
+
+        def _any_comprobante_async_select_open() -> bool:
+            tracked_selects: List[Any] = [dropdown_entidad, dropdown_lista_global]
+            for row in _list_line_rows():
+                row_map = getattr(row, "data", None) or {}
+                tracked_selects.extend([row_map.get("art_drop"), row_map.get("lista_drop")])
+
+            for control in tracked_selects:
+                dialog = getattr(control, "_dialog", None)
+                if dialog is not None and bool(getattr(dialog, "visible", False)):
+                    return True
+            return False
 
         def _modal_action_buttons_in_order() -> List[Any]:
             return [
@@ -9201,10 +9290,13 @@ def main(page: ft.Page) -> None:
                     if is_placeholder_row and line_control is not None:
                         placeholder_line_control_ids.add(id(line_control))
 
+            # Add line button (visually right after the items grid)
+            _append(btn_add_line)
+
             # Footer
             for control in [
-                auto_valor_sync,
                 field_valor_declarado,
+                auto_valor_sync,
                 field_descuento_global_pct,
                 field_descuento_global_imp,
                 manual_mode,
@@ -9216,7 +9308,6 @@ def main(page: ft.Page) -> None:
 
             # Actions
             for control in [
-                btn_add_line,
                 btn_modal_print,
                 btn_modal_confirm,
                 btn_modal_afip,
@@ -9226,6 +9317,16 @@ def main(page: ft.Page) -> None:
                 _append(control)
 
             keyboard_nav_state["all"] = ordered_controls
+            current_control = modal_focus_state.get("current_control")
+            if current_control in ordered_controls:
+                modal_focus_state["cursor_index"] = ordered_controls.index(current_control)
+            else:
+                cursor_index = modal_focus_state.get("cursor_index")
+                if isinstance(cursor_index, int):
+                    if ordered_controls:
+                        modal_focus_state["cursor_index"] = max(0, min(cursor_index, len(ordered_controls) - 1))
+                    else:
+                        modal_focus_state["cursor_index"] = None
             capture_controls = [
                 ctrl
                 for ctrl in ordered_controls
@@ -9237,6 +9338,36 @@ def main(page: ft.Page) -> None:
 
             for index, control in enumerate(ordered_controls, start=1):
                 _set_focus_tab_index(control, index)
+                _bind_modal_focus_tracker(control)
+
+        def _focus_next_modal_control(reverse: bool = False) -> bool:
+            _refresh_keyboard_navigation_order()
+            ordered_controls = keyboard_nav_state.get("all", [])
+            if not ordered_controls:
+                return False
+
+            current_control = modal_focus_state.get("current_control")
+            current_index: Optional[int] = None
+            if current_control in ordered_controls:
+                current_index = ordered_controls.index(current_control)
+            else:
+                cursor_index = modal_focus_state.get("cursor_index")
+                if isinstance(cursor_index, int) and 0 <= cursor_index < len(ordered_controls):
+                    current_index = cursor_index
+
+            delta = -1 if reverse else 1
+            if current_index is None:
+                # If we don't have a reliable current index, start from the edge
+                # and let the circular scan find the first focusable target.
+                current_index = 0 if reverse else -1
+
+            controls_count = len(ordered_controls)
+            for step in range(1, controls_count + 1):
+                target_index = (current_index + (delta * step)) % controls_count
+                target = ordered_controls[target_index]
+                if _focus_control(target):
+                    return True
+            return False
 
         def _focus_next_capture_from(current_control: Any) -> bool:
             _refresh_keyboard_navigation_order()
@@ -9257,6 +9388,50 @@ def main(page: ft.Page) -> None:
             else:
                 next_control = capture_controls[0]
             return _focus_control(next_control)
+
+        def _on_modal_keyboard_event(event: Any) -> None:
+            if not form_dialog.visible:
+                _forward_modal_previous_keyboard_handler(event)
+                return
+            if not _is_modal_keydown_event(event):
+                _forward_modal_previous_keyboard_handler(event)
+                return
+
+            key = str(getattr(event, "key", "") or "").strip().lower().replace("_", " ").replace("-", " ")
+            if key in {"tab"}:
+                shift_raw = getattr(event, "shift", False)
+                if isinstance(shift_raw, str):
+                    reverse = shift_raw.strip().lower() in {"true", "1", "yes"}
+                else:
+                    reverse = bool(shift_raw)
+                if _any_comprobante_async_select_open():
+                    return
+                _focus_next_modal_control(reverse=reverse)
+                return
+
+            _forward_modal_previous_keyboard_handler(event)
+
+        def _install_modal_keyboard_handler() -> None:
+            current_handler = getattr(page, "on_keyboard_event", None)
+            if not _is_own_modal_keyboard_handler(current_handler):
+                modal_focus_state["prev_keyboard_handler"] = current_handler
+            modal_focus_state["keyboard_page_ref"] = page
+            _maybe_set(page, "on_keyboard_event", _on_modal_keyboard_event)
+
+        def _restore_modal_keyboard_handler() -> None:
+            keyboard_page = modal_focus_state.get("keyboard_page_ref")
+            if keyboard_page is None:
+                modal_focus_state["prev_keyboard_handler"] = None
+                return
+            try:
+                current_handler = getattr(keyboard_page, "on_keyboard_event", None)
+                if _is_own_modal_keyboard_handler(current_handler):
+                    _maybe_set(keyboard_page, "on_keyboard_event", modal_focus_state.get("prev_keyboard_handler"))
+            except Exception:
+                logger.debug("No se pudo restaurar keyboard handler del modal comprobante", exc_info=True)
+            finally:
+                modal_focus_state["keyboard_page_ref"] = None
+                modal_focus_state["prev_keyboard_handler"] = None
 
         def _chain_handler_and_focus(handler: Optional[Callable[[Any], Any]], current_control: Any) -> Callable[[Any], None]:
             def _wrapped(event: Any) -> None:
@@ -10167,13 +10342,49 @@ def main(page: ft.Page) -> None:
                  pass
             _refresh_keyboard_navigation_order()
         
+        def _resolve_line_focus_target(row_to_remove: Any) -> Optional[Any]:
+            rows = _list_line_rows()
+            if row_to_remove not in rows:
+                if _is_focus_eligible(btn_add_line):
+                    return btn_add_line
+                return _get_preferred_action_button()
+
+            row_index = rows.index(row_to_remove)
+
+            def _first_focusable_row_control(row: Any) -> Optional[Any]:
+                row_map = getattr(row, "data", None) or {}
+                for key in ("art_drop", "lista_drop", "cant_field", "price_field", "iva_field", "desc_pct_field", "desc_imp_field", "delete_btn"):
+                    candidate = row_map.get(key)
+                    if _is_focus_eligible(candidate):
+                        return candidate
+                return None
+
+            if row_index + 1 < len(rows):
+                candidate = _first_focusable_row_control(rows[row_index + 1])
+                if candidate is not None:
+                    return candidate
+            if row_index > 0:
+                candidate = _first_focusable_row_control(rows[row_index - 1])
+                if candidate is not None:
+                    return candidate
+            if _is_focus_eligible(btn_add_line):
+                return btn_add_line
+            return _get_preferred_action_button()
+
         def _remove_line(row_to_remove):
             if is_read_only_ref["value"]:
+                return
+            focus_target = _resolve_line_focus_target(row_to_remove)
+            if row_to_remove not in lines_container.controls:
+                if focus_target is not None:
+                    _focus_control(focus_target)
                 return
             lines_container.controls.remove(row_to_remove)
             lines_container.update()
             _recalc_total()
             _refresh_keyboard_navigation_order()
+            if focus_target is not None:
+                _focus_control(focus_target)
 
         def _on_global_list_change(e):
             """When global price list changes, update all line items that don't have a specific list set."""
@@ -10619,6 +10830,12 @@ def main(page: ft.Page) -> None:
                 return
             _confirm_afip_authorization(doc_row, close_after=False, on_success=_handle_modal_doc_state_change)
 
+        def _close_comprobante_form(e: Any = None) -> None:
+            _restore_modal_keyboard_handler()
+            _maybe_set(main_app_container, "disabled", False)
+            close_form(e)
+            _safe_update_control(main_app_container)
+
         btn_add_line = ft.ElevatedButton(
             "Agregar Línea",
             icon=ft.icons.ADD,
@@ -10666,7 +10883,7 @@ def main(page: ft.Page) -> None:
                 color=ft.Colors.WHITE,
             ),
         )
-        btn_modal_close = _cancel_button("Cerrar", on_click=close_form)
+        btn_modal_close = _cancel_button("Cerrar", on_click=_close_comprobante_form)
         _style_comprobante_action_buttons()
         actions_row = ft.Row(
             [
@@ -10685,7 +10902,7 @@ def main(page: ft.Page) -> None:
                     ft.Container(height=20), # Header Spacer
                     ft.Row([
                         ft.Text("Nuevo Comprobante", size=20, weight=ft.FontWeight.BOLD),
-                        ft.IconButton(ft.icons.CLOSE, on_click=close_form)
+                        ft.IconButton(ft.icons.CLOSE, on_click=_close_comprobante_form)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Row([field_fecha, field_vto, dropdown_tipo], spacing=10),
                     ft.Row([dropdown_entidad, field_saldo], spacing=10),
@@ -10743,6 +10960,8 @@ def main(page: ft.Page) -> None:
         # Clear native dialog just in case
         page.dialog = None
 
+        _maybe_set(main_app_container, "disabled", True)
+        _install_modal_keyboard_handler()
         form_dialog.visible = True
         if form_dialog in page.overlay:
             page.overlay.remove(form_dialog)

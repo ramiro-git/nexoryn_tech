@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import flet as ft
@@ -120,6 +121,12 @@ class AsyncSelect(ft.Column):
         self._cache: Dict[str, Tuple[List[Dict[str, Any]], bool]] = {}
         self._disabled = bool(disabled)
         self._tab_index: Optional[int] = None
+        self._active_index = -1
+        self._previous_keyboard_handler: Optional[Callable[[Any], None]] = None
+        self._keyboard_handler_page: Optional[ft.Page] = None
+        self._last_nav_ts = 0.0
+        self._nav_min_interval_ms = 22
+        self._pending_scroll_task: Optional[asyncio.Task] = None
 
         # Controls placeholders
         self._search_field: Optional[ft.TextField] = None
@@ -599,6 +606,278 @@ class AsyncSelect(ft.Column):
 
         self._safe_update(self, "option_click")
 
+    def _normalize_active_index(self) -> None:
+        if not self._items:
+            self._active_index = -1
+            return
+        if self._active_index < 0 or self._active_index >= len(self._items):
+            self._active_index = 0
+
+    def _select_active_option(self) -> None:
+        self._normalize_active_index()
+        if self._active_index < 0 or self._active_index >= len(self._items):
+            return
+        self._on_option_click(self._items[self._active_index])
+
+    def _on_search_submit(self, _e: Any) -> None:
+        self._select_active_option()
+
+    def _is_keydown_event(self, event: Any) -> bool:
+        event_type = str(getattr(event, "event_type", "") or getattr(event, "type", "")).strip().lower()
+        if event_type in {"keyup", "up", "key_up"}:
+            return False
+        if event_type in {"keydown", "down", "key_down"}:
+            return True
+        # Unknown/empty event types are treated as keydown to avoid losing
+        # keyboard navigation events on some Flet runtimes/platforms.
+        return True
+
+    def _forward_previous_keyboard_handler(self, event: Any) -> None:
+        if callable(self._previous_keyboard_handler):
+            try:
+                self._previous_keyboard_handler(event)
+            except Exception:
+                logger.debug("AsyncSelect keyboard handler previo falló", exc_info=True)
+
+    def _is_own_keyboard_handler(self, handler: Any) -> bool:
+        if handler is None:
+            return False
+        if handler is self._on_page_keyboard_event:
+            return True
+        return (
+            getattr(handler, "__self__", None) is self
+            and getattr(handler, "__func__", None) is AsyncSelect._on_page_keyboard_event
+        )
+
+    def _is_selected_index(self, index: int) -> bool:
+        if index < 0 or index >= len(self._items):
+            return False
+        return str(self._items[index].get("value")) == str(self._value)
+
+    def _active_bgcolor_for_index(self, index: int) -> Optional[str]:
+        if index == self._active_index:
+            return "#DBEAFE"
+        if self._is_selected_index(index):
+            return "#EEF2FF"
+        return None
+
+    def _option_key(self, index: int) -> str:
+        return f"async-select-opt-{index}"
+
+    def _ensure_active_option_visible(self) -> None:
+        if self._active_index < 0 or self._options_list is None:
+            return
+        scroll_fn = getattr(self._options_list, "scroll_to", None)
+        if not callable(scroll_fn):
+            return
+
+        option_key = self._option_key(self._active_index)
+        try:
+            scroll_fn(key=option_key, duration=0)
+            return
+        except Exception:
+            pass
+
+        offset = max(0, int(self._active_index * 56))
+        try:
+            scroll_fn(offset=offset, duration=0)
+            return
+        except Exception:
+            pass
+        try:
+            scroll_fn(offset=offset)
+        except Exception:
+            pass
+
+    def _cancel_pending_scroll_task(self) -> None:
+        task = self._pending_scroll_task
+        if task is None:
+            return
+        cancel_fn = getattr(task, "cancel", None)
+        if callable(cancel_fn):
+            try:
+                cancel_fn()
+            except Exception:
+                pass
+        self._pending_scroll_task = None
+
+    def _schedule_active_option_scroll(self) -> None:
+        page = self._get_page()
+        if page is None:
+            self._ensure_active_option_visible()
+            return
+        self._cancel_pending_scroll_task()
+
+        async def _do_scroll() -> None:
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                return
+            if not self._dialog or not self._dialog.visible:
+                return
+            self._ensure_active_option_visible()
+
+        self._pending_scroll_task = page.run_task(_do_scroll)
+
+    def _apply_active_visual_state(self, previous_index: Optional[int], ensure_visible: bool = False) -> None:
+        controls = getattr(self._options_list, "controls", None)
+        if not isinstance(controls, list):
+            return
+
+        if len(controls) != len(self._items):
+            self._update_dialog_ui()
+            if ensure_visible:
+                self._schedule_active_option_scroll()
+            return
+
+        dirty_indexes: List[int] = []
+        for idx in (previous_index, self._active_index):
+            if isinstance(idx, int) and 0 <= idx < len(controls) and idx not in dirty_indexes:
+                dirty_indexes.append(idx)
+
+        if dirty_indexes:
+            for idx in dirty_indexes:
+                self._safe_set(controls[idx], "bgcolor", self._active_bgcolor_for_index(idx))
+            self._safe_update(self._options_list, "active_visual_state")
+
+        if ensure_visible:
+            self._schedule_active_option_scroll()
+
+    def _move_active_index(self, step: int) -> bool:
+        if not self._items:
+            return False
+        self._normalize_active_index()
+        previous_index = self._active_index
+        if self._active_index < 0:
+            self._active_index = 0
+            self._apply_active_visual_state(previous_index, ensure_visible=True)
+            return True
+
+        max_index = len(self._items) - 1
+        if step > 0 and self._active_index >= max_index:
+            if self._has_more and not self._loading_more and not self._loading:
+                page = self._get_page()
+                if page:
+                    page.run_task(self._load_more_from_keyboard, self._active_index)
+                    return True
+            if previous_index != max_index:
+                self._active_index = max_index
+                self._apply_active_visual_state(previous_index, ensure_visible=True)
+            return True
+
+        if step < 0 and self._active_index <= 0:
+            if previous_index != 0:
+                self._active_index = 0
+                self._apply_active_visual_state(previous_index, ensure_visible=True)
+            return True
+
+        self._active_index = max(0, min(self._active_index + step, max_index))
+        if self._active_index == previous_index:
+            return True
+        self._apply_active_visual_state(previous_index, ensure_visible=True)
+        return True
+
+    async def _load_more_from_keyboard(self, current_index: int) -> None:
+        if self._loading_more or self._loading or not self._has_more:
+            return
+        old_len = len(self._items)
+        await self._load_items(self._query, old_len, False)
+        new_len = len(self._items)
+        previous_index = current_index
+        if new_len <= 0:
+            self._active_index = -1
+        elif new_len > old_len:
+            self._active_index = min(max(current_index + 1, 0), new_len - 1)
+        else:
+            self._active_index = min(max(current_index, 0), new_len - 1)
+        if self._active_index != previous_index:
+            self._apply_active_visual_state(previous_index, ensure_visible=True)
+        else:
+            self._schedule_active_option_scroll()
+
+    def _on_page_keyboard_event(self, event: Any) -> None:
+        if not self._dialog or not self._dialog.visible:
+            self._forward_previous_keyboard_handler(event)
+            return
+        if not self._is_keydown_event(event):
+            self._forward_previous_keyboard_handler(event)
+            return
+
+        key = str(getattr(event, "key", "") or "").strip().lower().replace("_", " ").replace("-", " ")
+        consumed = False
+        arrow_keys = {"arrow down", "arrowdown", "down", "arrow up", "arrowup", "up"}
+        if key in arrow_keys:
+            now = time.monotonic()
+            min_interval_s = max(0, int(getattr(self, "_nav_min_interval_ms", 22) or 0)) / 1000.0
+            if (now - self._last_nav_ts) < min_interval_s:
+                consumed = True
+            else:
+                self._last_nav_ts = now
+                if key in {"arrow down", "arrowdown", "down"}:
+                    consumed = self._move_active_index(1)
+                else:
+                    consumed = self._move_active_index(-1)
+
+        if not consumed:
+            self._forward_previous_keyboard_handler(event)
+
+    def _install_keyboard_handler(self, page: Optional[ft.Page]) -> None:
+        if page is None:
+            return
+        current_handler = getattr(page, "on_keyboard_event", None)
+        if not self._is_own_keyboard_handler(current_handler):
+            self._previous_keyboard_handler = current_handler
+        self._keyboard_handler_page = page
+        try:
+            self._safe_set(page, "on_keyboard_event", self._on_page_keyboard_event)
+        except Exception:
+            logger.debug("AsyncSelect no pudo instalar keyboard handler", exc_info=True)
+
+    def _restore_keyboard_handler(self) -> None:
+        page = self._keyboard_handler_page
+        if page is None:
+            self._previous_keyboard_handler = None
+            return
+        try:
+            if self._is_own_keyboard_handler(getattr(page, "on_keyboard_event", None)):
+                self._safe_set(page, "on_keyboard_event", self._previous_keyboard_handler)
+        except Exception:
+            logger.debug("AsyncSelect no pudo restaurar keyboard handler", exc_info=True)
+        finally:
+            self._keyboard_handler_page = None
+            self._previous_keyboard_handler = None
+
+    def _focus_search_field(self, page: Optional[ft.Page], retries: int = 0, delay: float = 0.04) -> None:
+        if self._search_field is None:
+            return
+        focus_fn = getattr(self._search_field, "focus", None)
+        try:
+            if callable(focus_fn):
+                focus_fn()
+            elif page and hasattr(page, "set_focus"):
+                page.set_focus(self._search_field)
+        except Exception:
+            pass
+
+        if page is None or retries <= 0:
+            return
+
+        async def _refocus() -> None:
+            for _ in range(retries):
+                await asyncio.sleep(delay)
+                if not self._dialog or not self._dialog.visible:
+                    return
+                try:
+                    focus_fn_local = getattr(self._search_field, "focus", None)
+                    if callable(focus_fn_local):
+                        focus_fn_local()
+                    elif hasattr(page, "set_focus"):
+                        page.set_focus(self._search_field)
+                except Exception:
+                    continue
+
+        page.run_task(_refocus)
+
     def _on_retry(self, _e):
         self._cache.clear()
         page = self._get_page()
@@ -623,6 +902,12 @@ class AsyncSelect(ft.Column):
         self._error = None
         self._loading = False
         self._loading_more = False
+        self._active_index = -1
+        self._last_nav_ts = 0.0
+        self._cancel_pending_scroll_task()
+
+        if self._search_field is not None:
+            self._search_field.value = ""
 
         cache_key = self._get_cache_key("", 0)
         if cache_key in self._cache:
@@ -639,6 +924,7 @@ class AsyncSelect(ft.Column):
             self._dialog_card_container.width = self._resolve_dialog_width()
         
         if page:
+            self._install_keyboard_handler(page)
             # IMPORTANT: Clear Flet's internal dialog to avoid conflicts
             # Setting it to None and ensuring open=False prevents Flet from closing other things
             if hasattr(page, 'dialog') and page.dialog:
@@ -656,6 +942,7 @@ class AsyncSelect(ft.Column):
             # Show the manual modal
             self._dialog.visible = True
             self._update_dialog_ui()
+            self._focus_search_field(page, retries=4, delay=0.05)
             
             # Start loading (only if cache is empty)
             if self._loading:
@@ -707,6 +994,8 @@ class AsyncSelect(ft.Column):
     def _close_dialog(self, _e=None):
         if self._dialog:
             self._dialog.visible = False
+            self._cancel_pending_scroll_task()
+            self._restore_keyboard_handler()
             try:
                 page = self._get_page()
                 if page:
@@ -730,6 +1019,7 @@ class AsyncSelect(ft.Column):
         self._search_field = ft.TextField(
             hint_text="Buscar...",
             on_change=self._on_search_change,
+            on_submit=self._on_search_submit,
             border_color="#E2E8F0",
             focused_border_color=self.focused_border_color,
             border_radius=8,
@@ -828,25 +1118,38 @@ class AsyncSelect(ft.Column):
             self._error_row.controls[1].value = f"Error: {self._error[:30]}..."
             
         self._empty_text.visible = not self._loading and not self._error and not self._items
-        
+        self._normalize_active_index()
+
         self._options_list.controls = [
-            self._build_option_item(opt) for opt in self._items
+            self._build_option_item(opt, index) for index, opt in enumerate(self._items)
         ]
         
         page = self._get_page()
         if page:
             self._safe_update(page, "dialog_update")
 
-    def _build_option_item(self, option):
+    def _build_option_item(self, option, index: int):
         is_selected = str(option.get("value")) == str(self._value)
         option_label = str(option.get("label", ""))
         option_tooltip = str(option.get("tooltip", "")).strip() or option_label
+        base_bgcolor = self._active_bgcolor_for_index(index)
 
         def on_item_hover(e):
             hovered_control = getattr(e, "control", None)
             if hovered_control is None:
                 return
-            hovered_control.bgcolor = "#F1F5F9" if e.data == "true" else ("#EEF2FF" if is_selected else None)
+            hovered_data = getattr(hovered_control, "data", None) or {}
+            hovered_index_raw = hovered_data.get("index", index) if isinstance(hovered_data, dict) else index
+            try:
+                hovered_index = int(hovered_index_raw)
+            except Exception:
+                hovered_index = index
+            if hovered_index == self._active_index:
+                hovered_control.bgcolor = "#DBEAFE"
+            elif e.data == "true":
+                hovered_control.bgcolor = "#F1F5F9"
+            else:
+                hovered_control.bgcolor = "#EEF2FF" if self._is_selected_index(hovered_index) else None
             # Hover events can arrive after the option row was unmounted.
             # Use safe update to avoid "Control must be added to the page first".
             self._safe_update(hovered_control, "option_hover")
@@ -868,5 +1171,7 @@ class AsyncSelect(ft.Column):
             border_radius=8,
             on_click=lambda _: self._on_option_click(option),
             on_hover=on_item_hover,
-            bgcolor="#EEF2FF" if is_selected else None,
+            bgcolor=base_bgcolor,
+            key=self._option_key(index),
+            data={"index": index},
         )

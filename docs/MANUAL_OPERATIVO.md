@@ -41,6 +41,8 @@ La barra lateral agrupa las vistas principales operativas:
 - `Doble clic`: edición inline en columnas habilitadas.
 - `Enter`: confirma campo o acción enfocada.
 - `Tab / Shift + Tab`: navegación por campos en formularios.
+- En `AsyncSelect`: `ArrowDown / ArrowUp` navega resultados.
+- En `AsyncSelect`: `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.
 - `Esc`: cerrar modal o cancelar acción activa.
 
@@ -130,6 +132,7 @@ La vista **Comprobantes** concentra ventas, compras y presupuestos.
 
 - El depósito se inicializa automáticamente con el primero disponible.
 - La lista de precios global puede autocompletarse según la entidad (si tiene lista asignada).
+- En el modal de comprobantes, `Tab / Shift + Tab` quedan confinados al modal mientras está abierto.
 
 
 # 7. Facturación Electrónica (AFIP/ARCA)
@@ -296,6 +299,9 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 
 - `Enter`: avanzar/confirmar campo.
 - `Tab / Shift + Tab`: moverse entre controles.
+- En comprobantes, `Tab / Shift + Tab` no sale del modal mientras esté abierto.
+- En `AsyncSelect`, `ArrowDown / ArrowUp` mueve el resultado activo.
+- En `AsyncSelect`, `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.
 - `Esc`: cerrar modal o cancelar.
 - `Shift + Rueda`: scroll horizontal en tablas.
