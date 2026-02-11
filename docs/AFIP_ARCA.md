@@ -82,6 +82,8 @@ AFIP_PUNTO_VENTA=3
   1. payload del `qr_data` de AFIP (`ptoVta`, `nroCmp`)
   2. datos locales del documento (`punto_venta`, `numero_serie`)
 - La opción de impresión con importes ocultos se mantiene:
+  - por defecto se imprimen precios e importes (`Incluir precios e importes` activo)
+  - para excepciones se puede desmarcar y ocultar montos
   - montos en `---`
   - datos fiscales no monetarios visibles
 

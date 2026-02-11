@@ -66,7 +66,7 @@ try:
     )
     from desktop_app.components.toast import ToastManager
     from desktop_app.components.mass_update_view import MassUpdateView
-    from desktop_app.services.print_service import generate_pdf_and_open
+    from desktop_app.services.print_service import generate_pdf_and_open, generate_pdf_and_print
     from desktop_app.services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal
     from desktop_app.services.article_price_autocalc import (
         calc_pct_from_cost_price,
@@ -100,7 +100,7 @@ except ImportError:
         SimpleFilterConfig,
     )
     from components.mass_update_view import MassUpdateView # type: ignore
-    from services.print_service import generate_pdf_and_open # type: ignore
+    from services.print_service import generate_pdf_and_open, generate_pdf_and_print # type: ignore
     from services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal  # type: ignore
     from services.article_price_autocalc import calc_pct_from_cost_price, calc_price_from_cost_pct, normalize_price_tipo  # type: ignore
     from services.number_locale import format_currency, format_percent, normalize_input_value, parse_locale_number  # type: ignore
@@ -833,7 +833,7 @@ def main(page: ft.Page) -> None:
         except Exception:
             return {}
 
-    def print_document_external(doc_id: int, *, include_prices: bool = True) -> None:
+    def print_document_external(doc_id: int, *, include_prices: bool = True, copies: int = 1) -> None:
         """Global helper to print an invoice/receipt document."""
         try:
             if not db: return 
@@ -929,16 +929,23 @@ def main(page: ft.Page) -> None:
                 item_copy["afip_subtotal_con_iva"] = subtotal_con_iva
                 items_data.append(item_copy)
 
-            # Generate PDF with company config
-            generate_pdf_and_open(
+            # Generate PDF and print on default Windows printer (with fallback to open PDF).
+            _, printed_directly = generate_pdf_and_print(
                 doc,
                 ent or {},
                 items_data,
                 kind="invoice",
                 company_config=get_company_config(),
                 show_prices=include_prices,
+                copies=copies,
             )
-            show_toast("PDF generado correctamente.", kind="success")
+            if printed_directly:
+                show_toast("Comprobante enviado a impresión.", kind="success")
+            else:
+                show_toast(
+                    "No se pudo imprimir directo (revisá impresora predeterminada o app PDF asociada). Se abrió el PDF para impresión manual.",
+                    kind="warning",
+                )
             
         except Exception as e:
             show_toast(f"Error al imprimir: {e}", kind="error")
@@ -947,7 +954,7 @@ def main(page: ft.Page) -> None:
         """Display print options with price visibility toggle before generating PDF."""
         include_prices_switch = ft.Switch(
             label="Incluir precios e importes",
-            value=False,
+            value=True,
             active_color=COLOR_ACCENT,
         )
         
@@ -993,8 +1000,15 @@ def main(page: ft.Page) -> None:
         ]
         _safe_page_open(page, print_options_dialog, "ask_print_options")
 
-    def request_invoice_print(doc_id: int) -> None:
-        ask_print_options("comprobante", lambda include_prices: print_document_external(int(doc_id), include_prices=include_prices))
+    def request_invoice_print(doc_id: int, *, copies: int = 1) -> None:
+        ask_print_options(
+            "comprobante",
+            lambda include_prices: print_document_external(
+                int(doc_id),
+                include_prices=include_prices,
+                copies=copies,
+            ),
+        )
 
 
     # --- SHARED DIALOGS ---
@@ -1301,6 +1315,29 @@ def main(page: ft.Page) -> None:
     confirm_dialog = ft.AlertDialog(modal=True)
     print_options_dialog = ft.AlertDialog(modal=True)
     discount_limit_dialog = ft.AlertDialog(modal=True)
+    confirm_dialog_state: Dict[str, Any] = {"on_confirm": None, "is_open": False}
+
+    def _is_confirm_dialog_open() -> bool:
+        return bool(
+            confirm_dialog_state.get("is_open")
+            or getattr(confirm_dialog, "open", False)
+            or getattr(confirm_dialog, "visible", False)
+        )
+
+    def _confirm_dialog_from_shortcut() -> bool:
+        if not _is_confirm_dialog_open():
+            return False
+        on_confirm = confirm_dialog_state.get("on_confirm")
+        if not callable(on_confirm):
+            return False
+        confirm_dialog_state["on_confirm"] = None
+        confirm_dialog_state["is_open"] = False
+        _safe_page_close(page, confirm_dialog, "ask_confirm_shortcut")
+        try:
+            on_confirm()
+        except Exception as exc:
+            show_toast(f"Error: {exc}", kind="error")
+        return True
 
     def show_discount_limit_modal(message: str) -> None:
         def close(_: Any = None) -> None:
@@ -1325,6 +1362,8 @@ def main(page: ft.Page) -> None:
 
     def ask_confirm(title: str, message: str, confirm_label: str, on_confirm, button_color: str = None) -> None:
         def close(_: Any) -> None:
+            confirm_dialog_state["on_confirm"] = None
+            confirm_dialog_state["is_open"] = False
             _safe_page_close(page, confirm_dialog, "ask_confirm")
 
         def do_confirm(_: Any) -> None:
@@ -1335,6 +1374,8 @@ def main(page: ft.Page) -> None:
                 show_toast(f"Error: {exc}", kind="error")
 
         final_color = button_color if button_color else COLOR_ERROR
+        confirm_dialog_state["on_confirm"] = on_confirm
+        confirm_dialog_state["is_open"] = True
         confirm_dialog.title = ft.Text(title, size=20, weight=ft.FontWeight.BOLD)
         confirm_dialog.content = ft.Container(
             content=ft.Text(message, size=14, color=COLOR_TEXT_MUTED),
@@ -1351,7 +1392,9 @@ def main(page: ft.Page) -> None:
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
             ),
         ]
-        _safe_page_open(page, confirm_dialog, "ask_confirm")
+        opened = _safe_page_open(page, confirm_dialog, "ask_confirm")
+        if not opened:
+            confirm_dialog_state["is_open"] = False
 
     marcas_values: List[str] = []
     rubros_values: List[str] = []
@@ -5074,7 +5117,7 @@ def main(page: ft.Page) -> None:
         ask_confirm(
             "Confirmar Comprobante",
             "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
-            "Confirmar",
+            "Confirmar [F10]",
             on_confirm_real,
             button_color=COLOR_SUCCESS,
         )
@@ -5161,7 +5204,7 @@ def main(page: ft.Page) -> None:
         ask_confirm(
             "Confirmar Comprobante",
             "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
-            "Confirmar",
+            "Confirmar [F10]",
             on_confirm_real,
             button_color=COLOR_SUCCESS,
         )
@@ -8725,6 +8768,7 @@ def main(page: ft.Page) -> None:
         btn_modal_confirm: Optional[ft.ElevatedButton] = None
         btn_modal_afip: Optional[ft.ElevatedButton] = None
         btn_modal_save: Optional[ft.ElevatedButton] = None
+        btn_modal_reset: Optional[ft.ElevatedButton] = None
         btn_modal_close: Optional[ft.ElevatedButton] = None
             
         if doc_data:
@@ -8917,7 +8961,7 @@ def main(page: ft.Page) -> None:
                 field_valor_declarado.read_only = True
             else:
                 field_valor_declarado.read_only = False
-            page.update()
+            _safe_update_multiple(field_valor_declarado, auto_valor_sync)
             _refresh_keyboard_navigation_order()
         
         auto_valor_sync.on_change = _on_auto_sync_change
@@ -9020,6 +9064,15 @@ def main(page: ft.Page) -> None:
             "prev_keyboard_handler": None,
             "keyboard_page_ref": None,
             "tracked_controls": set(),
+        }
+        shortcut_state: Dict[str, Any] = {
+            "f9_pressed": False,
+            "last_f9_ts": 0.0,
+            "last_f10_ts": 0.0,
+            "f10_pending_token": 0,
+            "f10_token_seq": 0,
+            "f10_double_window_s": 0.28,
+            "confirming": False,
         }
 
         def _control_name(control: Any) -> str:
@@ -9215,6 +9268,7 @@ def main(page: ft.Page) -> None:
                 btn_modal_print,
                 btn_modal_confirm,
                 btn_modal_afip,
+                btn_modal_reset,
                 btn_modal_close,
                 btn_modal_save,
             ]
@@ -9232,6 +9286,7 @@ def main(page: ft.Page) -> None:
             _style_comprobante_button_focus(btn_modal_print)
             _style_comprobante_button_focus(btn_modal_confirm)
             _style_comprobante_button_focus(btn_modal_afip)
+            _style_comprobante_button_focus(btn_modal_reset)
             _style_comprobante_button_focus(btn_modal_close)
             _style_comprobante_button_focus(btn_modal_save, primary=True)
 
@@ -9321,6 +9376,7 @@ def main(page: ft.Page) -> None:
                 btn_modal_print,
                 btn_modal_confirm,
                 btn_modal_afip,
+                btn_modal_reset,
                 btn_modal_close,
                 btn_modal_save,
             ]:
@@ -9399,15 +9455,31 @@ def main(page: ft.Page) -> None:
                 next_control = capture_controls[0]
             return _focus_control(next_control)
 
+        def _schedule_single_f10_confirmation(token: int) -> None:
+            def _delayed() -> None:
+                time.sleep(float(shortcut_state.get("f10_double_window_s") or 0.28))
+                if token != int(shortcut_state.get("f10_pending_token") or 0):
+                    return
+                shortcut_state["f10_pending_token"] = 0
+                _run_on_ui(_confirm_current_document)
+
+            _run_in_background(_delayed)
+
         def _on_modal_keyboard_event(event: Any) -> None:
             if not form_dialog.visible:
                 _forward_modal_previous_keyboard_handler(event)
                 return
+
+            key = str(getattr(event, "key", "") or "").strip().lower().replace("_", " ").replace("-", " ")
+            if key == "f9" and not _is_modal_keydown_event(event):
+                shortcut_state["f9_pressed"] = False
+                _forward_modal_previous_keyboard_handler(event)
+                return
+
             if not _is_modal_keydown_event(event):
                 _forward_modal_previous_keyboard_handler(event)
                 return
 
-            key = str(getattr(event, "key", "") or "").strip().lower().replace("_", " ").replace("-", " ")
             if key in {"tab"}:
                 shift_raw = getattr(event, "shift", False)
                 if isinstance(shift_raw, str):
@@ -9417,6 +9489,59 @@ def main(page: ft.Page) -> None:
                 if _any_comprobante_async_select_open():
                     return
                 _focus_next_modal_control(reverse=reverse)
+                return
+
+            if key in {"f12"}:
+                _save()
+                return
+
+            if key in {"f10"}:
+                if _confirm_dialog_from_shortcut():
+                    shortcut_state["f10_pending_token"] = 0
+                    shortcut_state["last_f10_ts"] = 0.0
+                    return
+                repeat_raw = getattr(event, "repeat", False)
+                if isinstance(repeat_raw, str):
+                    is_repeat = repeat_raw.strip().lower() in {"true", "1", "yes"}
+                else:
+                    is_repeat = bool(repeat_raw)
+                if is_repeat:
+                    return
+                now_ts = time.monotonic()
+                last_f10_ts = float(shortcut_state.get("last_f10_ts") or 0.0)
+                window_s = float(shortcut_state.get("f10_double_window_s") or 0.28)
+                if 0 < (now_ts - last_f10_ts) <= window_s:
+                    shortcut_state["last_f10_ts"] = 0.0
+                    shortcut_state["f10_pending_token"] = 0
+                    _confirm_current_document(force_direct=True)
+                    return
+
+                shortcut_state["last_f10_ts"] = now_ts
+                token = int(shortcut_state.get("f10_token_seq") or 0) + 1
+                shortcut_state["f10_token_seq"] = token
+                shortcut_state["f10_pending_token"] = token
+                _schedule_single_f10_confirmation(token)
+                return
+
+            if key in {"f11"}:
+                _reset_comprobante_form()
+                return
+
+            if key in {"f9"}:
+                now_ts = time.monotonic()
+                last_ts = float(shortcut_state.get("last_f9_ts") or 0.0)
+                if shortcut_state.get("f9_pressed") and (now_ts - last_ts) < 0.45:
+                    return
+                repeat_raw = getattr(event, "repeat", False)
+                if isinstance(repeat_raw, str):
+                    is_repeat = repeat_raw.strip().lower() in {"true", "1", "yes"}
+                else:
+                    is_repeat = bool(repeat_raw)
+                if is_repeat:
+                    return
+                shortcut_state["f9_pressed"] = True
+                shortcut_state["last_f9_ts"] = now_ts
+                _print_current_document_direct(include_prices=True, copies=1)
                 return
 
             _forward_modal_previous_keyboard_handler(event)
@@ -9549,6 +9674,16 @@ def main(page: ft.Page) -> None:
         def _recalc_total(active_field: Optional[ft.TextField] = None):
             if manual_mode.value: return # Don't overwrite manual edits
 
+            controls_to_update: List[Any] = []
+
+            def _set_value_if_changed(control: Any, new_value: str) -> None:
+                if control is None:
+                    return
+                if str(getattr(control, "value", "")) == str(new_value):
+                    return
+                control.value = new_value
+                controls_to_update.append(control)
+
             calc_items = []
             row_refs = []
             for row in lines_container.controls:
@@ -9599,28 +9734,35 @@ def main(page: ft.Page) -> None:
             for i, priced_item in enumerate(result["items"]):
                 if i >= len(row_refs):
                     break
-                row_refs[i]["total_field"].value = _dec_to_input(priced_item["total_linea"], use_grouping=True)
-                _safe_update_control(row_refs[i]["total_field"])
+                _set_value_if_changed(
+                    row_refs[i]["total_field"],
+                    _dec_to_input(priced_item["total_linea"], use_grouping=True),
+                )
             try:
                 if active_field is not field_descuento_global_pct:
-                    field_descuento_global_pct.value = _dec_to_input(result["descuento_global_porcentaje"], use_grouping=True)
-                    _safe_update_control(field_descuento_global_pct)
+                    _set_value_if_changed(
+                        field_descuento_global_pct,
+                        _dec_to_input(result["descuento_global_porcentaje"], use_grouping=True),
+                    )
                 if active_field is not field_descuento_global_imp:
-                    field_descuento_global_imp.value = _dec_to_input(result["descuento_global_importe"], use_grouping=True)
-                    _safe_update_control(field_descuento_global_imp)
-                sum_desc_lineas.value = _dec_to_input(result["descuento_lineas_importe"], use_grouping=True)
-                sum_desc_global.value = _dec_to_input(result["descuento_global_importe"], use_grouping=True)
-                sum_subtotal.value = _dec_to_input(result["ui_subtotal"], use_grouping=True)
-                sum_iva.value = _dec_to_input(result["ui_iva_total"], use_grouping=True)
-                sum_total.value = _dec_to_input(result["total"], use_grouping=True)
-                sum_saldo.value = _dec_to_input(result["saldo"], use_grouping=True)
+                    _set_value_if_changed(
+                        field_descuento_global_imp,
+                        _dec_to_input(result["descuento_global_importe"], use_grouping=True),
+                    )
+                _set_value_if_changed(sum_desc_lineas, _dec_to_input(result["descuento_lineas_importe"], use_grouping=True))
+                _set_value_if_changed(sum_desc_global, _dec_to_input(result["descuento_global_importe"], use_grouping=True))
+                _set_value_if_changed(sum_subtotal, _dec_to_input(result["ui_subtotal"], use_grouping=True))
+                _set_value_if_changed(sum_iva, _dec_to_input(result["ui_iva_total"], use_grouping=True))
+                _set_value_if_changed(sum_total, _dec_to_input(result["total"], use_grouping=True))
+                _set_value_if_changed(sum_saldo, _dec_to_input(result["saldo"], use_grouping=True))
             except Exception:
                 pass
             
             if auto_valor_sync.value:
-                field_valor_declarado.value = sum_total.value
-                
-            page.update()
+                _set_value_if_changed(field_valor_declarado, str(sum_total.value or "0,00"))
+
+            if controls_to_update:
+                _safe_update_multiple(*controls_to_update)
 
         def toggle_manual(e):
              is_manual = manual_mode.value
@@ -9630,7 +9772,7 @@ def main(page: ft.Page) -> None:
              if not is_manual:
                  _recalc_total() # Restore auto values
              else:
-                 page.update()
+                 _safe_update_multiple(sum_subtotal, sum_iva, sum_total, manual_mode)
              _refresh_keyboard_navigation_order()
 
         def _on_global_desc_pct_change(_):
@@ -9958,6 +10100,7 @@ def main(page: ft.Page) -> None:
             total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field); _style_comprobante_control(total_field)
             line_discount_mode = {"value": "percentage"}
             quantity_warning_guard = {"raw": None, "ts": 0.0}
+            stock_cache: Dict[str, Any] = {"article_id": None, "available": None}
             
             if initial_data:
                 art_drop.value = str(initial_data["id_articulo"])
@@ -10058,7 +10201,7 @@ def main(page: ft.Page) -> None:
                 except Exception:
                     total_field.value = "0,00"
             
-            def _update_price_from_list():
+            def _update_price_from_list(*, recalc: bool = True):
                 """Actualiza el precio basado en artículo y lista seleccionados"""
                 art_id_val = art_drop.value
                 # Primero intentar usar la lista del ítem, si no la lista global
@@ -10102,15 +10245,28 @@ def main(page: ft.Page) -> None:
                 _update_line_total()
                 _safe_update_control(price_field)
                 _safe_update_control(total_field)
-                _recalc_total()
+                if recalc:
+                    _recalc_total()
             
             stock_text = ft.Text("Stock: -", size=10, color=COLOR_TEXT_MUTED)
 
-            def _check_stock_warning():
+            def _check_stock_warning(*, force_refresh: bool = False):
                 if not art_drop.value: return
                 try:
                     requested = _parse_int_quantity(cant_field.value, "Cantidad")
-                    available = db.get_article_stock(int(art_drop.value))
+                    current_art_id = int(art_drop.value)
+                    cached_art_id = stock_cache.get("article_id")
+                    cached_available = stock_cache.get("available")
+                    if (
+                        not force_refresh
+                        and cached_available is not None
+                        and cached_art_id == current_art_id
+                    ):
+                        available = int(cached_available)
+                    else:
+                        available = db.get_article_stock(current_art_id)
+                        stock_cache["article_id"] = current_art_id
+                        stock_cache["available"] = available
                     stock_text.value = f"Stock: {available}"
                     if requested > available:
                         stock_text.color = COLOR_ERROR
@@ -10148,7 +10304,7 @@ def main(page: ft.Page) -> None:
                         return False
                 _sync_fiscal_iva_from_visible(source="article_change")
                 _update_price_from_list()
-                _check_stock_warning()
+                _check_stock_warning(force_refresh=True)
                 
                 # Automation: if an article is selected and this is the last line, add a new one
                 if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
@@ -10404,6 +10560,7 @@ def main(page: ft.Page) -> None:
             if not new_global_list_id:
                 return False
 
+            changed_any = False
             for row in lines_container.controls:
                 row_map = row.data
                 line_lista_drop = row_map["lista_drop"]
@@ -10414,10 +10571,17 @@ def main(page: ft.Page) -> None:
                 # This satisfies the user's request: "automaticamente todos los precios deberían tomar la lista 2"
                 if not line_lista_drop.value or line_lista_drop.value == "":
                     line_lista_drop.value = new_global_list_id
-                    row_map["update_price"]() # Update price using global list automatically
-            
-            page.update()
-            _recalc_total()
+                    changed_any = True
+                    _safe_update_control(line_lista_drop)
+                    update_price_fn = row_map.get("update_price")
+                    if callable(update_price_fn):
+                        try:
+                            update_price_fn(recalc=False)
+                        except TypeError:
+                            update_price_fn()
+
+            if changed_any:
+                _recalc_total()
             _refresh_keyboard_navigation_order()
             return True
 
@@ -10456,9 +10620,12 @@ def main(page: ft.Page) -> None:
                     and _can_authorize_afip(doc_row)
                 )
 
+            if btn_modal_reset is not None:
+                btn_modal_reset.visible = True
+
             if btn_modal_save is not None:
                 btn_modal_save.visible = not is_read_only_ref["value"]
-                btn_modal_save.text = "Guardar cambios" if current_doc_id else ("Crear Comprobante" if not edit_doc_id else "Guardar")
+                btn_modal_save.text = "Guardar cambios [F12]" if current_doc_id else ("Crear Comprobante [F12]" if not edit_doc_id else "Guardar [F12]")
 
             if btn_add_line is not None:
                 btn_add_line.visible = not is_read_only_ref["value"]
@@ -10521,6 +10688,7 @@ def main(page: ft.Page) -> None:
                 btn_modal_print,
                 btn_modal_confirm,
                 btn_modal_afip,
+                btn_modal_reset,
                 btn_modal_save,
             )
             _refresh_keyboard_navigation_order()
@@ -10545,7 +10713,7 @@ def main(page: ft.Page) -> None:
                 _set_form_read_only(True)
             else:
                 _refresh_modal_action_buttons()
-                _safe_update_multiple(btn_modal_print, btn_modal_confirm, btn_modal_afip, btn_modal_save, btn_add_line)
+                _safe_update_multiple(btn_modal_print, btn_modal_confirm, btn_modal_afip, btn_modal_reset, btn_modal_save, btn_add_line)
             _refresh_keyboard_navigation_order()
 
         def _save(_=None) -> bool:
@@ -10808,24 +10976,81 @@ def main(page: ft.Page) -> None:
                 return
             request_invoice_print(int(current_doc_id))
 
+        def _print_current_document_direct(*, include_prices: bool = True, copies: int = 1) -> None:
+            current_doc_id = active_doc_id_ref["value"]
+            if not current_doc_id:
+                show_toast("Primero guardá el comprobante para poder imprimir.", kind="warning")
+                return
+            print_document_external(int(current_doc_id), include_prices=include_prices, copies=copies)
+
         def _handle_modal_doc_state_change() -> None:
             _refresh_modal_doc_state()
             doc_row = current_doc_row_ref["value"] or {}
             if doc_row and doc_row.get("estado") != DocumentoEstado.BORRADOR.value:
                 _set_form_read_only(True)
 
-        def _confirm_current_document(_=None):
+        def _confirm_document_direct(doc_id: int) -> None:
+            if shortcut_state.get("confirming"):
+                show_toast("Ya hay una confirmación en curso.", kind="warning")
+                return
+            shortcut_state["confirming"] = True
+
+            def _finish_ui(success: bool, message: str = "") -> None:
+                shortcut_state["confirming"] = False
+                if not success:
+                    if message:
+                        show_toast(message, kind="error")
+                    return
+                show_toast("Comprobante confirmado", kind="success")
+                _handle_modal_doc_state_change()
+                if hasattr(documentos_summary_table, "refresh"):
+                    documentos_summary_table.refresh()
+                refresh_all_stats()
+
+            def _job() -> None:
+                try:
+                    if not db:
+                        _run_on_ui(_finish_ui, False, "No hay conexión a base de datos.")
+                        return
+                    db.confirm_document(int(doc_id))
+                    db.log_activity("DOCUMENTO", "CONFIRM", id_entidad=int(doc_id))
+                    _run_on_ui(_finish_ui, True, "")
+                except Exception as exc:
+                    _run_on_ui(_finish_ui, False, f"Error al confirmar: {exc}")
+
+            _run_in_background(_job)
+
+        def _confirm_after_save(*, force_direct: bool) -> None:
+            if not _save():
+                return
+            current_doc_id_after_save = active_doc_id_ref["value"]
+            if not current_doc_id_after_save:
+                show_toast("No se pudo guardar el comprobante antes de confirmar.", kind="error")
+                return
+            if force_direct:
+                _confirm_document_direct(int(current_doc_id_after_save))
+                return
+            _confirm_document(
+                int(current_doc_id_after_save),
+                close_after=False,
+                on_success=_handle_modal_doc_state_change,
+            )
+
+        def _confirm_current_document(_=None, *, force_direct: bool = False):
             current_doc_id = active_doc_id_ref["value"]
             if not current_doc_id:
                 show_toast("Primero guardá el comprobante para poder confirmarlo.", kind="warning")
                 return
-            if not _save():
+            if force_direct:
+                _confirm_after_save(force_direct=True)
                 return
-            current_doc_id = active_doc_id_ref["value"]
-            if not current_doc_id:
-                show_toast("No se pudo guardar el comprobante antes de confirmar.", kind="error")
-                return
-            _confirm_document(int(current_doc_id), close_after=False, on_success=_handle_modal_doc_state_change)
+            ask_confirm(
+                "Confirmar Comprobante",
+                "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
+                "Confirmar [F10]",
+                lambda: _confirm_after_save(force_direct=True),
+                button_color=COLOR_SUCCESS,
+            )
 
         def _authorize_current_document(_=None):
             current_doc_id = active_doc_id_ref["value"]
@@ -10842,9 +11067,25 @@ def main(page: ft.Page) -> None:
 
         def _close_comprobante_form(e: Any = None) -> None:
             _restore_modal_keyboard_handler()
+            shortcut_state["f9_pressed"] = False
+            shortcut_state["f10_pending_token"] = 0
+            shortcut_state["last_f10_ts"] = 0.0
+            shortcut_state["confirming"] = False
             _maybe_set(main_app_container, "disabled", False)
             close_form(e)
             _safe_update_control(main_app_container)
+
+        def _reset_comprobante_form(_=None) -> None:
+            if _is_confirm_dialog_open():
+                confirm_dialog_state["on_confirm"] = None
+                confirm_dialog_state["is_open"] = False
+                _safe_page_close(page, confirm_dialog, "reset_comprobante_confirm_dialog")
+            if getattr(print_options_dialog, "open", False):
+                _safe_page_close(page, print_options_dialog, "reset_comprobante_print_options")
+            if getattr(discount_limit_dialog, "open", False):
+                _safe_page_close(page, discount_limit_dialog, "reset_comprobante_discount_limit")
+            _close_comprobante_form(None)
+            open_nuevo_comprobante()
 
         btn_add_line = ft.ElevatedButton(
             "Agregar Línea",
@@ -10857,7 +11098,7 @@ def main(page: ft.Page) -> None:
             ),
         )
         btn_modal_print = ft.ElevatedButton(
-            "Imprimir",
+            "Imprimir [F9]",
             icon=ft.icons.PRINT_ROUNDED,
             on_click=_print_current_document,
             bgcolor="#F1F5F9",
@@ -10866,7 +11107,7 @@ def main(page: ft.Page) -> None:
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
         )
         btn_modal_confirm = ft.ElevatedButton(
-            "Confirmar",
+            "Confirmar [F10]",
             icon=ft.icons.CHECK_CIRCLE,
             on_click=_confirm_current_document,
             bgcolor=COLOR_SUCCESS,
@@ -10883,8 +11124,16 @@ def main(page: ft.Page) -> None:
             visible=False,
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
         )
+        btn_modal_reset = ft.ElevatedButton(
+            "Reset [F11]",
+            icon=ft.icons.RESTART_ALT_ROUNDED,
+            on_click=_reset_comprobante_form,
+            bgcolor="#F1F5F9",
+            color=COLOR_TEXT,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
         btn_modal_save = ft.ElevatedButton(
-            "Guardar cambios" if active_doc_id_ref["value"] else "Crear Comprobante",
+            "Guardar cambios [F12]" if active_doc_id_ref["value"] else "Crear Comprobante [F12]",
             icon=ft.icons.CHECK,
             on_click=_save,
             style=ft.ButtonStyle(
@@ -10898,7 +11147,7 @@ def main(page: ft.Page) -> None:
         actions_row = ft.Row(
             [
                 ft.Row([btn_modal_print, btn_modal_confirm, btn_modal_afip], spacing=8),
-                ft.Row([btn_modal_close, btn_modal_save], spacing=8),
+                ft.Row([btn_modal_reset, btn_modal_close, btn_modal_save], spacing=8),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )

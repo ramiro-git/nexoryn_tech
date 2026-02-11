@@ -45,6 +45,10 @@ La barra lateral agrupa las vistas principales operativas:
 - En `AsyncSelect`: `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.
 - `Esc`: cerrar modal o cancelar acción activa.
+- En modal de comprobantes: `F9` imprime directo (sin descargar PDF).
+- En modal de comprobantes: `F10` confirma comprobante y con segundo `F10` confirma el diálogo.
+- En modal de comprobantes: `F11` resetea el formulario a estado inicial de venta rápida.
+- En modal de comprobantes: `F12` guarda/crea el comprobante automáticamente.
 
 ## Nota de sesión
 
@@ -133,6 +137,8 @@ La vista **Comprobantes** concentra ventas, compras y presupuestos.
 - El depósito se inicializa automáticamente con el primero disponible.
 - La lista de precios global puede autocompletarse según la entidad (si tiene lista asignada).
 - En el modal de comprobantes, `Tab / Shift + Tab` quedan confinados al modal mientras está abierto.
+- En impresión de comprobantes, `Incluir precios e importes` queda activo por defecto; desmarcar sólo en excepciones.
+- En comprobantes, la impresión usa la impresora predeterminada de Windows en forma directa.
 
 
 # 7. Facturación Electrónica (AFIP/ARCA)
@@ -289,10 +295,11 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - Registrar movimiento de ajuste con observación.
 - Reconciliar depósito y comprobantes vinculados.
 
-## PDF de impresión no abre
+## Impresión de comprobantes no sale
 
+- Revisar que exista impresora predeterminada en Windows.
 - Confirmar permisos de carpeta temporal.
-- Verificar lector PDF instalado.
+- Si falla la impresión directa, el sistema abre el PDF para impresión manual.
 
 
 # 15. Resumen de Atajos
@@ -300,6 +307,10 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - `Enter`: avanzar/confirmar campo.
 - `Tab / Shift + Tab`: moverse entre controles.
 - En comprobantes, `Tab / Shift + Tab` no sale del modal mientras esté abierto.
+- En comprobantes, `F9` imprime directo.
+- En comprobantes, `F10` confirma y segundo `F10` confirma el diálogo.
+- En comprobantes, `F11` resetea a formulario nuevo.
+- En comprobantes, `F12` guarda/crea comprobante.
 - En `AsyncSelect`, `ArrowDown / ArrowUp` mueve el resultado activo.
 - En `AsyncSelect`, `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.

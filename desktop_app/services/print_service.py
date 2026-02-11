@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
@@ -235,6 +236,32 @@ def _open_pdf(path: str) -> None:
             logger.debug("No se pudo abrir el PDF automáticamente.", exc_info=True)
     except Exception:
         logger.debug("Abrir PDF falló.", exc_info=True)
+
+
+def _print_pdf_windows_default(path: str, *, copies: int = 1) -> bool:
+    if copies < 1:
+        raise ValueError("El parámetro 'copies' debe ser mayor o igual a 1.")
+
+    if platform.system() != "Windows" or not hasattr(os, "startfile"):
+        return False
+
+    try:
+        for idx in range(copies):
+            os.startfile(path, "print")
+            # Evita perder jobs cuando el spooler aún no tomó el anterior.
+            if idx < copies - 1:
+                time.sleep(0.18)
+        return True
+    except OSError as exc:
+        logger.warning(
+            "No se pudo enviar el PDF a la impresora predeterminada de Windows (%s): %s",
+            getattr(exc, "winerror", "n/a"),
+            exc,
+        )
+        return False
+    except Exception as exc:
+        logger.warning("No se pudo enviar el PDF a la impresora predeterminada de Windows: %s", exc)
+        return False
 
 
 class BaseDocumentPDF(FPDF):
@@ -1955,6 +1982,24 @@ class RemitoPDF(BaseDocumentPDF):
         self.cell(content_width, 6, "Fecha: ____/____/______", border=0, ln=1, align="L")
 
 
+def _build_pdf_document(
+    doc_data: Dict[str, Any],
+    entity_data: Dict[str, Any],
+    items_data: List[Dict[str, Any]],
+    *,
+    kind: str = "invoice",
+    company_config: Optional[Dict[str, Any]] = None,
+    show_prices: bool = True,
+) -> BaseDocumentPDF:
+    doc_type_name = str(doc_data.get("tipo_documento") or "").upper()
+
+    if kind == "remito":
+        return RemitoPDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
+    if kind == "invoice" and "FACTURA" in doc_type_name:
+        return AfipInvoicePDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
+    return InvoicePDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
+
+
 def generate_pdf_and_open(
     doc_data: Dict[str, Any],
     entity_data: Dict[str, Any],
@@ -1983,15 +2028,54 @@ def generate_pdf_and_open(
     Returns:
         Path to the generated PDF file
     """
-    doc_type_name = str(doc_data.get("tipo_documento") or "").upper()
-
-    if kind == "remito":
-        pdf = RemitoPDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
-    elif kind == "invoice" and "FACTURA" in doc_type_name:
-        pdf = AfipInvoicePDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
-    else:
-        pdf = InvoicePDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
-
+    pdf = _build_pdf_document(
+        doc_data,
+        entity_data,
+        items_data,
+        kind=kind,
+        company_config=company_config,
+        show_prices=show_prices,
+    )
     path = pdf.generate()
     _open_pdf(path)
     return path
+
+
+def generate_pdf_and_print(
+    doc_data: Dict[str, Any],
+    entity_data: Dict[str, Any],
+    items_data: List[Dict[str, Any]],
+    *,
+    kind: str = "invoice",
+    company_config: Optional[Dict[str, Any]] = None,
+    show_prices: bool = True,
+    copies: int = 1,
+) -> Tuple[str, bool]:
+    """
+    Generate a PDF document and send it to the default Windows printer.
+
+    Returns:
+        Tuple[path, printed_directly]. If printed_directly is False, the PDF is opened.
+    """
+    copies_val = int(copies)
+    if copies_val < 1:
+        raise ValueError("El parámetro 'copies' debe ser mayor o igual a 1.")
+
+    pdf = _build_pdf_document(
+        doc_data,
+        entity_data,
+        items_data,
+        kind=kind,
+        company_config=company_config,
+        show_prices=show_prices,
+    )
+    path = pdf.generate()
+
+    printed_directly = _print_pdf_windows_default(path, copies=copies_val)
+    if not printed_directly:
+        logger.warning(
+            "Impresión directa no disponible o fallida. Se abrirá el PDF para impresión manual. path=%s",
+            path,
+        )
+        _open_pdf(path)
+    return path, printed_directly
