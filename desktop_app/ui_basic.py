@@ -1525,6 +1525,12 @@ def main(page: ft.Page) -> None:
         items = [_format_entity_option(r, include_tipo=True) for r in rows]
         return items, len(rows) >= limit
 
+    def comprobante_entity_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_entities(search=query, tipo="CLIENTE", offset=offset, limit=limit)
+        items = [_format_entity_option(r, include_tipo=True) for r in rows]
+        return items, len(rows) >= limit
+
     def supplier_loader(query, offset, limit):
         if not db: return [], False
         rows = db.fetch_entities(search=query, tipo="PROVEEDOR", offset=offset, limit=limit)
@@ -8696,7 +8702,7 @@ def main(page: ft.Page) -> None:
 
         try:
             tipos = db.fetch_tipos_documento()
-            entidades = db.list_entidades_simple(limit=100) # Performance limit
+            entidades = db.fetch_entities(tipo="CLIENTE", limit=100, offset=0) # Performance limit
             depositos = db.fetch_depositos()
             articulos = db.list_articulos_simple(limit=100) # Performance limit with price info
             listas = db.fetch_listas_precio(limit=50)
@@ -8857,7 +8863,7 @@ def main(page: ft.Page) -> None:
         ent_initial_items = [_format_entity_option(e, include_tipo=True) for e in entidades]
         dropdown_entidad = AsyncSelect(
             label="Entidad *",
-            loader=entity_loader,
+            loader=comprobante_entity_loader,
             width=500,
             on_change=None,
             initial_items=ent_initial_items,
@@ -8990,7 +8996,11 @@ def main(page: ft.Page) -> None:
             _update_entidad_info(None, preserve_values=True)
         else:
             if not dropdown_tipo.value and allowed_tipos:
-                dropdown_tipo.value = str(allowed_tipos[0]["id"])
+                presupuesto_tipo = next(
+                    (t for t in allowed_tipos if "PRESUPUESTO" in str(t.get("nombre", "")).upper()),
+                    None,
+                )
+                dropdown_tipo.value = str((presupuesto_tipo or allowed_tipos[0])["id"])
 
         # Financial Summary
         manual_mode = ft.Switch(label="Manual", value=False)
