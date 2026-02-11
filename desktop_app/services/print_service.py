@@ -567,9 +567,14 @@ class InvoicePDF(BaseDocumentPDF):
             return str(int(qty))
         return f"{qty:.2f}"
 
+    def _presupuesto_footer_height(self) -> float:
+        line_height = 6
+        return 3 + line_height + line_height
+
     def _draw_presupuesto_items_table(self) -> None:
         widths = self._presupuesto_table_widths()
         row_height = 7
+        footer_height = self._presupuesto_footer_height()
 
         if not self.items:
             self.set_font("helvetica", "", 9)
@@ -599,7 +604,9 @@ class InvoicePDF(BaseDocumentPDF):
             )
 
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
-            if self.get_y() + row_height > page_break_at:
+            is_last_row = idx == (len(self.items) - 1)
+            required_height = row_height + (footer_height if is_last_row else 0.0)
+            if self.get_y() + required_height > page_break_at:
                 self.add_page()
 
             if idx % 2 == 0:
@@ -631,11 +638,16 @@ class InvoicePDF(BaseDocumentPDF):
     def _draw_presupuesto_totals_note_block(self) -> None:
         content_width = self.w - self.l_margin - self.r_margin
         line_height = 6
-        required_height = 3 + line_height + line_height
+        required_height = self._presupuesto_footer_height()
         page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
-        if self.get_y() + required_height > page_break_at:
+        footer_start_y = page_break_at - required_height
+        if self.get_y() > footer_start_y:
             self.add_page()
+            page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
+            footer_start_y = page_break_at - required_height
+        self.set_y(max(self.get_y(), footer_start_y))
 
+        line_count = len(self.items)
         qty_total = sum(_safe_float(item.get("cantidad"), 0.0) for item in self.items)
         desc_total = max(0.0, self.descuento_lineas) + max(0.0, self.descuento_global)
         desc_pct = max(0.0, _safe_float(self.doc.get("descuento_porcentaje"), 0.0))
@@ -648,6 +660,7 @@ class InvoicePDF(BaseDocumentPDF):
         self.set_y(sep_y + 2)
 
         values = [
+            f"Cant/Líneas: {line_count}",
             f"Cant/Prod: {self._format_qty(qty_total)}",
             f"Neto: {_format_money(self.neto)}" if self.show_prices else "Neto: ---",
             f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
@@ -658,7 +671,7 @@ class InvoicePDF(BaseDocumentPDF):
             ),
             f"Total: {_format_money(self.total)}" if self.show_prices else "Total: ---",
         ]
-        widths = _distribute_width(content_width, [0.17, 0.17, 0.16, 0.24, 0.26])
+        widths = _distribute_width(content_width, [0.13, 0.14, 0.16, 0.14, 0.22, 0.21])
 
         self.set_font("helvetica", "B", 9)
         self.set_text_color(*COLOR_TEXT)
@@ -675,7 +688,7 @@ class InvoicePDF(BaseDocumentPDF):
                 clipped = clipped.rstrip(" ,.;:")
                 if not clipped:
                     clipped = "-"
-            self.cell(width, line_height, clipped, border=0, align="R" if idx == 4 else "L")
+            self.cell(width, line_height, clipped, border=0, align="R" if idx == 5 else "L")
         self.ln()
 
         self.set_font("helvetica", "", 9)
@@ -1722,10 +1735,23 @@ class RemitoPDF(BaseDocumentPDF):
             return str(int(qty))
         return f"{qty:.2f}"
 
+    def _remito_totals_note_height(self) -> float:
+        line_height = 6
+        return 3 + line_height + line_height
+
+    def _remito_footer_content_height(self) -> float:
+        line_height = 6
+        signature_block_height = 21
+        return 3 + line_height + line_height + 4 + line_height + signature_block_height
+
+    def _remito_final_block_height(self) -> float:
+        return self._remito_totals_note_height() + self._remito_footer_content_height()
+
     def _draw_remito_items_table(self) -> None:
         widths = self._remito_table_widths()
         row_height = 7
         c_margin = getattr(self, "c_margin", 0.5)
+        footer_block_height = self._remito_final_block_height()
 
         if not self.items:
             self.set_font("helvetica", "", 9)
@@ -1753,7 +1779,9 @@ class RemitoPDF(BaseDocumentPDF):
             )
 
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
-            if self.get_y() + row_height > page_break_at:
+            is_last_row = idx == (len(self.items) - 1)
+            required_height = row_height + (footer_block_height if is_last_row else 0.0)
+            if self.get_y() + required_height > page_break_at:
                 self.add_page()
 
             self.set_fill_color(*(COLOR_LIGHT_GRAY if idx % 2 == 0 else COLOR_WHITE))
@@ -1811,11 +1839,17 @@ class RemitoPDF(BaseDocumentPDF):
     def _draw_remito_totals_note_block(self) -> None:
         content_width = self.w - self.l_margin - self.r_margin
         line_height = 6
-        required_height = 3 + line_height + line_height
+        required_height = self._remito_totals_note_height()
+        final_block_height = self._remito_final_block_height()
         page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
-        if self.get_y() + required_height > page_break_at:
+        footer_start_y = page_break_at - final_block_height
+        if self.get_y() > footer_start_y:
             self.add_page()
+            page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
+            footer_start_y = page_break_at - final_block_height
+        self.set_y(max(self.get_y(), footer_start_y))
 
+        line_count = len(self.items)
         qty_total = sum(_safe_float(item.get("cantidad"), 0.0) or 0.0 for item in self.items)
         neto = self._resolve_remito_neto()
         total = self._resolve_remito_total()
@@ -1832,6 +1866,7 @@ class RemitoPDF(BaseDocumentPDF):
         self.set_y(sep_y + 2)
 
         values = [
+            f"Cant/Líneas: {line_count}",
             f"Cant/Prod: {self._format_qty(qty_total)}",
             f"Neto: {_format_money(neto)}" if self.show_prices else "Neto: ---",
             f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
@@ -1842,7 +1877,7 @@ class RemitoPDF(BaseDocumentPDF):
             ),
             f"Total: {_format_money(total)}" if self.show_prices else "Total: ---",
         ]
-        widths = _distribute_width(content_width, [0.17, 0.17, 0.16, 0.24, 0.26])
+        widths = _distribute_width(content_width, [0.13, 0.14, 0.16, 0.14, 0.22, 0.21])
 
         self.set_font("helvetica", "B", 9)
         self.set_text_color(*COLOR_TEXT)
@@ -1859,7 +1894,7 @@ class RemitoPDF(BaseDocumentPDF):
                 clipped = clipped.rstrip(" ,.;:")
                 if not clipped:
                     clipped = "-"
-            self.cell(width, line_height, clipped, border=0, align="R" if idx == 4 else "L")
+            self.cell(width, line_height, clipped, border=0, align="R" if idx == 5 else "L")
         self.ln()
 
         self.set_font("helvetica", "", 9)
@@ -1878,8 +1913,7 @@ class RemitoPDF(BaseDocumentPDF):
         observacion = str(self.remito.get("observacion") or "-").strip() or "-"
 
         line_height = 6
-        signature_block_height = 21
-        required_height = 3 + line_height + line_height + 4 + line_height + signature_block_height
+        required_height = self._remito_footer_content_height()
         page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
         if self.get_y() + required_height > page_break_at:
             self.add_page()
