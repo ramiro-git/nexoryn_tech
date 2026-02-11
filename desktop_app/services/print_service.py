@@ -2000,6 +2000,31 @@ def _build_pdf_document(
     return InvoicePDF(doc_data, entity_data, items_data, company_config, show_prices=show_prices)
 
 
+def generate_pdf(
+    doc_data: Dict[str, Any],
+    entity_data: Dict[str, Any],
+    items_data: List[Dict[str, Any]],
+    *,
+    kind: str = "invoice",
+    company_config: Optional[Dict[str, Any]] = None,
+    show_prices: bool = True,
+) -> str:
+    """
+    Generate a PDF document and return the generated file path.
+
+    This method does not open or print the PDF.
+    """
+    pdf = _build_pdf_document(
+        doc_data,
+        entity_data,
+        items_data,
+        kind=kind,
+        company_config=company_config,
+        show_prices=show_prices,
+    )
+    return pdf.generate()
+
+
 def generate_pdf_and_open(
     doc_data: Dict[str, Any],
     entity_data: Dict[str, Any],
@@ -2028,7 +2053,7 @@ def generate_pdf_and_open(
     Returns:
         Path to the generated PDF file
     """
-    pdf = _build_pdf_document(
+    path = generate_pdf(
         doc_data,
         entity_data,
         items_data,
@@ -2036,7 +2061,6 @@ def generate_pdf_and_open(
         company_config=company_config,
         show_prices=show_prices,
     )
-    path = pdf.generate()
     _open_pdf(path)
     return path
 
@@ -2061,7 +2085,7 @@ def generate_pdf_and_print(
     if copies_val < 1:
         raise ValueError("El parámetro 'copies' debe ser mayor o igual a 1.")
 
-    pdf = _build_pdf_document(
+    path = generate_pdf(
         doc_data,
         entity_data,
         items_data,
@@ -2069,7 +2093,6 @@ def generate_pdf_and_print(
         company_config=company_config,
         show_prices=show_prices,
     )
-    path = pdf.generate()
 
     printed_directly = _print_pdf_windows_default(path, copies=copies_val)
     if not printed_directly:

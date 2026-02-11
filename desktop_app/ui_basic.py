@@ -6,6 +6,7 @@ import base64
 import json
 import atexit
 import inspect
+import shutil
 import socket
 import sys
 import time
@@ -66,7 +67,7 @@ try:
     )
     from desktop_app.components.toast import ToastManager
     from desktop_app.components.mass_update_view import MassUpdateView
-    from desktop_app.services.print_service import generate_pdf_and_open, generate_pdf_and_print
+    from desktop_app.services.print_service import generate_pdf, generate_pdf_and_open, generate_pdf_and_print
     from desktop_app.services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal
     from desktop_app.services.article_price_autocalc import (
         calc_pct_from_cost_price,
@@ -100,7 +101,7 @@ except ImportError:
         SimpleFilterConfig,
     )
     from components.mass_update_view import MassUpdateView # type: ignore
-    from services.print_service import generate_pdf_and_open, generate_pdf_and_print # type: ignore
+    from services.print_service import generate_pdf, generate_pdf_and_open, generate_pdf_and_print # type: ignore
     from services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal  # type: ignore
     from services.article_price_autocalc import calc_pct_from_cost_price, calc_price_from_cost_pct, normalize_price_tipo  # type: ignore
     from services.number_locale import format_currency, format_percent, normalize_input_value, parse_locale_number  # type: ignore
@@ -833,106 +834,176 @@ def main(page: ft.Page) -> None:
         except Exception:
             return {}
 
+    pending_invoice_pdf_download: Optional[Dict[str, Any]] = None
+
+    def _safe_filename_token(value: Any, fallback: str = "") -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return fallback
+        invalid = '<>:"/\\|?*'
+        cleaned = "".join(ch for ch in raw if ch not in invalid)
+        compact = " ".join(cleaned.split())
+        return compact or fallback
+
+    def _build_invoice_pdf_filename(doc: Dict[str, Any]) -> str:
+        doc_type = _safe_filename_token(doc.get("tipo_documento"), "Comprobante")
+        serie = _safe_filename_token(doc.get("numero_serie") or doc.get("numero"), "")
+        if not serie:
+            serie = _safe_filename_token(doc.get("id"), datetime.now().strftime("%Y%m%d_%H%M%S"))
+        base = f"{doc_type}_{serie}".strip("_")
+        return f"{base}.pdf"
+
+    def _build_invoice_pdf_payload(doc_id: int) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]]:
+        if not db:
+            return None
+
+        doc = db.get_document_full(doc_id)
+        if not doc:
+            show_toast("Error al recuperar datos del documento", kind="error")
+            return None
+
+        ent = db.get_entity_detail(doc.get("id_entidad_comercial")) if db else {}
+
+        # Recalcular desglose fiscal para impresión/exportación.
+        # Esto evita que PDFs de documentos con IVA histórico en 0 (por detalle legado)
+        # muestren un IVA incorrecto cuando el artículo sí tiene alícuota fiscal.
+        fiscal_lines: List[Dict[str, Any]] = []
+        try:
+            fiscal_pricing = _build_doc_fiscal_pricing_for_afip(db, doc)
+            doc["neto"] = float(quantize_2(to_decimal(fiscal_pricing.get("neto"), to_decimal("0"))))
+            doc["iva_total"] = float(quantize_2(to_decimal(fiscal_pricing.get("iva_total"), to_decimal("0"))))
+            doc["total"] = float(quantize_2(to_decimal(fiscal_pricing.get("total"), to_decimal("0"))))
+            doc["iva_breakdown"] = fiscal_pricing.get("iva_breakdown") or []
+            raw_lines = fiscal_pricing.get("items") if isinstance(fiscal_pricing, dict) else []
+            fiscal_lines = raw_lines if isinstance(raw_lines, list) else []
+        except Exception as exc:
+            logger.warning(f"No se pudo recalcular desglose fiscal para impresión/exportación: {exc}")
+            doc["iva_breakdown"] = doc.get("iva_breakdown") or []
+            fiscal_lines = []
+
+        items_data: List[Dict[str, Any]] = []
+        for idx, item in enumerate(doc.get("items", [])):
+            article_id = item.get("id_articulo")
+            art = db.get_article_simple(article_id) if article_id is not None else None
+            item_copy = item.copy()
+            item_copy["articulo_nombre"] = art["nombre"] if art else f"Artículo {article_id or '-'}"
+            raw_code = (art or {}).get("codigo")
+            article_code = str(raw_code).strip() if raw_code is not None else ""
+            if not article_code:
+                article_code = str(article_id or "-")
+            item_copy["articulo_codigo"] = article_code
+
+            raw_unit_abbr = str((art or {}).get("unidad_abreviatura") or "").strip()
+            if raw_unit_abbr:
+                unit_abbr = raw_unit_abbr.upper()
+            else:
+                raw_unit_name = str((art or {}).get("unidad_medida") or "").strip()
+                unit_abbr = raw_unit_name[:3].upper() if raw_unit_name else "UNI"
+            item_copy["unidad_abreviatura"] = unit_abbr or "UNI"
+
+            fiscal_line = fiscal_lines[idx] if idx < len(fiscal_lines) and isinstance(fiscal_lines[idx], dict) else {}
+            alicuota_iva = float(
+                quantize_2(
+                    to_decimal(
+                        fiscal_line.get(
+                            "porcentaje_iva_fiscal",
+                            fiscal_line.get("porcentaje_iva", item.get("porcentaje_iva", 0)),
+                        ),
+                        to_decimal(item.get("porcentaje_iva"), to_decimal("0")),
+                    )
+                )
+            )
+            bonificacion_pct = float(
+                quantize_2(
+                    to_decimal(
+                        fiscal_line.get("descuento_porcentaje", item.get("descuento_porcentaje", 0)),
+                        to_decimal(item.get("descuento_porcentaje"), to_decimal("0")),
+                    )
+                )
+            )
+            subtotal_sin_iva = float(
+                quantize_2(
+                    to_decimal(
+                        fiscal_line.get(
+                            "neto_fiscal_linea",
+                            fiscal_line.get("linea_neta", item.get("total_linea", 0)),
+                        ),
+                        to_decimal(item.get("total_linea"), to_decimal("0")),
+                    )
+                )
+            )
+            subtotal_con_iva = float(
+                quantize_2(
+                    to_decimal(
+                        fiscal_line.get("linea_neta", item.get("total_linea", 0)),
+                        to_decimal(item.get("total_linea"), to_decimal("0")),
+                    )
+                )
+            )
+            item_copy["afip_alicuota_iva"] = alicuota_iva
+            item_copy["afip_bonificacion_pct"] = bonificacion_pct
+            item_copy["afip_subtotal_sin_iva"] = subtotal_sin_iva
+            item_copy["afip_subtotal_con_iva"] = subtotal_con_iva
+            items_data.append(item_copy)
+
+        return doc, (ent or {}), items_data
+
+    def _on_invoice_pdf_save_result(e: ft.FilePickerResultEvent) -> None:
+        nonlocal pending_invoice_pdf_download
+        payload = pending_invoice_pdf_download
+        pending_invoice_pdf_download = None
+        if not payload:
+            return
+
+        selected_path = str(getattr(e, "path", "") or "").strip()
+        if not selected_path:
+            return
+
+        target_path = Path(selected_path)
+        if target_path.suffix.lower() != ".pdf":
+            target_path = target_path.with_suffix(".pdf")
+
+        generated_temp_path: Optional[str] = None
+        try:
+            generated_temp_path = generate_pdf(
+                payload["doc_data"],
+                payload["entity_data"],
+                payload["items_data"],
+                kind="invoice",
+                company_config=get_company_config(),
+                show_prices=bool(payload.get("include_prices", True)),
+            )
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(generated_temp_path, str(target_path))
+            show_toast(f"PDF guardado: {target_path.name}", kind="success")
+        except Exception as exc:
+            show_toast(f"Error al guardar PDF: {exc}", kind="error")
+        finally:
+            if generated_temp_path:
+                try:
+                    Path(generated_temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    invoice_pdf_save_picker = ft.FilePicker(on_result=_on_invoice_pdf_save_result)
+    try:
+        if invoice_pdf_save_picker not in page.overlay:
+            page.overlay.append(invoice_pdf_save_picker)
+    except Exception as exc:
+        logger.warning(f"Falló al registrar selector de guardado PDF: {exc}")
+
     def print_document_external(doc_id: int, *, include_prices: bool = True, copies: int = 1) -> None:
         """Global helper to print an invoice/receipt document."""
         try:
-            if not db: return 
-            
-            # Fetch full document data
-            doc = db.get_document_full(doc_id)
-            if not doc:
-                show_toast("Error al recuperar datos del documento", kind="error")
+            payload = _build_invoice_pdf_payload(int(doc_id))
+            if not payload:
                 return
-            
-            # Get client name
-            ent = db.get_entity_detail(doc.get("id_entidad_comercial")) if db else None
-
-            # Recalcular desglose fiscal para impresión.
-            # Esto evita que PDFs de documentos con IVA histórico en 0 (por detalle legado)
-            # muestren un IVA incorrecto cuando el artículo sí tiene alícuota fiscal.
-            fiscal_lines: List[Dict[str, Any]] = []
-            try:
-                fiscal_pricing = _build_doc_fiscal_pricing_for_afip(db, doc)
-                doc["neto"] = float(quantize_2(to_decimal(fiscal_pricing.get("neto"), to_decimal("0"))))
-                doc["iva_total"] = float(quantize_2(to_decimal(fiscal_pricing.get("iva_total"), to_decimal("0"))))
-                doc["total"] = float(quantize_2(to_decimal(fiscal_pricing.get("total"), to_decimal("0"))))
-                doc["iva_breakdown"] = fiscal_pricing.get("iva_breakdown") or []
-                raw_lines = fiscal_pricing.get("items") if isinstance(fiscal_pricing, dict) else []
-                fiscal_lines = raw_lines if isinstance(raw_lines, list) else []
-            except Exception as exc:
-                logger.warning(f"No se pudo recalcular desglose fiscal para impresión: {exc}")
-                doc["iva_breakdown"] = doc.get("iva_breakdown") or []
-                fiscal_lines = []
-            
-            # Build Items Data
-            items_data = []
-            for idx, item in enumerate(doc.get("items", [])):
-                art = db.get_article_simple(item["id_articulo"])
-                item_copy = item.copy()
-                item_copy["articulo_nombre"] = art["nombre"] if art else f"Artículo {item['id_articulo']}"
-                raw_code = (art or {}).get("codigo")
-                article_code = str(raw_code).strip() if raw_code is not None else ""
-                if not article_code:
-                    article_code = str(item.get("id_articulo") or "-")
-                item_copy["articulo_codigo"] = article_code
-
-                raw_unit_abbr = str((art or {}).get("unidad_abreviatura") or "").strip()
-                if raw_unit_abbr:
-                    unit_abbr = raw_unit_abbr.upper()
-                else:
-                    raw_unit_name = str((art or {}).get("unidad_medida") or "").strip()
-                    unit_abbr = raw_unit_name[:3].upper() if raw_unit_name else "UNI"
-                item_copy["unidad_abreviatura"] = unit_abbr or "UNI"
-
-                fiscal_line = fiscal_lines[idx] if idx < len(fiscal_lines) and isinstance(fiscal_lines[idx], dict) else {}
-                alicuota_iva = float(
-                    quantize_2(
-                        to_decimal(
-                            fiscal_line.get(
-                                "porcentaje_iva_fiscal",
-                                fiscal_line.get("porcentaje_iva", item.get("porcentaje_iva", 0)),
-                            ),
-                            to_decimal(item.get("porcentaje_iva"), to_decimal("0")),
-                        )
-                    )
-                )
-                bonificacion_pct = float(
-                    quantize_2(
-                        to_decimal(
-                            fiscal_line.get("descuento_porcentaje", item.get("descuento_porcentaje", 0)),
-                            to_decimal(item.get("descuento_porcentaje"), to_decimal("0")),
-                        )
-                    )
-                )
-                subtotal_sin_iva = float(
-                    quantize_2(
-                        to_decimal(
-                            fiscal_line.get(
-                                "neto_fiscal_linea",
-                                fiscal_line.get("linea_neta", item.get("total_linea", 0)),
-                            ),
-                            to_decimal(item.get("total_linea"), to_decimal("0")),
-                        )
-                    )
-                )
-                subtotal_con_iva = float(
-                    quantize_2(
-                        to_decimal(
-                            fiscal_line.get("linea_neta", item.get("total_linea", 0)),
-                            to_decimal(item.get("total_linea"), to_decimal("0")),
-                        )
-                    )
-                )
-                item_copy["afip_alicuota_iva"] = alicuota_iva
-                item_copy["afip_bonificacion_pct"] = bonificacion_pct
-                item_copy["afip_subtotal_sin_iva"] = subtotal_sin_iva
-                item_copy["afip_subtotal_con_iva"] = subtotal_con_iva
-                items_data.append(item_copy)
+            doc, ent, items_data = payload
 
             # Generate PDF and print on default Windows printer (with fallback to open PDF).
             _, printed_directly = generate_pdf_and_print(
                 doc,
-                ent or {},
+                ent,
                 items_data,
                 kind="invoice",
                 company_config=get_company_config(),
@@ -946,12 +1017,43 @@ def main(page: ft.Page) -> None:
                     "No se pudo imprimir directo (revisá impresora predeterminada o app PDF asociada). Se abrió el PDF para impresión manual.",
                     kind="warning",
                 )
-            
         except Exception as e:
             show_toast(f"Error al imprimir: {e}", kind="error")
 
-    def ask_print_options(doc_label: str, on_print: Callable[[bool], None]) -> None:
-        """Display print options with price visibility toggle before generating PDF."""
+    def save_document_pdf_external(doc_id: int, *, include_prices: bool = True) -> None:
+        nonlocal pending_invoice_pdf_download
+        try:
+            payload = _build_invoice_pdf_payload(int(doc_id))
+            if not payload:
+                return
+            doc, ent, items_data = payload
+            pending_invoice_pdf_download = {
+                "doc_data": doc,
+                "entity_data": ent,
+                "items_data": items_data,
+                "include_prices": bool(include_prices),
+            }
+            filename = _build_invoice_pdf_filename(doc)
+            try:
+                invoice_pdf_save_picker.save_file(
+                    dialog_title="Guardar PDF de comprobante",
+                    file_name=filename,
+                )
+            except TypeError:
+                invoice_pdf_save_picker.save_file(file_name=filename)
+        except Exception as exc:
+            pending_invoice_pdf_download = None
+            show_toast(f"Error al preparar descarga de PDF: {exc}", kind="error")
+
+    def ask_print_options(
+        doc_label: str,
+        on_print: Callable[[bool], None],
+        *,
+        action_label: str = "Imprimir",
+        action_icon: str = ft.icons.PRINT_ROUNDED,
+        error_action_label: str = "procesar",
+    ) -> None:
+        """Display options with price visibility toggle before generating PDF."""
         include_prices_switch = ft.Switch(
             label="Incluir precios e importes",
             value=True,
@@ -967,14 +1069,14 @@ def main(page: ft.Page) -> None:
             try:
                 on_print(include_prices)
             except Exception as exc:
-                show_toast(f"Error al imprimir {doc_label}: {exc}", kind="error")
+                show_toast(f"Error al {error_action_label} {doc_label}: {exc}", kind="error")
 
-        print_options_dialog.title = ft.Text(f"Opciones de impresión: {doc_label}", size=20, weight=ft.FontWeight.BOLD)
+        print_options_dialog.title = ft.Text(f"Opciones: {doc_label}", size=20, weight=ft.FontWeight.BOLD)
         print_options_dialog.content = ft.Container(
             content=ft.Column(
                 [
                     ft.Text(
-                        "Por seguridad, podés ocultar precios e importes en la impresión.",
+                        "Por seguridad, podés ocultar precios e importes en el PDF.",
                         size=13,
                         color=COLOR_TEXT_MUTED,
                     ),
@@ -990,8 +1092,8 @@ def main(page: ft.Page) -> None:
         print_options_dialog.actions = [
             _cancel_button("Cancelar", on_click=_close),
             ft.ElevatedButton(
-                "Imprimir",
-                icon=ft.icons.PRINT_ROUNDED,
+                action_label,
+                icon=action_icon,
                 bgcolor=COLOR_ACCENT,
                 color="#FFFFFF",
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
@@ -1008,6 +1110,21 @@ def main(page: ft.Page) -> None:
                 include_prices=include_prices,
                 copies=copies,
             ),
+            action_label="Imprimir",
+            action_icon=ft.icons.PRINT_ROUNDED,
+            error_action_label="imprimir",
+        )
+
+    def request_invoice_download(doc_id: int) -> None:
+        ask_print_options(
+            "comprobante",
+            lambda include_prices: save_document_pdf_external(
+                int(doc_id),
+                include_prices=include_prices,
+            ),
+            action_label="Guardar PDF",
+            action_icon=ft.icons.DOWNLOAD_ROUNDED,
+            error_action_label="guardar PDF de",
         )
 
 
@@ -5992,6 +6109,16 @@ def main(page: ft.Page) -> None:
                     icon_color=COLOR_TEXT_MUTED,
                     icon_size=18,
                     on_click=lambda e, rid=row["id"]: request_invoice_print(int(rid)),
+                )
+            ),
+            ColumnConfig(
+                key="_download_pdf", label="", sortable=False, width=40,
+                renderer=lambda row: ft.IconButton(
+                    icon=ft.icons.DOWNLOAD_ROUNDED,
+                    tooltip="Guardar PDF",
+                    icon_color=COLOR_INFO,
+                    icon_size=18,
+                    on_click=lambda e, rid=row["id"]: request_invoice_download(int(rid)),
                 )
             ),
             ColumnConfig(
