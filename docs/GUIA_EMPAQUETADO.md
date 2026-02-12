@@ -24,6 +24,13 @@ flet pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png"
 
 > Nota: el proyecto ya incluye `pyinstaller` en `requirements.txt`. Si cambias versiones de dependencias, valida el empaquetado en una máquina limpia antes de distribuir.
 
+### Impresión directa de comprobantes (Windows)
+
+- La impresión directa del sistema ya no depende de la asociación de `.pdf` en Windows.
+- El backend interno de impresión usa `pypdfium2` + `pywin32` para enviar páginas al spooler.
+- Si ejecutas desde código fuente, instalar `requirements.txt` es obligatorio para disponer de ese backend.
+- En caso de falla real de impresora/spooler, la app mantiene fallback abriendo el PDF para impresión manual.
+
 ---
 
 ## 2. Ubicación de Archivos (.env, Certificados, etc.)

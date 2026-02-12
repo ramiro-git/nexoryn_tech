@@ -1014,7 +1014,7 @@ def main(page: ft.Page) -> None:
                 show_toast("Comprobante enviado a impresión.", kind="success")
             else:
                 show_toast(
-                    "No se pudo imprimir directo (revisá impresora predeterminada o app PDF asociada). Se abrió el PDF para impresión manual.",
+                    "No se pudo enviar a la impresora/spooler en forma directa. Se abrió el PDF para impresión manual.",
                     kind="warning",
                 )
         except Exception as e:
@@ -9448,6 +9448,35 @@ def main(page: ft.Page) -> None:
                 and desc_imp_val in {"", "0", "0,00", "0.00"}
             )
 
+        def _resolve_primary_line_article_focus() -> Optional[Any]:
+            fallback_control: Optional[Any] = None
+            for row in _list_line_rows():
+                row_map = getattr(row, "data", None) or {}
+                art_control = row_map.get("art_drop")
+                if not _is_focus_eligible(art_control):
+                    continue
+                if fallback_control is None:
+                    fallback_control = art_control
+                if _is_placeholder_line_row(row_map):
+                    return art_control
+            return fallback_control
+
+        def _resolve_next_line_article_focus(current_row: Any) -> Optional[Any]:
+            rows = _list_line_rows()
+            if not rows:
+                return None
+            try:
+                current_index = rows.index(current_row)
+            except ValueError:
+                return _resolve_primary_line_article_focus()
+
+            for next_row in rows[current_index + 1 :]:
+                next_map = getattr(next_row, "data", None) or {}
+                next_art_control = next_map.get("art_drop")
+                if _is_focus_eligible(next_art_control):
+                    return next_art_control
+            return _resolve_primary_line_article_focus()
+
         def _refresh_keyboard_navigation_order() -> None:
             _style_comprobante_action_buttons()
             ordered_controls: List[Any] = []
@@ -9981,8 +10010,15 @@ def main(page: ft.Page) -> None:
         field_direccion.on_submit = _chain_handler_and_focus(field_direccion.on_submit, field_direccion)
         field_numero.on_submit = _chain_handler_and_focus(field_numero.on_submit, field_numero)
 
+        def _on_entidad_change_with_item_focus(_: Any) -> Any:
+            _update_entidad_info(None)
+            target_control = _resolve_primary_line_article_focus()
+            if target_control is not None and _focus_control(target_control):
+                return False
+            return True
+
         dropdown_tipo.on_change = _chain_handler_and_focus(dropdown_tipo.on_change, dropdown_tipo)
-        dropdown_entidad.on_change = _chain_handler_and_focus(lambda _: _update_entidad_info(None), dropdown_entidad)
+        dropdown_entidad.on_change = _chain_handler_and_focus(_on_entidad_change_with_item_focus, dropdown_entidad)
         dropdown_deposito.on_change = _chain_handler_and_focus(dropdown_deposito.on_change, dropdown_deposito)
         manual_mode.on_change = _chain_handler_and_focus(toggle_manual, manual_mode)
         
@@ -10437,6 +10473,14 @@ def main(page: ft.Page) -> None:
                 if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
                     _add_line()
                 return True
+
+            def _on_art_change_and_focus_qty(e):
+                result = _on_art_change(e)
+                if result is False:
+                    return False
+                if _focus_control(cant_field):
+                    return False
+                return True
             
             def _on_value_change(_):
                 _update_line_total()
@@ -10463,11 +10507,6 @@ def main(page: ft.Page) -> None:
                 )
 
             cant_field.on_change = lambda _: (_check_stock_warning(), _update_line_total(), _recalc_total())
-            art_drop.on_change = _chain_handler_and_focus(_on_art_change, art_drop)
-            def _on_lista_change(e):
-                _update_price_from_list()
-                return True
-            lista_drop.on_change = _chain_handler_and_focus(_on_lista_change, lista_drop)
             
             def _on_desc_pct_change(_):
                 line_discount_mode["value"] = "percentage"
@@ -10532,16 +10571,30 @@ def main(page: ft.Page) -> None:
                 _recalc_total()
                 return True
 
+            def _on_cantidad_commit_focus_next_article(e):
+                result = _on_cantidad_commit(e)
+                if result is False:
+                    return False
+                next_article_control = _resolve_next_line_article_focus(row)
+                if next_article_control is not None and _focus_control(next_article_control):
+                    return False
+                return True
+
             desc_pct_field.on_change = _on_desc_pct_change
             desc_imp_field.on_change = _on_desc_imp_change
             desc_pct_field.on_submit = _chain_handler_and_focus(_on_desc_pct_commit, desc_pct_field)
             desc_imp_field.on_submit = _chain_handler_and_focus(_on_desc_imp_commit, desc_imp_field)
             price_field.on_submit = _chain_handler_and_focus(_on_price_commit, price_field)
             iva_field.on_submit = _chain_handler_and_focus(_on_iva_commit, iva_field)
-            cant_field.on_submit = _chain_handler_and_focus(_on_cantidad_commit, cant_field)
+            cant_field.on_submit = _chain_handler_and_focus(_on_cantidad_commit_focus_next_article, cant_field)
 
             price_field.on_change = _on_value_change
             iva_field.on_change = _on_iva_change
+            art_drop.on_change = _chain_handler_and_focus(_on_art_change_and_focus_qty, art_drop)
+            def _on_lista_change(e):
+                _update_price_from_list()
+                return True
+            lista_drop.on_change = _chain_handler_and_focus(_on_lista_change, lista_drop)
             for field, handler in [
                 (desc_pct_field, _on_desc_pct_commit),
                 (desc_imp_field, _on_desc_imp_commit),
@@ -11354,7 +11407,8 @@ def main(page: ft.Page) -> None:
         page.overlay.append(form_dialog)
         page.update()
         _refresh_keyboard_navigation_order()
-        _focus_control(field_fecha)
+        if not _focus_control(dropdown_entidad):
+            _focus_control(field_fecha)
 
     def wire_live_search(table: GenericTable):
         for flt in table.advanced_filters:

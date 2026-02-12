@@ -3,10 +3,12 @@ Print service for generating professional PDF documents (invoices, quotes, remit
 Redesigned with improved layout, company data from config, and proper pagination.
 """
 import base64
+import ctypes
 import json
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 import time
@@ -238,6 +240,448 @@ def _open_pdf(path: str) -> None:
         logger.debug("Abrir PDF falló.", exc_info=True)
 
 
+def _get_default_windows_printer_name() -> Optional[str]:
+    if platform.system() != "Windows":
+        return None
+
+    # 1) pywin32 suele ser el método más confiable cuando está disponible.
+    try:
+        import win32print  # type: ignore
+
+        name = str(win32print.GetDefaultPrinter() or "").strip()
+        if name:
+            return name
+    except Exception:
+        logger.debug("No se pudo obtener impresora predeterminada vía win32print.", exc_info=True)
+
+    # 2) WinAPI directa.
+    try:
+        get_default_printer = ctypes.windll.winspool.GetDefaultPrinterW
+        get_default_printer.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
+        get_default_printer.restype = ctypes.c_bool
+
+        needed = ctypes.c_uint32(0)
+        get_default_printer(None, ctypes.byref(needed))
+        if needed.value <= 1:
+            raise RuntimeError("WinAPI no devolvió tamaño de buffer para impresora predeterminada.")
+        buffer = ctypes.create_unicode_buffer(needed.value)
+        ok = get_default_printer(buffer, ctypes.byref(needed))
+        if not ok:
+            raise RuntimeError("GetDefaultPrinterW no devolvió nombre de impresora.")
+        name = str(buffer.value).strip()
+        if name:
+            return name
+    except Exception:
+        logger.debug("No se pudo obtener la impresora predeterminada de Windows.", exc_info=True)
+
+    # 3) Fallback por PowerShell/WMI.
+    command = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "$p = Get-CimInstance Win32_Printer | Where-Object { $_.Default -eq $true } "
+        "| Select-Object -First 1 -ExpandProperty Name; "
+        "if (-not $p) { "
+        "  $p = Get-Printer | Where-Object { $_.Default -eq $true } "
+        "  | Select-Object -First 1 -ExpandProperty Name "
+        "}; "
+        "if ($p) { $p }"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if completed.returncode == 0:
+            out = (completed.stdout or "").strip()
+            if out:
+                return out.splitlines()[0].strip() or None
+    except Exception:
+        logger.debug("No se pudo obtener impresora predeterminada vía PowerShell.", exc_info=True)
+
+    return None
+
+
+def _get_windows_print_job_count(printer_name: str) -> Optional[int]:
+    if not printer_name or platform.system() != "Windows":
+        return None
+
+    escaped_name = printer_name.replace("'", "''")
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        f"$n='{escaped_name}'; "
+        "(Get-PrintJob -PrinterName $n -ErrorAction SilentlyContinue | Measure-Object).Count"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if completed.returncode != 0:
+            return None
+        output = (completed.stdout or "").strip()
+        if not output:
+            return 0
+        return int(output.splitlines()[-1].strip())
+    except Exception:
+        logger.debug("No se pudo consultar la cola de impresión de Windows.", exc_info=True)
+        return None
+
+
+def _log_windows_printer_snapshot(context: str) -> None:
+    if platform.system() != "Windows":
+        return
+    command = (
+        "Get-CimInstance Win32_Printer "
+        "| Select-Object Name,Default,PortName,PrinterStatus,WorkOffline "
+        "| Format-Table -AutoSize "
+        "| Out-String -Width 220"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=6,
+        )
+        if completed.returncode != 0:
+            return
+        snapshot = (completed.stdout or "").strip()
+        if snapshot:
+            logger.warning("Estado de impresoras Windows (%s):\n%s", context, snapshot)
+    except Exception:
+        logger.debug("No se pudo registrar snapshot de impresoras Windows.", exc_info=True)
+
+
+def _wait_for_print_job_increment(
+    printer_name: str,
+    previous_count: int,
+    *,
+    timeout_seconds: float = 3.5,
+    poll_seconds: float = 0.2,
+) -> Optional[bool]:
+    if previous_count < 0:
+        return None
+    deadline = time.monotonic() + max(0.5, timeout_seconds)
+    while time.monotonic() <= deadline:
+        current = _get_windows_print_job_count(printer_name)
+        if current is None:
+            return None
+        if current > previous_count:
+            return True
+        time.sleep(max(0.05, poll_seconds))
+    return False
+
+
+def _close_resource_quietly(resource: Any) -> None:
+    close_method = getattr(resource, "close", None)
+    if callable(close_method):
+        try:
+            close_method()
+        except Exception:
+            pass
+
+
+def _fit_image_to_printable_rect(
+    image_width: int,
+    image_height: int,
+    printable_width: int,
+    printable_height: int,
+    offset_x: int,
+    offset_y: int,
+) -> Optional[Tuple[int, int, int, int]]:
+    if image_width <= 0 or image_height <= 0 or printable_width <= 0 or printable_height <= 0:
+        return None
+
+    scale = min(printable_width / float(image_width), printable_height / float(image_height))
+    if scale <= 0:
+        return None
+
+    target_width = max(1, int(round(image_width * scale)))
+    target_height = max(1, int(round(image_height * scale)))
+    left = int(offset_x + max(0, (printable_width - target_width) // 2))
+    top = int(offset_y + max(0, (printable_height - target_height) // 2))
+    right = left + target_width
+    bottom = top + target_height
+    return (left, top, right, bottom)
+
+
+def _print_pdf_windows_internal(path: str, *, copies: int, printer_name: str) -> bool:
+    if platform.system() != "Windows" or copies < 1 or not printer_name:
+        return False
+
+    try:
+        import pypdfium2 as pdfium
+        from PIL import ImageWin
+        import win32con
+        import win32ui
+    except Exception:
+        logger.debug("Backend interno de impresión Windows no disponible.", exc_info=True)
+        return False
+
+    before = _get_windows_print_job_count(printer_name)
+    pdf_doc: Any = None
+    printer_dc: Any = None
+
+    try:
+        pdf_doc = pdfium.PdfDocument(path)
+        page_count = len(pdf_doc)
+        if page_count <= 0:
+            logger.warning("El PDF generado no contiene páginas para imprimir. path=%s", path)
+            return False
+
+        printer_dc = win32ui.CreateDC()
+        printer_dc.CreatePrinterDC(printer_name)
+        printer_dc.SetMapMode(win32con.MM_TEXT)
+
+        printable_width = int(printer_dc.GetDeviceCaps(win32con.HORZRES))
+        printable_height = int(printer_dc.GetDeviceCaps(win32con.VERTRES))
+        offset_x = int(printer_dc.GetDeviceCaps(win32con.PHYSICALOFFSETX))
+        offset_y = int(printer_dc.GetDeviceCaps(win32con.PHYSICALOFFSETY))
+        dpi_x = int(printer_dc.GetDeviceCaps(win32con.LOGPIXELSX))
+        dpi_y = int(printer_dc.GetDeviceCaps(win32con.LOGPIXELSY))
+
+        if printable_width <= 0 or printable_height <= 0:
+            logger.warning("No se pudo obtener área imprimible válida para '%s'.", printer_name)
+            return False
+
+        render_dpi_candidates = [value for value in (dpi_x, dpi_y) if value > 0]
+        render_dpi = min(render_dpi_candidates) if render_dpi_candidates else 300
+        render_dpi = max(150, min(render_dpi, 450))
+        render_scale = render_dpi / 72.0
+
+        for copy_idx in range(copies):
+            doc_started = False
+            try:
+                printer_dc.StartDoc(f"NexorynTech-{os.path.basename(path)}-c{copy_idx + 1}")
+                doc_started = True
+
+                for page_idx in range(page_count):
+                    page = None
+                    bitmap = None
+                    page_started = False
+                    pil_image = None
+                    try:
+                        page = pdf_doc.get_page(page_idx) if hasattr(pdf_doc, "get_page") else pdf_doc[page_idx]
+                        bitmap = page.render(scale=render_scale)
+                        pil_image = bitmap.to_pil()
+                        if pil_image.mode != "RGB":
+                            pil_image = pil_image.convert("RGB")
+                        rect = _fit_image_to_printable_rect(
+                            pil_image.width,
+                            pil_image.height,
+                            printable_width,
+                            printable_height,
+                            offset_x,
+                            offset_y,
+                        )
+                        if rect is None:
+                            raise RuntimeError("No se pudo calcular rectángulo imprimible para la página.")
+
+                        printer_dc.StartPage()
+                        page_started = True
+                        dib = ImageWin.Dib(pil_image)
+                        dib.draw(printer_dc.GetHandleOutput(), rect)
+                    finally:
+                        if page_started:
+                            try:
+                                printer_dc.EndPage()
+                            except Exception:
+                                logger.debug("EndPage falló.", exc_info=True)
+                        if pil_image is not None:
+                            try:
+                                pil_image.close()
+                            except Exception:
+                                pass
+                        _close_resource_quietly(bitmap)
+                        _close_resource_quietly(page)
+            finally:
+                if doc_started:
+                    try:
+                        printer_dc.EndDoc()
+                    except Exception:
+                        logger.debug("EndDoc falló.", exc_info=True)
+
+        if before is not None:
+            queued = _wait_for_print_job_increment(
+                printer_name,
+                before,
+                timeout_seconds=max(5.0, 2.0 * copies),
+                poll_seconds=0.2,
+            )
+            if queued is False:
+                logger.warning(
+                    "Backend interno no detectó nuevos jobs en la impresora '%s'.",
+                    printer_name,
+                )
+                return False
+        return True
+    except Exception as exc:
+        logger.warning("Backend interno de impresión Windows falló: %s", exc)
+        return False
+    finally:
+        if printer_dc is not None:
+            try:
+                printer_dc.DeleteDC()
+            except Exception:
+                pass
+        _close_resource_quietly(pdf_doc)
+
+
+def _dispatch_windows_print(
+    path: str,
+    *,
+    copies: int,
+    operation: str,
+    arguments: Optional[str] = None,
+) -> bool:
+    try:
+        for idx in range(copies):
+            if arguments is None:
+                os.startfile(path, operation)
+            else:
+                os.startfile(path, operation, arguments)
+            if idx < copies - 1:
+                time.sleep(0.18)
+        return True
+    except TypeError:
+        # Compatibilidad con runtimes donde startfile no acepta argumentos.
+        logger.debug("startfile no soporta argumentos para operación '%s'.", operation, exc_info=True)
+        return False
+    except OSError as exc:
+        logger.warning(
+            "No se pudo enviar PDF con operación '%s' (%s): %s",
+            operation,
+            getattr(exc, "winerror", "n/a"),
+            exc,
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Fallo al enviar PDF con operación '%s': %s", operation, exc)
+        return False
+
+
+def _first_existing_file(paths: List[str]) -> Optional[str]:
+    for candidate in paths:
+        if not candidate:
+            continue
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _run_pdf_tool_print(
+    tool_name: str,
+    executable: str,
+    path: str,
+    printer_name: str,
+    *,
+    copies: int,
+) -> bool:
+    if not executable or not printer_name:
+        return False
+
+    before = _get_windows_print_job_count(printer_name)
+    for idx in range(copies):
+        if tool_name == "sumatra":
+            command = [executable, "-silent", "-print-to", printer_name, path]
+            timeout = 20
+        elif tool_name == "acrobat":
+            command = [executable, "/N", "/S", "/O", "/H", "/T", path, printer_name]
+            timeout = 25
+        elif tool_name == "foxit":
+            command = [executable, "/t", path, printer_name]
+            timeout = 25
+        else:
+            return False
+
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if completed.returncode != 0:
+                logger.debug(
+                    "Fallback %s devolvió código %s. stderr=%s",
+                    tool_name,
+                    completed.returncode,
+                    (completed.stderr or "").strip(),
+                )
+        except Exception:
+            logger.debug("Fallback de impresión con %s falló.", tool_name, exc_info=True)
+            return False
+
+        if idx < copies - 1:
+            time.sleep(0.25)
+
+    if before is None:
+        return True
+    queued = _wait_for_print_job_increment(printer_name, before, timeout_seconds=6.0, poll_seconds=0.25)
+    return queued is not False
+
+
+def _print_pdf_with_known_windows_viewers(path: str, *, copies: int, printer_name: str) -> bool:
+    program_files = os.environ.get("ProgramFiles", "")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", "")
+    local_app_data = os.environ.get("LocalAppData", "")
+
+    sumatra = _first_existing_file(
+        [
+            os.path.join(program_files, "SumatraPDF", "SumatraPDF.exe"),
+            os.path.join(program_files_x86, "SumatraPDF", "SumatraPDF.exe"),
+            os.path.join(local_app_data, "SumatraPDF", "SumatraPDF.exe"),
+            shutil.which("SumatraPDF.exe") or "",
+        ]
+    )
+
+    acrobat = _first_existing_file(
+        [
+            os.path.join(program_files, "Adobe", "Acrobat DC", "Acrobat", "Acrobat.exe"),
+            os.path.join(program_files_x86, "Adobe", "Acrobat DC", "Acrobat", "Acrobat.exe"),
+            os.path.join(program_files, "Adobe", "Acrobat", "Acrobat", "Acrobat.exe"),
+            os.path.join(program_files_x86, "Adobe", "Acrobat", "Acrobat", "Acrobat.exe"),
+            os.path.join(program_files, "Adobe", "Acrobat Reader DC", "Reader", "AcroRd32.exe"),
+            os.path.join(program_files_x86, "Adobe", "Acrobat Reader DC", "Reader", "AcroRd32.exe"),
+            os.path.join(program_files, "Adobe", "Acrobat Reader", "Reader", "AcroRd32.exe"),
+            os.path.join(program_files_x86, "Adobe", "Acrobat Reader", "Reader", "AcroRd32.exe"),
+            shutil.which("AcroRd32.exe") or "",
+            shutil.which("Acrobat.exe") or "",
+        ]
+    )
+
+    foxit = _first_existing_file(
+        [
+            os.path.join(program_files, "Foxit Software", "Foxit PDF Reader", "FoxitPDFReader.exe"),
+            os.path.join(program_files_x86, "Foxit Software", "Foxit PDF Reader", "FoxitPDFReader.exe"),
+            os.path.join(program_files, "Foxit Software", "Foxit Reader", "FoxitReader.exe"),
+            os.path.join(program_files_x86, "Foxit Software", "Foxit Reader", "FoxitReader.exe"),
+            shutil.which("FoxitPDFReader.exe") or "",
+            shutil.which("FoxitReader.exe") or "",
+        ]
+    )
+
+    fallbacks = [("sumatra", sumatra), ("acrobat", acrobat), ("foxit", foxit)]
+    for tool_name, executable in fallbacks:
+        if not executable:
+            continue
+        logger.warning(
+            "Intentando fallback de impresión con %s: %s",
+            tool_name,
+            executable,
+        )
+        if _run_pdf_tool_print(tool_name, executable, path, printer_name, copies=copies):
+            return True
+    return False
+
+
 def _print_pdf_windows_default(path: str, *, copies: int = 1) -> bool:
     if copies < 1:
         raise ValueError("El parámetro 'copies' debe ser mayor o igual a 1.")
@@ -245,23 +689,63 @@ def _print_pdf_windows_default(path: str, *, copies: int = 1) -> bool:
     if platform.system() != "Windows" or not hasattr(os, "startfile"):
         return False
 
-    try:
-        for idx in range(copies):
-            os.startfile(path, "print")
-            # Evita perder jobs cuando el spooler aún no tomó el anterior.
-            if idx < copies - 1:
-                time.sleep(0.18)
+    default_printer = _get_default_windows_printer_name()
+    if not default_printer:
+        logger.warning("No hay impresora predeterminada de Windows configurada.")
+        _log_windows_printer_snapshot("no_default_printer")
+        return False
+
+    # Intento 1 (principal): backend interno Windows (sin depender de asociación PDF del sistema).
+    if _print_pdf_windows_internal(path, copies=copies, printer_name=default_printer):
         return True
-    except OSError as exc:
+
+    # Intento 2: printto con impresora explícita (depende del visor PDF registrado en Windows).
+    before = _get_windows_print_job_count(default_printer)
+    sent_printto = _dispatch_windows_print(
+        path,
+        copies=copies,
+        operation="printto",
+        arguments=f'"{default_printer}"',
+    )
+    if sent_printto:
+        if before is None:
+            return True
+        queued = _wait_for_print_job_increment(default_printer, before)
+        if queued is True:
+            return True
+        if queued is None:
+            return True
         logger.warning(
-            "No se pudo enviar el PDF a la impresora predeterminada de Windows (%s): %s",
-            getattr(exc, "winerror", "n/a"),
-            exc,
+            "La operación 'printto' no generó jobs en cola para '%s'. Se intentará 'print'.",
+            default_printer,
         )
-        return False
-    except Exception as exc:
-        logger.warning("No se pudo enviar el PDF a la impresora predeterminada de Windows: %s", exc)
-        return False
+
+    # Intento 3: print clásico.
+    before = _get_windows_print_job_count(default_printer) if default_printer else None
+    sent_print = _dispatch_windows_print(path, copies=copies, operation="print")
+    if sent_print:
+        if default_printer and before is not None:
+            queued = _wait_for_print_job_increment(default_printer, before)
+            if queued is False:
+                logger.warning(
+                    "No se detectaron nuevos jobs en la impresora predeterminada '%s' tras operación 'print'.",
+                    default_printer,
+                )
+            else:
+                return True
+        else:
+            return True
+
+    # Intento 4: fallback explícito con visores PDF conocidos.
+    if default_printer and _print_pdf_with_known_windows_viewers(
+        path,
+        copies=copies,
+        printer_name=default_printer,
+    ):
+        return True
+
+    _log_windows_printer_snapshot("print_dispatch_failed")
+    return False
 
 
 class BaseDocumentPDF(FPDF):
