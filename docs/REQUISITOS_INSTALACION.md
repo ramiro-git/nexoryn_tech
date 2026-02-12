@@ -14,7 +14,19 @@ Antes de empezar, la máquina debe tener:
 ### Instalación de dependencias
 Ejecutar en la carpeta raíz:
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+```
+
+Si tu entorno no expone `python`, usa:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+En Windows también puedes usar:
+
+```powershell
+py -3 -m pip install -r requirements.txt
 ```
 
 ---

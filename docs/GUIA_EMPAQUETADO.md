@@ -8,7 +8,19 @@ La aplicación está construida con **Flet**. Para generar el ejecutable, utiliz
 
 ### Requisitos previos
 ```powershell
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+```
+
+Si tu entorno no expone `python`, usa:
+
+```powershell
+python3 -m pip install -r requirements.txt
+```
+
+En Windows también puedes usar:
+
+```powershell
+py -3 -m pip install -r requirements.txt
 ```
 
 ### Comandos de Empaquetado
@@ -148,6 +160,13 @@ El Manual Maestro ahora se genera desde una fuente única en Markdown:
 
 ```powershell
 python scripts/generate_manual_pdf.py
+```
+
+Alternativas válidas según entorno:
+
+```powershell
+python3 scripts/generate_manual_pdf.py
+py -3 scripts/generate_manual_pdf.py
 ```
 
 ### Comando con rutas explícitas

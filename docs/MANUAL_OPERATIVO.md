@@ -318,4 +318,4 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - `Shift + Rueda`: scroll horizontal en tablas.
 - `Doble clic`: edición rápida de celdas habilitadas.
 
-Este manual se mantiene desde `docs/MANUAL_OPERATIVO.md` y se publica en PDF con `scripts/generate_manual_pdf.py`.
+Este manual se mantiene desde `docs/MANUAL_OPERATIVO.md` y se publica en PDF con `scripts/generate_manual_pdf.py` (usar `python` o `python3` según el entorno).
