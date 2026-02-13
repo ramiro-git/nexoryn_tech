@@ -97,6 +97,9 @@ La gestión de stock está integrada en **Inventario** (no hay módulo separado 
 ## Artículos
 
 - Alta con datos base: nombre, código, marca, rubro, unidad, IVA, costos y precios.
+- Campo logístico opcional: **Unid./Bulto** (`unidades_por_bulto`).
+  - Si se deja vacío, queda en `NULL`.
+  - Si se informa, debe ser entero positivo (`> 0`).
 - Soporta edición inline para cambios rápidos.
 - Permite activar/desactivar artículos sin perder historial.
 
@@ -137,8 +140,20 @@ La vista **Comprobantes** concentra ventas, compras y presupuestos.
 - El depósito se inicializa automáticamente con el primero disponible.
 - La lista de precios global puede autocompletarse según la entidad (si tiene lista asignada).
 - En el modal de comprobantes, `Tab / Shift + Tab` quedan confinados al modal mientras está abierto.
+- En el modal de comprobantes, `Esc` cierra el modal (y cancela acciones/modales auxiliares abiertos).
 - En impresión de comprobantes, `Incluir precios e importes` queda activo por defecto; desmarcar sólo en excepciones.
 - En comprobantes, la impresión usa la impresora predeterminada de Windows en forma directa.
+
+## Bultos (Logística)
+
+- En cada línea del comprobante se muestra el campo read-only **Bultos**.
+- Regla vigente (modo estricto):
+  - Se calcula `cantidad / unidades_por_bulto`.
+  - Si no da entero exacto, se muestra vacío.
+  - Si `unidades_por_bulto` no existe o es inválido, se muestra vacío.
+- El valor logístico se guarda por línea como snapshot histórico (`unidades_por_bulto_historico`) al crear/editar el comprobante.
+- En reimpresiones, **Presupuesto** y **Remito** usan ese snapshot histórico para la columna **Bultos**.
+- **Factura** no muestra columna de bultos.
 
 
 # 7. Facturación Electrónica (AFIP/ARCA)
@@ -311,6 +326,7 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - En comprobantes, `F10` confirma y segundo `F10` confirma el diálogo.
 - En comprobantes, `F11` resetea a formulario nuevo.
 - En comprobantes, `F12` guarda/crea comprobante.
+- En comprobantes, `Esc` cierra el modal.
 - En `AsyncSelect`, `ArrowDown / ArrowUp` mueve el resultado activo.
 - En `AsyncSelect`, `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.

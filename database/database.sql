@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NEXORYN TECH - Database Schema (PostgreSQL)
--- Version: 2.4 - Optimized with Smart Sync Version Stamp
+-- Version: 2.5 - Optimized with Smart Sync Version Stamp
 -- ============================================================================
 
 -- Acquire advisory lock to prevent concurrent schema updates from multiple instances
@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS app.articulo (
   descuento_base         NUMERIC(6,2) NOT NULL DEFAULT 0,
   redondeo               BOOLEAN NOT NULL DEFAULT FALSE,
   porcentaje_ganancia_2  NUMERIC(6,2) DEFAULT NULL,
+  unidades_por_bulto     INTEGER,
   activo                 BOOLEAN NOT NULL DEFAULT TRUE,
   observacion            TEXT,
   ubicacion              VARCHAR(100),
@@ -227,7 +228,8 @@ CREATE TABLE IF NOT EXISTS app.articulo (
   CONSTRAINT ck_art_costo CHECK (costo >= 0),
   CONSTRAINT ck_art_stock_min CHECK (stock_minimo >= 0),
   CONSTRAINT ck_art_desc_base CHECK (descuento_base >= 0 AND descuento_base <= 100),
-  CONSTRAINT ck_art_pgan2 CHECK (porcentaje_ganancia_2 IS NULL OR (porcentaje_ganancia_2 >= 0 AND porcentaje_ganancia_2 <= 1000))
+  CONSTRAINT ck_art_pgan2 CHECK (porcentaje_ganancia_2 IS NULL OR (porcentaje_ganancia_2 >= 0 AND porcentaje_ganancia_2 <= 1000)),
+  CONSTRAINT ck_art_unidades_por_bulto CHECK (unidades_por_bulto IS NULL OR unidades_por_bulto > 0)
 );
 
 CREATE TABLE IF NOT EXISTS app.articulo_stock_resumen (
@@ -295,7 +297,9 @@ CREATE TABLE IF NOT EXISTS app.documento_detalle (
   total_linea            NUMERIC(14,4) NOT NULL DEFAULT 0,
   id_lista_precio        BIGINT REFERENCES ref.lista_precio(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   observacion            TEXT,
+  unidades_por_bulto_historico INTEGER,
   PRIMARY KEY (id_documento, nro_linea),
+  CONSTRAINT ck_det_unidades_por_bulto_hist CHECK (unidades_por_bulto_historico IS NULL OR unidades_por_bulto_historico > 0),
   CONSTRAINT ck_det_cant CHECK (TRUE), -- Relaxed to allow legacy negative values
   CONSTRAINT ck_det_precio CHECK (TRUE),
   CONSTRAINT ck_det_total CHECK (TRUE)
@@ -362,6 +366,56 @@ ALTER TABLE app.remito ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NO
 ALTER TABLE app.documento ADD COLUMN IF NOT EXISTS valor_declarado NUMERIC(14,4) NOT NULL DEFAULT 0;
 ALTER TABLE app.movimiento_articulo ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
 ALTER TABLE app.documento_detalle ADD COLUMN IF NOT EXISTS descuento_importe NUMERIC(14,4) NOT NULL DEFAULT 0;
+ALTER TABLE app.documento_detalle ADD COLUMN IF NOT EXISTS unidades_por_bulto_historico INTEGER;
+ALTER TABLE app.articulo ADD COLUMN IF NOT EXISTS unidades_por_bulto INTEGER;
+
+-- Normalize legacy invalid values before enforcing constraint
+UPDATE app.documento_detalle
+SET unidades_por_bulto_historico = NULL
+WHERE unidades_por_bulto_historico IS NOT NULL
+  AND unidades_por_bulto_historico <= 0;
+
+-- Backfill snapshot for legacy lines using current article value at migration time
+UPDATE app.documento_detalle dd
+SET unidades_por_bulto_historico = a.unidades_por_bulto
+FROM app.articulo a
+WHERE dd.id_articulo = a.id
+  AND dd.unidades_por_bulto_historico IS NULL
+  AND a.unidades_por_bulto IS NOT NULL
+  AND a.unidades_por_bulto > 0;
+
+UPDATE app.articulo
+SET unidades_por_bulto = NULL
+WHERE unidades_por_bulto IS NOT NULL
+  AND unidades_por_bulto <= 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ck_det_unidades_por_bulto_hist'
+      AND conrelid = 'app.documento_detalle'::regclass
+  ) THEN
+    ALTER TABLE app.documento_detalle
+    ADD CONSTRAINT ck_det_unidades_por_bulto_hist
+    CHECK (unidades_por_bulto_historico IS NULL OR unidades_por_bulto_historico > 0);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ck_art_unidades_por_bulto'
+      AND conrelid = 'app.articulo'::regclass
+  ) THEN
+    ALTER TABLE app.articulo
+    ADD CONSTRAINT ck_art_unidades_por_bulto
+    CHECK (unidades_por_bulto IS NULL OR unidades_por_bulto > 0);
+  END IF;
+END $$;
 
 -- ============================================================================
 -- VIEWS
@@ -571,6 +625,7 @@ SELECT
   a.descuento_base,
   a.redondeo,
   a.porcentaje_ganancia_2,
+  a.unidades_por_bulto,
   a.activo,
   a.observacion,
   a.ubicacion,
@@ -1641,10 +1696,9 @@ ON CONFLICT (clave) DO NOTHING;
 -- VERSION STAMP
 -- ============================================================================
 INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
-VALUES ('db_version', '2.4', 'TEXT', 'Versión actual de la base de datos')
+VALUES ('db_version', '2.5', 'TEXT', 'Versión actual de la base de datos')
 ON CONFLICT (clave) DO UPDATE 
-SET valor = '2.4';
+SET valor = '2.5';
 
 -- Release advisory lock
 SELECT pg_advisory_unlock(543210);
-

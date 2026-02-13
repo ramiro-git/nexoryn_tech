@@ -63,12 +63,19 @@ Al inicializar `Database`, se aplican migraciones idempotentes en caliente:
 - `app.pago.id_documento` se vuelve nullable (para pagos de cuenta corriente).
 - `app.movimiento_articulo.stock_resultante` se agrega si falta.
 - `app.documento_detalle.descuento_importe` se agrega si falta y se normaliza `NULL -> 0`.
+- `app.documento_detalle.unidades_por_bulto_historico` se agrega si falta (nullable), se normalizan valores inválidos (`<= 0 -> NULL`) y se aplica `CHECK (> 0 cuando no es NULL)`.
 - `app.articulo.codigo` se agrega si falta, se normaliza (`NULLIF(TRIM(codigo), '')`) y se completa con `id::text` cuando falta.
+- `app.articulo.unidades_por_bulto` se agrega si falta (nullable), se normalizan valores historicos invalidos (`<= 0 -> NULL`) y se aplica `CHECK (> 0 cuando no es NULL)`.
 - Se crean índices sobre `app.articulo.codigo`:
   - `idx_articulo_codigo`
   - `idx_articulo_codigo_lower_trgm` (GIN sobre `lower(codigo)`).
-- Se refresca la vista `app.v_articulo_detallado` para incluir `codigo` y estructura vigente.
+- Se refresca la vista `app.v_articulo_detallado` para incluir `codigo`, `unidades_por_bulto` y estructura vigente.
 - Se actualiza el trigger `app.fn_sync_stock_resumen` para persistir `stock_resultante`.
+
+Compatibilidad:
+- `unidades_por_bulto` queda en `NULL` por defecto para articulos existentes y nuevos sin dato cargado, sin romper historicos.
+- En comprobantes, `unidades_por_bulto_historico` se guarda por línea al crear/editar para mantener consistencia en reimpresiones futuras.
+- El snapshot histórico cubre la lógica de bultos; otros metadatos de presentación (por ejemplo nombre/código/unidad del artículo) pueden seguir resolviéndose desde maestros vigentes según el flujo de impresión.
 
 ## Descuentos en comprobantes
 - `app.documento` mantiene el descuento global:

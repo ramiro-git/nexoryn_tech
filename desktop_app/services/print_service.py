@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from fpdf import FPDF
 
 from desktop_app.enums import DocumentoEstado, RemotoEstado
+from desktop_app.services.bultos import calculate_bultos
 from desktop_app.services.number_locale import format_currency, format_percent
 
 logger = logging.getLogger(__name__)
@@ -967,11 +968,11 @@ class InvoicePDF(BaseDocumentPDF):
         return nombre_completo or "Consumidor Final"
 
     def _presupuesto_table_headers(self) -> List[str]:
-        return ["Código", "Cant.", "Artículos", "Costo/Uni", "Importe"]
+        return ["Código", "Cant.", "Bultos", "Artículos", "Costo/Uni", "Importe"]
 
     def _presupuesto_table_widths(self) -> List[float]:
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        return _distribute_width(table_width, [0.14, 0.10, 0.42, 0.17, 0.17])
+        return _distribute_width(table_width, [0.13, 0.09, 0.09, 0.35, 0.17, 0.17])
 
     def _draw_presupuesto_table_header(self) -> None:
         headers = self._presupuesto_table_headers()
@@ -1113,6 +1114,8 @@ class InvoicePDF(BaseDocumentPDF):
                 or item.get("descripcion")
                 or f"Artículo {item.get('id_articulo', '-')}"
             )
+            bultos_value = calculate_bultos(qty, item.get("unidades_por_bulto"), mode="strict_exact")
+            bultos_text = str(bultos_value) if bultos_value is not None else ""
 
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
             is_last_row = idx == (len(self.items) - 1)
@@ -1136,14 +1139,15 @@ class InvoicePDF(BaseDocumentPDF):
             article_text = _truncate_text_to_width(
                 self,
                 str(article),
-                widths[2] - (getattr(self, "c_margin", 0.5) * 2),
+                widths[3] - (getattr(self, "c_margin", 0.5) * 2),
             )
 
             self.cell(widths[0], row_height, code_text, border=1, align="C", fill=True)
             self.cell(widths[1], row_height, self._format_qty(qty), border=1, align="C", fill=True)
-            self.cell(widths[2], row_height, f" {article_text}", border=1, align="L", fill=True)
-            self.cell(widths[3], row_height, _format_money(unit) if self.show_prices else "---", border=1, align="R", fill=True)
-            self.cell(widths[4], row_height, _format_money(total) if self.show_prices else "---", border=1, align="R", fill=True)
+            self.cell(widths[2], row_height, bultos_text, border=1, align="C", fill=True)
+            self.cell(widths[3], row_height, f" {article_text}", border=1, align="L", fill=True)
+            self.cell(widths[4], row_height, _format_money(unit) if self.show_prices else "---", border=1, align="R", fill=True)
+            self.cell(widths[5], row_height, _format_money(total) if self.show_prices else "---", border=1, align="R", fill=True)
             self.ln()
 
     def _draw_presupuesto_totals_note_block(self) -> None:
@@ -2122,11 +2126,11 @@ class RemitoPDF(BaseDocumentPDF):
         return nombre_completo or "Consumidor Final"
 
     def _remito_table_headers(self) -> List[str]:
-        return ["Código", "Cant.", "Artículos", "Costo/Uni", "Importe"]
+        return ["Código", "Cant.", "Bultos", "Artículos", "Costo/Uni", "Importe"]
 
     def _remito_table_widths(self) -> List[float]:
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        return _distribute_width(table_width, [0.14, 0.10, 0.42, 0.17, 0.17])
+        return _distribute_width(table_width, [0.13, 0.09, 0.09, 0.35, 0.17, 0.17])
 
     def _draw_remito_table_header(self) -> None:
         headers = self._remito_table_headers()
@@ -2288,6 +2292,8 @@ class RemitoPDF(BaseDocumentPDF):
                 or item.get("descripcion")
                 or f"Artículo {item.get('id_articulo', '-')}"
             )
+            bultos_value = calculate_bultos(qty, item.get("unidades_por_bulto"), mode="strict_exact")
+            bultos_text = str(bultos_value) if bultos_value is not None else ""
 
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
             is_last_row = idx == (len(self.items) - 1)
@@ -2307,16 +2313,17 @@ class RemitoPDF(BaseDocumentPDF):
             article_text = _truncate_text_to_width(
                 self,
                 str(article),
-                widths[2] - (c_margin * 2),
+                widths[3] - (c_margin * 2),
             )
             unit_text = _format_money(unit) if self.show_prices and unit is not None else "---"
             total_text = _format_money(total) if self.show_prices and total is not None else "---"
 
             self.cell(widths[0], row_height, code_text, border=1, align="C", fill=True)
             self.cell(widths[1], row_height, self._format_qty(qty), border=1, align="C", fill=True)
-            self.cell(widths[2], row_height, f" {article_text}", border=1, align="L", fill=True)
-            self.cell(widths[3], row_height, unit_text, border=1, align="R", fill=True)
-            self.cell(widths[4], row_height, total_text, border=1, align="R", fill=True)
+            self.cell(widths[2], row_height, bultos_text, border=1, align="C", fill=True)
+            self.cell(widths[3], row_height, f" {article_text}", border=1, align="L", fill=True)
+            self.cell(widths[4], row_height, unit_text, border=1, align="R", fill=True)
+            self.cell(widths[5], row_height, total_text, border=1, align="R", fill=True)
             self.ln()
 
     def _resolve_remito_neto(self) -> float:

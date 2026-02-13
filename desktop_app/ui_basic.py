@@ -80,6 +80,7 @@ try:
         normalize_input_value,
         parse_locale_number,
     )
+    from desktop_app.services.bultos import calculate_bultos
     from desktop_app.components.async_select import AsyncSelect
     from desktop_app.components.button_styles import cancel_button
     from desktop_app.enums import (
@@ -105,6 +106,7 @@ except ImportError:
     from services.document_pricing import calculate_document_totals, normalize_discount_pair, quantize_2, to_decimal  # type: ignore
     from services.article_price_autocalc import calc_pct_from_cost_price, calc_price_from_cost_pct, normalize_price_tipo  # type: ignore
     from services.number_locale import format_currency, format_percent, normalize_input_value, parse_locale_number  # type: ignore
+    from services.bultos import calculate_bultos  # type: ignore
     from components.async_select import AsyncSelect  # type: ignore
     from components.button_styles import cancel_button # type: ignore
     from enums import (  # type: ignore
@@ -892,6 +894,11 @@ def main(page: ft.Page) -> None:
             if not article_code:
                 article_code = str(article_id or "-")
             item_copy["articulo_codigo"] = article_code
+            item_copy["unidades_por_bulto"] = (
+                item.get("unidades_por_bulto_historico")
+                if item.get("unidades_por_bulto_historico") is not None
+                else (art or {}).get("unidades_por_bulto")
+            )
 
             raw_unit_abbr = str((art or {}).get("unidad_abreviatura") or "").strip()
             if raw_unit_abbr:
@@ -2569,6 +2576,13 @@ def main(page: ft.Page) -> None:
                 width=60,
             ),
             ColumnConfig(
+                key="unidades_por_bulto",
+                label="Bultos",
+                editable=True,
+                formatter=lambda v, _: "—" if v in (None, "") else str(v),
+                width=85,
+            ),
+            ColumnConfig(
                 key="stock_minimo",
                 label="Mínimo (stock)",
                 editable=True,
@@ -3187,6 +3201,8 @@ def main(page: ft.Page) -> None:
     nuevo_articulo_costo = _number_field("Costo *", width=275)
     nuevo_articulo_stock_minimo = _number_field("Stock mínimo *", width=275)
     nuevo_articulo_stock_actual = _number_field("Stock *", width=275)
+    nuevo_articulo_unidades_por_bulto = ft.TextField(label="Unid./Bulto", width=275)
+    _style_input(nuevo_articulo_unidades_por_bulto)
     nuevo_articulo_ubicacion = ft.Dropdown(label="Ubicación *", width=560, options=[], value="")
     _style_input(nuevo_articulo_ubicacion)
     nuevo_articulo_descuento_base = _number_field("Descuento Base (%)", width=180)
@@ -3229,6 +3245,19 @@ def main(page: ft.Page) -> None:
     def _normalize_article_numeric_field(field: ft.TextField) -> None:
         field.value = _article_decimal_input(field.value)
         _safe_update_control(field)
+
+    def _parse_optional_positive_int(value: Any, field_name: str) -> Optional[int]:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if not raw.lstrip("+-").isdigit():
+            raise ValueError(f"{field_name} debe ser un entero.")
+        parsed = int(raw)
+        if parsed <= 0:
+            raise ValueError(f"{field_name} debe ser mayor a 0.")
+        return parsed
 
     def _iter_article_price_rows() -> List[ft.Container]:
         rows: List[ft.Container] = []
@@ -3423,7 +3452,11 @@ def main(page: ft.Page) -> None:
                 observacion=nuevo_articulo_observacion.value,
                 descuento_base=_parse_float(nuevo_articulo_descuento_base.value, "Descuento Base"),
                 redondeo=bool(nuevo_articulo_redondeo.value),
-                porcentaje_ganancia_2=_parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2")
+                porcentaje_ganancia_2=_parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2"),
+                unidades_por_bulto=_parse_optional_positive_int(
+                    nuevo_articulo_unidades_por_bulto.value,
+                    "Unidades por bulto",
+                ),
             )
 
             # Save prices
@@ -3530,7 +3563,11 @@ def main(page: ft.Page) -> None:
                 "observacion": nuevo_articulo_observacion.value,
                 "descuento_base": _parse_float(nuevo_articulo_descuento_base.value, "Descuento Base"),
                 "redondeo": bool(nuevo_articulo_redondeo.value),
-                "porcentaje_ganancia_2": _parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2")
+                "porcentaje_ganancia_2": _parse_float(nuevo_articulo_ganancia_2.value, "Ganancia 2"),
+                "unidades_por_bulto": _parse_optional_positive_int(
+                    nuevo_articulo_unidades_por_bulto.value,
+                    "Unidades por bulto",
+                ),
             }
             changes = dict(updates)
             db_conn.update_article_fields(editing_article_id, updates)
@@ -3647,7 +3684,7 @@ def main(page: ft.Page) -> None:
                     ft.Container(height=10),
                     section_title("Costos y Stock"),
                     ft.Row([nuevo_articulo_costo, nuevo_articulo_stock_minimo], spacing=10),
-                    ft.Row([nuevo_articulo_stock_actual], spacing=10),
+                    ft.Row([nuevo_articulo_stock_actual, nuevo_articulo_unidades_por_bulto], spacing=10),
                     ft.Row([nuevo_articulo_descuento_base, nuevo_articulo_ganancia_2, nuevo_articulo_redondeo], spacing=20, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     
                     ft.Container(height=10),
@@ -3722,6 +3759,7 @@ def main(page: ft.Page) -> None:
         nuevo_articulo_stock_minimo.value = "0"
         nuevo_articulo_stock_actual.value = "0"
         nuevo_articulo_stock_actual.read_only = False # Enabled for creation
+        nuevo_articulo_unidades_por_bulto.value = ""
         nuevo_articulo_descuento_base.value = "0"
         nuevo_articulo_ganancia_2.value = "0"
         nuevo_articulo_redondeo.value = False
@@ -3855,6 +3893,7 @@ def main(page: ft.Page) -> None:
                                     ft.Column([
                                         info_row("Costo", _format_money(art.get('costo')), ft.icons.MONEY_ROUNDED),
                                         info_row("Stock Actual", f"{float(art.get('stock_actual', 0)):.2f} {art.get('unidad_abreviatura') or ''}", ft.icons.INVENTORY_ROUNDED),
+                                        info_row("Unid./Bulto", art.get("unidades_por_bulto") if art.get("unidades_por_bulto") is not None else "—", ft.icons.INVENTORY_ROUNDED),
                                         info_row("Ubicación", art.get('ubicacion'), ft.icons.LOCATION_ON_ROUNDED),
                                     ], expand=True),
                                 ], spacing=40),
@@ -3911,6 +3950,11 @@ def main(page: ft.Page) -> None:
             nuevo_articulo_stock_minimo.value = str(art.get("stock_minimo", 0))
             nuevo_articulo_stock_actual.value = str(art.get("stock_actual", 0))
             nuevo_articulo_stock_actual.read_only = False # Enabled to allow adjustments
+            nuevo_articulo_unidades_por_bulto.value = (
+                str(art.get("unidades_por_bulto"))
+                if art.get("unidades_por_bulto") is not None
+                else ""
+            )
             nuevo_articulo_descuento_base.value = str(art.get("descuento_base", 0))
             nuevo_articulo_ganancia_2.value = str(art.get("porcentaje_ganancia_2") or 0)
             nuevo_articulo_redondeo.value = bool(art.get("redondeo", False))
@@ -5788,6 +5832,9 @@ def main(page: ft.Page) -> None:
                             discount_pct = source_line.get("descuento_porcentaje")
                             if discount_pct is not None:
                                 row["descuento_porcentaje"] = discount_pct
+                            hist_unidades_bulto = source_line.get("unidades_por_bulto_historico")
+                            if hist_unidades_bulto is not None:
+                                row["unidades_por_bulto"] = hist_unidades_bulto
 
                             if not row.get("articulo_codigo"):
                                 row["articulo_codigo"] = str(
@@ -9647,6 +9694,10 @@ def main(page: ft.Page) -> None:
                 _focus_next_modal_control(reverse=reverse)
                 return
 
+            if key in {"esc", "escape"}:
+                _close_comprobante_form(None)
+                return
+
             if key in {"f12"}:
                 _save()
                 return
@@ -10083,6 +10134,7 @@ def main(page: ft.Page) -> None:
             iva_field_ctrl = row_map.get("iva_field")
             desc_pct_field_ctrl = row_map.get("desc_pct_field")
             desc_imp_field_ctrl = row_map.get("desc_imp_field")
+            bultos_field_ctrl = row_map.get("bultos_field")
             total_field_ctrl = row_map.get("total_field")
             stock_text_ctrl = row_map.get("stock_text")
 
@@ -10100,6 +10152,8 @@ def main(page: ft.Page) -> None:
                 desc_pct_field_ctrl.value = "0,00"
             if desc_imp_field_ctrl is not None:
                 desc_imp_field_ctrl.value = "0,00"
+            if bultos_field_ctrl is not None:
+                bultos_field_ctrl.value = ""
             if total_field_ctrl is not None:
                 total_field_ctrl.value = "0,00"
 
@@ -10133,6 +10187,7 @@ def main(page: ft.Page) -> None:
                 iva_field_ctrl,
                 desc_pct_field_ctrl,
                 desc_imp_field_ctrl,
+                bultos_field_ctrl,
                 total_field_ctrl,
                 stock_text_ctrl,
             )
@@ -10260,6 +10315,7 @@ def main(page: ft.Page) -> None:
             iva_field = ft.TextField(label="IVA % *", width=60, value="0,00"); _style_input(iva_field); _style_comprobante_control(iva_field)
             desc_pct_field = ft.TextField(label="Desc. %", width=90, value="0,00"); _style_input(desc_pct_field); _style_comprobante_control(desc_pct_field)
             desc_imp_field = ft.TextField(label="Desc. $", width=100, value="0,00"); _style_input(desc_imp_field); _style_comprobante_control(desc_imp_field)
+            bultos_field = ft.TextField(label="Bultos", width=75, value="", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(bultos_field); _style_comprobante_control(bultos_field)
             total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field); _style_comprobante_control(total_field)
             line_discount_mode = {"value": "percentage"}
             quantity_warning_guard = {"raw": None, "ts": 0.0}
@@ -10313,6 +10369,30 @@ def main(page: ft.Page) -> None:
                     return to_decimal("0")
                 return max(to_decimal("0"), to_decimal(iva_default))
 
+            def _get_article_unidades_por_bulto() -> Any:
+                art = _get_selected_article()
+                if not art and db and art_drop.value:
+                    try:
+                        art = db.get_article_simple(int(art_drop.value))
+                    except Exception:
+                        art = None
+                if not art:
+                    return None
+                return art.get("unidades_por_bulto")
+
+            def _update_bultos_field() -> None:
+                try:
+                    cantidad_value = _parse_int_quantity(cant_field.value, "Cantidad")
+                except Exception:
+                    cantidad_value = None
+                bultos_value = calculate_bultos(
+                    cantidad_value,
+                    _get_article_unidades_por_bulto(),
+                    mode="strict_exact",
+                )
+                bultos_field.value = str(bultos_value) if bultos_value is not None else ""
+                _safe_update_control(bultos_field)
+
             def _sync_fiscal_iva_from_visible(*, source: str) -> None:
                 # source: "auto" (carga inicial), "article_change" (cambia artículo), "user" (edición manual)
                 try:
@@ -10359,10 +10439,12 @@ def main(page: ft.Page) -> None:
                     line_sign = to_decimal("1") if base_line >= to_decimal("0") else to_decimal("-1")
                     line_total = base_line - (line_sign * d_imp)
                     total_field.value = _dec_to_input(line_total, use_grouping=True)
+                    _update_bultos_field()
                     if total_field.page:
                         total_field.update()
                 except Exception:
                     total_field.value = "0,00"
+                    bultos_field.value = ""
             
             def _update_price_from_list(*, recalc: bool = True):
                 """Actualiza el precio basado en artículo y lista seleccionados"""
@@ -10625,6 +10707,7 @@ def main(page: ft.Page) -> None:
                 "sync_fiscal_iva": _sync_fiscal_iva_from_visible,
                 "desc_pct_field": desc_pct_field,
                 "desc_imp_field": desc_imp_field,
+                "bultos_field": bultos_field,
                 "total_field": total_field,
                 "discount_mode_ref": line_discount_mode,
                 "recalculate_line": _update_line_total,
@@ -10644,8 +10727,8 @@ def main(page: ft.Page) -> None:
             _style_comprobante_button_focus(delete_btn)
             row_map["delete_btn"] = delete_btn
 
-            # [Artículo, Lista, Cant, Precio, IVA, Desc %, Desc $, Total, Delete]
-            row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, desc_pct_field, desc_imp_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
+            # [Articulo, Lista, Cant, Precio, IVA, Desc %, Desc $, Bultos, Total, Delete]
+            row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, desc_pct_field, desc_imp_field, bultos_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
             row.data = row_map # Attack callbacks to row
 
             _sync_fiscal_iva_from_visible(source="auto")
@@ -10840,7 +10923,7 @@ def main(page: ft.Page) -> None:
 
             for row in lines_container.controls:
                 row_map = row.data or {}
-                for key in ("art_drop", "lista_drop", "cant_field", "price_field", "iva_field", "desc_pct_field", "desc_imp_field", "delete_btn"):
+                for key in ("art_drop", "lista_drop", "cant_field", "price_field", "iva_field", "desc_pct_field", "desc_imp_field", "bultos_field", "delete_btn"):
                     _set_control_locked(row_map.get(key), locked)
 
             _set_control_locked(btn_add_line, locked)
@@ -11246,6 +11329,14 @@ def main(page: ft.Page) -> None:
             _confirm_afip_authorization(doc_row, close_after=False, on_success=_handle_modal_doc_state_change)
 
         def _close_comprobante_form(e: Any = None) -> None:
+            if _is_confirm_dialog_open():
+                confirm_dialog_state["on_confirm"] = None
+                confirm_dialog_state["is_open"] = False
+                _safe_page_close(page, confirm_dialog, "close_comprobante_confirm_dialog")
+            if getattr(print_options_dialog, "open", False):
+                _safe_page_close(page, print_options_dialog, "close_comprobante_print_options")
+            if getattr(discount_limit_dialog, "open", False):
+                _safe_page_close(page, discount_limit_dialog, "close_comprobante_discount_limit")
             _restore_modal_keyboard_handler()
             shortcut_state["f9_pressed"] = False
             shortcut_state["f10_pending_token"] = 0

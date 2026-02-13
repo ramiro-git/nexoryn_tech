@@ -107,6 +107,90 @@ def _parse_date_only(value: Any) -> Optional[datetime]:
     return None
 
 
+def _coerce_optional_positive_int(value: Any, field: str) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"Valor inválido para {field}.")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"{field} debe ser un entero.")
+        parsed = int(value)
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if not raw.lstrip("+-").isdigit():
+            raise ValueError(f"{field} debe ser un entero.")
+        parsed = int(raw)
+    else:
+        raise ValueError(f"Valor inválido para {field}.")
+    if parsed <= 0:
+        raise ValueError(f"{field} debe ser mayor a 0.")
+    return parsed
+
+
+_ARTICLE_SORT_COLUMNS: Dict[str, str] = {
+    "id": "id",
+    "codigo": "codigo",
+    "nombre": "nombre",
+    "marca": "marca",
+    "rubro": "rubro",
+    "costo": "costo",
+    "precio_lista": "precio_lista",
+    "unidad_abreviatura": "unidad_abreviatura",
+    "unidad_medida": "unidad_medida",
+    "id_unidad_medida": "unidad_abreviatura",
+    "id_tipo_iva": "porcentaje_iva",
+    "porcentaje_iva": "porcentaje_iva",
+    "proveedor": "proveedor",
+    "id_proveedor": "proveedor",
+    "id_marca": "marca",
+    "id_rubro": "rubro",
+    "stock_minimo": "stock_minimo",
+    "stock_actual": "stock_actual",
+    "unidades_por_bulto": "unidades_por_bulto",
+    "ubicacion": "ubicacion",
+    "activo": "activo",
+}
+
+
+def _build_article_order_by_clause(
+    sorts: Optional[Sequence[Tuple[str, str]]],
+    sort_columns: Dict[str, str],
+) -> str:
+    if not sorts:
+        return "nombre ASC, id ASC"
+
+    clauses: List[str] = []
+    for key, direction in sorts:
+        column = sort_columns.get((key or "").strip())
+        if not column:
+            continue
+
+        dir_sql = "DESC" if (direction or "").lower() == "desc" else "ASC"
+        if column in {"precio_lista", "unidades_por_bulto"}:
+            clauses.append(f"{column} {dir_sql} NULLS LAST")
+        elif column == "codigo":
+            numeric_flag = "CASE WHEN NULLIF(BTRIM(codigo), '') ~ '^[0-9]+$' THEN 0 ELSE 1 END"
+            numeric_value = "CASE WHEN NULLIF(BTRIM(codigo), '') ~ '^[0-9]+$' THEN (BTRIM(codigo))::numeric END"
+            clauses.append(f"{numeric_flag} ASC")
+            clauses.append(f"{numeric_value} {dir_sql} NULLS LAST")
+            clauses.append(f"codigo {dir_sql}")
+        else:
+            clauses.append(f"{column} {dir_sql}")
+
+    if not clauses:
+        return "nombre ASC, id ASC"
+
+    order_by = ", ".join(clauses)
+    if "id ASC" not in order_by:
+        order_by += ", id ASC"
+    return order_by
+
+
 class Database:
     def __init__(self, dsn: str, *, pool_min_size: int = 1, pool_max_size: int = 4):
         self.dsn = dsn
@@ -206,6 +290,40 @@ class Database:
                         SET descuento_importe = 0
                         WHERE descuento_importe IS NULL;
                     """)
+                    cur.execute("""
+                        ALTER TABLE app.documento_detalle
+                        ADD COLUMN IF NOT EXISTS unidades_por_bulto_historico INTEGER;
+                    """)
+                    cur.execute("""
+                        UPDATE app.documento_detalle
+                        SET unidades_por_bulto_historico = NULL
+                        WHERE unidades_por_bulto_historico IS NOT NULL
+                          AND unidades_por_bulto_historico <= 0;
+                    """)
+                    cur.execute("""
+                        UPDATE app.documento_detalle dd
+                        SET unidades_por_bulto_historico = a.unidades_por_bulto
+                        FROM app.articulo a
+                        WHERE dd.id_articulo = a.id
+                          AND dd.unidades_por_bulto_historico IS NULL
+                          AND a.unidades_por_bulto IS NOT NULL
+                          AND a.unidades_por_bulto > 0;
+                    """)
+                    cur.execute("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1
+                                FROM pg_constraint
+                                WHERE conname = 'ck_det_unidades_por_bulto_hist'
+                                  AND conrelid = 'app.documento_detalle'::regclass
+                            ) THEN
+                                ALTER TABLE app.documento_detalle
+                                ADD CONSTRAINT ck_det_unidades_por_bulto_hist
+                                CHECK (unidades_por_bulto_historico IS NULL OR unidades_por_bulto_historico > 0);
+                            END IF;
+                        END $$;
+                    """)
 
                     # 4. Ensure article code exists for product identification
                     cur.execute("""
@@ -230,7 +348,34 @@ class Database:
                         ON app.articulo USING gin (lower(codigo) gin_trgm_ops);
                     """)
 
-                    # 5. Keep article detailed view in sync with latest schema
+                    # 5. Ensure article package units exist and are valid
+                    cur.execute("""
+                        ALTER TABLE app.articulo
+                        ADD COLUMN IF NOT EXISTS unidades_por_bulto INTEGER;
+                    """)
+                    cur.execute("""
+                        UPDATE app.articulo
+                        SET unidades_por_bulto = NULL
+                        WHERE unidades_por_bulto IS NOT NULL
+                          AND unidades_por_bulto <= 0;
+                    """)
+                    cur.execute("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1
+                                FROM pg_constraint
+                                WHERE conname = 'ck_art_unidades_por_bulto'
+                                  AND conrelid = 'app.articulo'::regclass
+                            ) THEN
+                                ALTER TABLE app.articulo
+                                ADD CONSTRAINT ck_art_unidades_por_bulto
+                                CHECK (unidades_por_bulto IS NULL OR unidades_por_bulto > 0);
+                            END IF;
+                        END $$;
+                    """)
+
+                    # 6. Keep article detailed view in sync with latest schema
                     cur.execute("""
                         CREATE OR REPLACE VIEW app.v_articulo_detallado AS
                         SELECT
@@ -253,6 +398,7 @@ class Database:
                           a.descuento_base,
                           a.redondeo,
                           a.porcentaje_ganancia_2,
+                          a.unidades_por_bulto,
                           a.activo,
                           a.observacion,
                           a.ubicacion,
@@ -269,7 +415,7 @@ class Database:
                         LEFT JOIN app.articulo_precio ap ON ap.id_articulo = a.id AND ap.id_lista_precio = 1;
                     """)
 
-                    # 6. Update trigger to save stock_resultante on INSERT
+                    # 7. Update trigger to save stock_resultante on INSERT
                     cur.execute("""
                         CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
                         RETURNS TRIGGER AS $fn$
@@ -2215,62 +2361,7 @@ class Database:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         where_clause, params = self._build_article_filters(search, activo_only, advanced)
-
-        sort_columns = {
-            "id": "id",
-            "codigo": "codigo",
-            "nombre": "nombre",
-            "marca": "marca",
-            "rubro": "rubro",
-            "costo": "costo",
-            "precio_lista": "precio_lista",
-            "unidad_abreviatura": "unidad_abreviatura",
-            "unidad_medida": "unidad_medida",
-            "id_unidad_medida": "unidad_abreviatura",
-            "id_tipo_iva": "porcentaje_iva",
-            "porcentaje_iva": "porcentaje_iva",
-            "proveedor": "proveedor",
-            "id_proveedor": "proveedor",
-            "id_marca": "marca",
-            "id_rubro": "rubro",
-            "stock_minimo": "stock_minimo",
-            "stock_actual": "stock_actual",
-            "ubicacion": "ubicacion",
-            "activo": "activo",
-        }
-        if sorts:
-            # Custom sort handling for precio_lista to ensure NULLS LAST
-            clauses = []
-            for key, direction in sorts:
-                column = sort_columns.get((key or "").strip())
-                if not column:
-                    continue
-                
-                dir_sql = "DESC" if (direction or "").lower() == "desc" else "ASC"
-                
-                # Special case: Price list sorting needs NULLS LAST to keep '---' at bottom
-                if column == "precio_lista":
-                    clauses.append(f"{column} {dir_sql} NULLS LAST")
-                # Natural sort for product codes: numeric values are sorted by numeric value
-                # (99 < 100 < 998), then fallback to text sort for non-numeric codes.
-                elif column == "codigo":
-                    numeric_flag = "CASE WHEN NULLIF(BTRIM(codigo), '') ~ '^[0-9]+$' THEN 0 ELSE 1 END"
-                    numeric_value = "CASE WHEN NULLIF(BTRIM(codigo), '') ~ '^[0-9]+$' THEN (BTRIM(codigo))::numeric END"
-                    clauses.append(f"{numeric_flag} ASC")
-                    clauses.append(f"{numeric_value} {dir_sql} NULLS LAST")
-                    clauses.append(f"codigo {dir_sql}")
-                else:
-                    clauses.append(f"{column} {dir_sql}")
-            
-            if clauses:
-                order_by = ", ".join(clauses)
-                # Append tiebreaker if not already present
-                if "id ASC" not in order_by:
-                    order_by += ", id ASC"
-            else:
-                order_by = "nombre ASC, id ASC"
-        else:
-            order_by = "nombre ASC, id ASC"
+        order_by = _build_article_order_by_clause(sorts, _ARTICLE_SORT_COLUMNS)
 
         lp_id = _to_id((advanced or {}).get("id_lista_precio"))
         if lp_id is not None:
@@ -2985,6 +3076,7 @@ class Database:
         descuento_base: Any = 0,
         redondeo: bool = False,
         porcentaje_ganancia_2: Any = None,
+        unidades_por_bulto: Any = None,
     ) -> int:
         def clean(value: Any) -> Optional[str]:
             if value is None:
@@ -3046,6 +3138,10 @@ class Database:
                 stock_minimo_value = coerce_non_negative_number(stock_minimo, "stock mínimo")
                 descuento_base_value = coerce_non_negative_number(descuento_base, "descuento base")
                 pgan2_value = coerce_non_negative_number(porcentaje_ganancia_2, "ganancia 2") if porcentaje_ganancia_2 is not None else None
+                unidades_por_bulto_value = _coerce_optional_positive_int(
+                    unidades_por_bulto,
+                    "unidades por bulto",
+                )
 
                 if codigo_clean:
                     cur.execute(
@@ -3071,9 +3167,10 @@ class Database:
                         observacion,
                         descuento_base,
                         redondeo,
-                        porcentaje_ganancia_2
+                        porcentaje_ganancia_2,
+                        unidades_por_bulto
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """
                 cur.execute(
@@ -3093,7 +3190,8 @@ class Database:
                         clean(observacion),
                         descuento_base_value,
                         bool(redondeo),
-                        pgan2_value
+                        pgan2_value,
+                        unidades_por_bulto_value,
                     ),
                 )
                 res = cur.fetchone()
@@ -3114,7 +3212,8 @@ class Database:
             "nombre", "codigo", "costo", "stock_minimo", "activo", 
             "marca", "rubro", "ubicacion", "observacion",
             "id_tipo_iva", "id_unidad_medida", "id_proveedor",
-            "descuento_base", "redondeo", "porcentaje_ganancia_2"
+            "descuento_base", "redondeo", "porcentaje_ganancia_2",
+            "unidades_por_bulto",
         }
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
@@ -3143,6 +3242,11 @@ class Database:
             filtered["descuento_base"] = coerce_float(filtered["descuento_base"], "descuento_base")
         if "porcentaje_ganancia_2" in filtered:
             filtered["porcentaje_ganancia_2"] = coerce_float(filtered["porcentaje_ganancia_2"], "porcentaje_ganancia_2")
+        if "unidades_por_bulto" in filtered:
+            filtered["unidades_por_bulto"] = _coerce_optional_positive_int(
+                filtered["unidades_por_bulto"],
+                "unidades por bulto",
+            )
         if "activo" in filtered and isinstance(filtered["activo"], str):
             raw = filtered["activo"].strip().lower()
             if raw in {"1", "true", "si", "sí", "activo", "yes"}:
@@ -3282,7 +3386,7 @@ class Database:
                 a.id_rubro, r.nombre as rubro_nombre,
                 a.costo, a.stock_minimo, a.ubicacion, a.activo, a.observacion,
                 a.id_tipo_iva, a.id_unidad_medida, a.id_proveedor,
-                a.descuento_base, a.redondeo, a.porcentaje_ganancia_2,
+                a.descuento_base, a.redondeo, a.porcentaje_ganancia_2, a.unidades_por_bulto,
                 COALESCE(sr.stock_total, 0) as stock_actual
             FROM app.articulo a
             LEFT JOIN ref.marca m ON a.id_marca = m.id
@@ -4264,7 +4368,13 @@ class Database:
 
     def fetch_remito_detalle(self, remito_id: int) -> List[Dict[str, Any]]:
         query = """
-            SELECT rd.nro_linea, a.nombre AS articulo, rd.cantidad, rd.observacion, rd.id_articulo
+            SELECT
+                rd.nro_linea,
+                a.nombre AS articulo,
+                rd.cantidad,
+                rd.observacion,
+                rd.id_articulo,
+                a.unidades_por_bulto
             FROM app.remito_detalle rd
             JOIN app.articulo a ON a.id = rd.id_articulo
             WHERE rd.id_remito = %s
@@ -5267,7 +5377,8 @@ class Database:
         query = """
             SELECT dd.*, 
                    COALESCE(a.nombre, dd.descripcion_historica, 'Artículo Descon.') as articulo, 
-                   a.id as codigo_art, 
+                   a.id as codigo_art,
+                   a.unidades_por_bulto,
                    lp.nombre as lista_nombre
             FROM app.documento_detalle dd
             LEFT JOIN app.articulo a ON dd.id_articulo = a.id
@@ -5471,6 +5582,38 @@ class Database:
             if qty_dec != qty_dec.to_integral_value():
                 raise ValueError("La cantidad debe ser un número entero.")
 
+    def _build_unidades_por_bulto_snapshot(
+        self,
+        cur: Any,
+        items: Sequence[Dict[str, Any]],
+    ) -> Dict[int, Optional[int]]:
+        article_ids: List[int] = []
+        seen: set = set()
+        for item in items:
+            art_id = _to_id((item or {}).get("id_articulo"))
+            if art_id is None or art_id in seen:
+                continue
+            seen.add(art_id)
+            article_ids.append(art_id)
+        if not article_ids:
+            return {}
+
+        cur.execute(
+            """
+            SELECT id, unidades_por_bulto
+            FROM app.articulo
+            WHERE id = ANY(%s)
+            """,
+            (article_ids,),
+        )
+        result: Dict[int, Optional[int]] = {}
+        for row in cur.fetchall():
+            if isinstance(row, dict):
+                result[int(row.get("id"))] = row.get("unidades_por_bulto")
+            else:
+                result[int(row[0])] = row[1]
+        return result
+
     def create_document(self, *, id_tipo_documento: int, id_entidad_comercial: int, id_deposito: int, 
                         items: List[Dict[str, Any]], observacion: Optional[str] = None, 
                         numero_serie: Optional[str] = None, descuento_porcentaje: float = 0,
@@ -5501,8 +5644,8 @@ class Database:
             INSERT INTO app.documento_detalle (
                 id_documento, nro_linea, id_articulo, cantidad, 
                 precio_unitario, descuento_porcentaje, descuento_importe,
-                porcentaje_iva, total_linea, id_lista_precio, observacion
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                porcentaje_iva, total_linea, id_lista_precio, observacion, unidades_por_bulto_historico
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
         if not items:
@@ -5565,8 +5708,10 @@ class Database:
             doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]
 
             # Details (batch insert)
+            unidades_por_bulto_snapshot = self._build_unidades_por_bulto_snapshot(cur, pricing["items"])
             detail_rows = []
             for i, item in enumerate(pricing["items"], 1):
+                article_id = _to_id(item.get("id_articulo"))
                 detail_rows.append(
                     (
                         doc_id,
@@ -5579,7 +5724,8 @@ class Database:
                         item["porcentaje_iva"],
                         item["total_linea"],
                         item.get("id_lista_precio"),
-                        item.get("observacion")
+                        item.get("observacion"),
+                        unidades_por_bulto_snapshot.get(article_id) if article_id is not None else None,
                     )
                 )
             cur.executemany(detail_query, detail_rows)
@@ -5669,7 +5815,20 @@ class Database:
 
     def list_articulos_simple(self, limit: int = 200) -> List[Dict[str, Any]]:
         # Use parameterized query for LIMIT
-        query = "SELECT id_articulo, id_articulo AS id, nombre, costo, porcentaje_iva, activo FROM app.v_articulo_detallado WHERE activo = True ORDER BY nombre ASC LIMIT %s"
+        query = """
+            SELECT
+                id_articulo,
+                id_articulo AS id,
+                nombre,
+                costo,
+                porcentaje_iva,
+                unidades_por_bulto,
+                activo
+            FROM app.v_articulo_detallado
+            WHERE activo = True
+            ORDER BY nombre ASC
+            LIMIT %s
+        """
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (int(limit),))
@@ -5687,6 +5846,7 @@ class Database:
                 porcentaje_iva,
                 unidad_medida,
                 unidad_abreviatura,
+                unidades_por_bulto,
                 activo
             FROM app.v_articulo_detallado
             WHERE id_articulo = %s
@@ -6226,7 +6386,8 @@ class Database:
                 
                 cur.execute("""
                     SELECT id_articulo, cantidad, precio_unitario, descuento_porcentaje, descuento_importe,
-                           porcentaje_iva, total_linea, id_lista_precio, observacion, descripcion_historica
+                           porcentaje_iva, total_linea, id_lista_precio, observacion, descripcion_historica,
+                           unidades_por_bulto_historico
                     FROM app.documento_detalle WHERE id_documento = %s ORDER BY nro_linea
                 """, (doc_id,))
                 items = []
@@ -6240,7 +6401,8 @@ class Database:
                         "total_linea": float(row[6] or 0),
                         "id_lista_precio": row[7],
                         "observacion": row[8],
-                        "descripcion_historica": row[9]
+                        "descripcion_historica": row[9],
+                        "unidades_por_bulto_historico": row[10],
                     })
                 doc["items"] = items
                 return doc
@@ -6307,17 +6469,20 @@ class Database:
                 INSERT INTO app.documento_detalle (
                     id_documento, nro_linea, id_articulo, cantidad, 
                     precio_unitario, descuento_porcentaje, descuento_importe,
-                    porcentaje_iva, total_linea, id_lista_precio, observacion
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    porcentaje_iva, total_linea, id_lista_precio, observacion, unidades_por_bulto_historico
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """)
             
+            unidades_por_bulto_snapshot = self._build_unidades_por_bulto_snapshot(cur, pricing["items"])
             detail_rows = []
             for i, item in enumerate(pricing["items"], 1):
+                article_id = _to_id(item.get("id_articulo"))
                 detail_rows.append((
                     doc_id, i, item["id_articulo"], item["cantidad"],
                     item["precio_unitario"], item["descuento_porcentaje"], item["descuento_importe"],
                     item["porcentaje_iva"], item["total_linea"],
-                    item.get("id_lista_precio"), item.get("observacion")
+                    item.get("id_lista_precio"), item.get("observacion"),
+                    unidades_por_bulto_snapshot.get(article_id) if article_id is not None else None,
                 ))
             
             cur.executemany(detail_query, detail_rows)
@@ -6871,7 +7036,8 @@ class Database:
                 rd.id_articulo,
                 a.nombre AS articulo,
                 rd.cantidad,
-                rd.observacion
+                rd.observacion,
+                a.unidades_por_bulto
             FROM app.remito_detalle rd
             JOIN app.articulo a ON a.id = rd.id_articulo
             WHERE rd.id_remito = %s
