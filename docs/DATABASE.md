@@ -77,6 +77,16 @@ Compatibilidad:
 - En comprobantes, `unidades_por_bulto_historico` se guarda por línea al crear/editar para mantener consistencia en reimpresiones futuras.
 - El snapshot histórico cubre la lógica de bultos; otros metadatos de presentación (por ejemplo nombre/código/unidad del artículo) pueden seguir resolviéndose desde maestros vigentes según el flujo de impresión.
 
+## Validación de detalle de remitos desde comprobantes
+- `Database._insert_remito_detalle_from_document` acepta líneas legacy (tupla/lista) y líneas en formato dict (`id_articulo`, `cantidad`, `observacion`).
+- El artículo se normaliza a ID entero válido por línea; si no se puede resolver, la operación falla con error explícito de línea.
+- La cantidad se normaliza con `Decimal` y debe cumplir:
+  - número válido,
+  - entero exacto (sin fracción),
+  - mayor a `0`.
+- `observacion` se trimmea y se persiste como `NULL` cuando queda vacía.
+- Objetivo: evitar registros inválidos en `app.remito_detalle` y mejorar trazabilidad de errores operativos.
+
 ## Descuentos en comprobantes
 - `app.documento` mantiene el descuento global:
   - `descuento_porcentaje`
