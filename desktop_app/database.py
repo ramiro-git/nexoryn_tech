@@ -6039,6 +6039,18 @@ class Database:
             numeric = 1
         return str(numeric)
 
+    def _normalize_remito_quantity(self, raw_qty: Any, *, line_no: int) -> int:
+        try:
+            qty_dec = Decimal(str(raw_qty))
+        except Exception:
+            raise ValueError(f"La cantidad de la línea {line_no} no es un número válido para remito.")
+        if qty_dec != qty_dec.to_integral_value():
+            raise ValueError(f"La cantidad de la línea {line_no} debe ser un número entero para remito.")
+        qty_int = int(qty_dec)
+        if qty_int <= 0:
+            raise ValueError(f"La cantidad de la línea {line_no} debe ser mayor a 0 para remito.")
+        return qty_int
+
     def _insert_remito_detalle_from_document(self, cur, doc_id: int, remito_id: int) -> None:
         cur.execute(
             """
@@ -6055,9 +6067,22 @@ class Database:
 
         entries = []
         for idx, rec in enumerate(detalle, 1):
-            art_id = rec[0]
-            cantidad = rec[1]
-            obs = rec[2] if len(rec) > 2 else None
+            if isinstance(rec, dict):
+                art_id_raw = rec.get("id_articulo")
+                cantidad_raw = rec.get("cantidad")
+                obs = rec.get("observacion")
+            else:
+                art_id_raw = rec[0]
+                cantidad_raw = rec[1]
+                obs = rec[2] if len(rec) > 2 else None
+
+            art_id = _to_id(art_id_raw)
+            if art_id is None:
+                raise ValueError(f"La línea {idx} tiene un artículo inválido para remito.")
+
+            cantidad = self._normalize_remito_quantity(cantidad_raw, line_no=idx)
+            obs_text = str(obs).strip() if obs is not None else None
+            obs = obs_text or None
             entries.append((remito_id, idx, art_id, cantidad, obs))
 
         cur.executemany(
