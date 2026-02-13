@@ -17,22 +17,57 @@ Si tu entorno no expone `python`, usa:
 python3 -m pip install -r requirements.txt
 ```
 
-En Windows también puedes usar:
+En Windows, recomendado:
 
 ```powershell
-py -3 -m pip install -r requirements.txt
+py -3.12 -m pip install -r requirements.txt
 ```
 
 ### Comandos de Empaquetado
+Caso 1: si `flet` está en `PATH`:
+
 ```powershell
 flet pack desktop_app/main.py --name "NexorynTech" --add-data "database;database"
 ```
 
-> **Importante**: incluir `--add-data "database;database"` para que el `database.sql` esté disponible en el ejecutable.
-
 ```powershell
 flet pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png" --add-data "database;database"
 ```
+
+Caso 2 (Windows): si aparece `flet: The term 'flet' is not recognized...`, usar el ejecutable por ruta:
+
+```powershell
+$fletScripts = "$env:LOCALAPPDATA\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts"
+& "$fletScripts\flet.exe" --version
+& "$fletScripts\flet.exe" pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png" --add-data "database;database"
+```
+
+Caso 3 (Windows, sesión actual): agregar `Scripts` al `PATH` temporal y usar `flet` normal:
+
+```powershell
+$fletScripts = "$env:LOCALAPPDATA\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts"
+$env:Path += ";$fletScripts"
+flet --version
+flet pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png" --add-data "database;database"
+```
+
+Si `flet.exe` no existe en esa carpeta, instalar CLI explícitamente:
+
+```powershell
+py -3.12 -m pip install "flet-cli==0.25.2"
+```
+
+> **Importante**: incluir `--add-data "database;database"` para que el `database.sql` esté disponible en el ejecutable.
+
+### Diagnóstico rápido (Windows)
+```powershell
+py -0p
+py -3.12 -m pip show flet
+where.exe flet
+```
+
+- `where.exe flet` vacío: el paquete puede estar instalado, pero `Scripts` no está en `PATH`.
+- `pip show flet` sin resultados: falta instalar dependencias en ese Python.
 
 > Nota: el proyecto ya incluye `pyinstaller` en `requirements.txt`. Si cambias versiones de dependencias, valida el empaquetado en una máquina limpia antes de distribuir.
 
