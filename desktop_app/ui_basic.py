@@ -1141,6 +1141,13 @@ def main(page: ft.Page) -> None:
     _form_content_area = ft.Container()
     _form_actions_area = ft.Row(alignment=ft.MainAxisAlignment.END, spacing=10)
     _form_header = ft.Row([_form_title, ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=20, on_click=lambda _: close_form())], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+    _form_scroll_column = ft.Column(
+        [_form_header, _form_content_area, _form_actions_area],
+        tight=True,
+        spacing=15,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+    )
     
     # This replaces the native AlertDialog to allow multiple layers of modals
     form_dialog = ft.Container(
@@ -1150,11 +1157,7 @@ def main(page: ft.Page) -> None:
             content=ft.Container(
                 padding=24,
                 # Flexible sizing based on content
-                content=ft.Column([
-                    _form_header,
-                    _form_content_area,
-                    _form_actions_area
-                ], tight=True, spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
+                content=_form_scroll_column
             )
         ),
         bgcolor="#80000000",
@@ -9247,6 +9250,8 @@ def main(page: ft.Page) -> None:
             "f10_token_seq": 0,
             "f10_double_window_s": 0.28,
             "confirming": False,
+            "last_entidad_enter_ts": 0.0,
+            "entidad_enter_window_s": 1.2,
         }
 
         def _control_name(control: Any) -> str:
@@ -9668,6 +9673,17 @@ def main(page: ft.Page) -> None:
 
             _run_in_background(_delayed)
 
+        def _mark_recent_entidad_enter() -> None:
+            shortcut_state["last_entidad_enter_ts"] = time.monotonic()
+
+        def _consume_recent_entidad_enter() -> bool:
+            last_ts = float(shortcut_state.get("last_entidad_enter_ts") or 0.0)
+            shortcut_state["last_entidad_enter_ts"] = 0.0
+            if last_ts <= 0:
+                return False
+            window_s = float(shortcut_state.get("entidad_enter_window_s") or 1.2)
+            return (time.monotonic() - last_ts) <= max(window_s, 0.0)
+
         def _on_modal_keyboard_event(event: Any) -> None:
             if not form_dialog.visible:
                 _forward_modal_previous_keyboard_handler(event)
@@ -9682,6 +9698,10 @@ def main(page: ft.Page) -> None:
             if not _is_modal_keydown_event(event):
                 _forward_modal_previous_keyboard_handler(event)
                 return
+
+            if key in {"enter", "return", "numpad enter"}:
+                if modal_focus_state.get("current_control") is dropdown_entidad:
+                    _mark_recent_entidad_enter()
 
             if key in {"tab"}:
                 shift_raw = getattr(event, "shift", False)
@@ -10061,11 +10081,29 @@ def main(page: ft.Page) -> None:
         field_direccion.on_submit = _chain_handler_and_focus(field_direccion.on_submit, field_direccion)
         field_numero.on_submit = _chain_handler_and_focus(field_numero.on_submit, field_numero)
 
+        comprobante_items_anchor_key = "comprobante-items-section-anchor"
+
+        def _scroll_to_comprobante_items() -> None:
+            try:
+                _form_scroll_column.scroll_to(key=comprobante_items_anchor_key, duration=160)
+                return
+            except Exception:
+                pass
+            try:
+                _form_scroll_column.scroll_to(delta=100000, duration=160)
+            except Exception:
+                pass
+
         def _on_entidad_change_with_item_focus(_: Any) -> Any:
             _update_entidad_info(None)
+            should_auto_scroll = _consume_recent_entidad_enter()
             target_control = _resolve_primary_line_article_focus()
             if target_control is not None and _focus_control(target_control):
+                if should_auto_scroll:
+                    _scroll_to_comprobante_items()
                 return False
+            if should_auto_scroll:
+                _scroll_to_comprobante_items()
             return True
 
         dropdown_tipo.on_change = _chain_handler_and_focus(dropdown_tipo.on_change, dropdown_tipo)
@@ -10141,9 +10179,12 @@ def main(page: ft.Page) -> None:
             if art_drop_ctrl is not None:
                 art_drop_ctrl.value = None
             if lista_drop_ctrl is not None:
-                lista_drop_ctrl.value = None
+                if dropdown_lista_global.value and dropdown_lista_global.value != "":
+                    lista_drop_ctrl.value = dropdown_lista_global.value
+                else:
+                    lista_drop_ctrl.value = ""
             if cant_field_ctrl is not None:
-                cant_field_ctrl.value = "1"
+                cant_field_ctrl.value = ""
             if price_field_ctrl is not None:
                 price_field_ctrl.value = "0,00"
             if iva_field_ctrl is not None:
@@ -10310,7 +10351,7 @@ def main(page: ft.Page) -> None:
                 keyboard_accessible=True,
                 **comprobante_async_select_style,
             )
-            cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field); _style_comprobante_control(cant_field)
+            cant_field = ft.TextField(label="Cant. *", width=80, value=""); _style_input(cant_field); _style_comprobante_control(cant_field)
             price_field = ft.TextField(label="Precio *",width=90, value="0,00"); _style_input(price_field); _style_comprobante_control(price_field)
             iva_field = ft.TextField(label="IVA % *", width=60, value="0,00"); _style_input(iva_field); _style_comprobante_control(iva_field)
             desc_pct_field = ft.TextField(label="Desc. %", width=90, value="0,00"); _style_input(desc_pct_field); _style_comprobante_control(desc_pct_field)
@@ -10498,7 +10539,10 @@ def main(page: ft.Page) -> None:
             def _check_stock_warning(*, force_refresh: bool = False):
                 if not art_drop.value: return
                 try:
-                    requested = _parse_int_quantity(cant_field.value, "Cantidad")
+                    requested: Optional[int] = None
+                    requested_raw = str(cant_field.value or "").strip()
+                    if requested_raw:
+                        requested = _parse_int_quantity(cant_field.value, "Cantidad")
                     current_art_id = int(art_drop.value)
                     cached_art_id = stock_cache.get("article_id")
                     cached_available = stock_cache.get("available")
@@ -10513,7 +10557,10 @@ def main(page: ft.Page) -> None:
                         stock_cache["article_id"] = current_art_id
                         stock_cache["available"] = available
                     stock_text.value = f"Stock: {available}"
-                    if requested > available:
+                    if requested is None:
+                        stock_text.color = COLOR_TEXT_MUTED
+                        stock_text.weight = ft.FontWeight.NORMAL
+                    elif requested > available:
                         stock_text.color = COLOR_ERROR
                         stock_text.weight = ft.FontWeight.BOLD
                     else:
@@ -10524,15 +10571,35 @@ def main(page: ft.Page) -> None:
                     logger.warning(f"Falló al actualizar interfaz: {e}")
 
             def _refresh_lista_labels_with_prices() -> None:
+                current_value = lista_drop.value
                 try:
                     items, _ = item_price_list_loader("", 0, 100)
-                    opts = [ft.dropdown.Option(str(i["value"]), i["label"]) for i in items]
-                    current_value = lista_drop.value
-                    lista_drop.options = opts
-                    lista_drop.value = current_value
-                    _safe_update_control(lista_drop)
                 except Exception as ex:
                     logger.warning(f"No se pudieron refrescar labels de listas con precios: {ex}")
+                    items = []
+
+                # Mantener un fallback robusto evita que el selector quede vacío tras flujos de duplicados.
+                if not items:
+                    items = [{"value": l["id"], "label": l["nombre"]} for l in listas if l.get("activa", True)]
+                opts = [
+                    {"value": i.get("value"), "label": i.get("label")}
+                    for i in items
+                    if i.get("value") not in (None, "")
+                ]
+                valid_values = {str(i["value"]) for i in opts}
+                normalized_current = str(current_value) if current_value not in (None, "") else ""
+
+                try:
+                    lista_drop.options = opts
+                    if normalized_current and normalized_current in valid_values:
+                        lista_drop.value = normalized_current
+                    elif dropdown_lista_global.value and str(dropdown_lista_global.value) in valid_values:
+                        lista_drop.value = str(dropdown_lista_global.value)
+                    else:
+                        lista_drop.value = ""
+                    _safe_update_control(lista_drop)
+                except Exception as ex:
+                    logger.warning(f"No se pudo aplicar refresh de listas: {ex}")
 
             def _on_art_change(e):
                 current_row_map = row.data or {}
@@ -11341,6 +11408,7 @@ def main(page: ft.Page) -> None:
             shortcut_state["f9_pressed"] = False
             shortcut_state["f10_pending_token"] = 0
             shortcut_state["last_f10_ts"] = 0.0
+            shortcut_state["last_entidad_enter_ts"] = 0.0
             shortcut_state["confirming"] = False
             _maybe_set(main_app_container, "disabled", False)
             close_form(e)
@@ -11426,6 +11494,7 @@ def main(page: ft.Page) -> None:
 
 
         # Custom Dialog Content (replacing generic open_form to control layout fully)
+        items_section_anchor = ft.Container(key=comprobante_items_anchor_key, height=1)
         dialog_content = ft.Container(
             content=ft.Column(
                 controls=[
@@ -11441,6 +11510,7 @@ def main(page: ft.Page) -> None:
                     ft.Row([ft.Container(expand=True, content=field_obs)], spacing=10),
                     ft.Row([field_direccion], spacing=10),
                     ft.Divider(),
+                    items_section_anchor,
                     ft.Text("Ítems", weight=ft.FontWeight.BOLD),
                     ft.Container(
                         content=lines_container,
