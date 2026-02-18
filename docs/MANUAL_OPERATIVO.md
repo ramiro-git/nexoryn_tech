@@ -191,7 +191,7 @@ La vista **Remitos** permite seguir despachos y entregas.
 
 - Consultar estado: Pendiente, Despachado, Entregado o Anulado.
 - Filtrar por entidad, depósito, documento o rango de fechas.
-- Revisar valor declarado y unidades despachadas.
+- Revisar unidades despachadas.
 
 ## Recomendación
 

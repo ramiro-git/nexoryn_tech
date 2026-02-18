@@ -5619,47 +5619,6 @@ def main(page: ft.Page) -> None:
         if not rem_row:
             return
         remito_id = int(rem_row["id"])
-        
-        # UI element for live update
-        text_valor_declarado = ft.Text(_format_money(rem_row.get("valor_declarado") or 0), size=13)
-
-        def _edit_remito_valor(e):
-            val_field = ft.TextField(label="Valor Declarado $", value=str(rem_row.get("valor_declarado", 0)), width=200)
-            _style_input(val_field)
-            
-            def _confirm_edit(_):
-                try:
-                    new_val = float(val_field.value or 0)
-                    if db and db.update_remito_fields(remito_id, valor_declarado=new_val):
-                        show_toast("Valor declarado actualizado", kind="success")
-                        rem_row["valor_declarado"] = new_val
-                        remitos_table.refresh()
-                        
-                        # Update the UI element in the main modal directly
-                        text_valor_declarado.value = _format_money(new_val)
-                        try:
-                            text_valor_declarado.update()
-                        except Exception as e:
-                            logger.warning(f"Falló al actualizar valor declarado: {e}") 
-                    page.close(edit_dialog)
-                except Exception as ex:
-                    show_toast(f"Error: {ex}", kind="error")
-
-            edit_dialog = ft.AlertDialog(
-                title=ft.Text("Editar Valor Declarado"),
-                content=ft.Column([
-                    ft.Text("Ingrese el nuevo valor declarado para este remito."),
-                    val_field
-                ], height=100, spacing=10),
-                actions=[
-                    _cancel_button("Cancelar", on_click=lambda _: page.close(edit_dialog)),
-                    ft.ElevatedButton("Guardar", on_click=_confirm_edit, bgcolor=COLOR_ACCENT, color="white", 
-                                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
-                ]
-            )
-            page.overlay.append(edit_dialog)
-            edit_dialog.open = True
-            page.update()
 
         try:
             if db:
@@ -5693,13 +5652,6 @@ def main(page: ft.Page) -> None:
                 ft.Column([
                     ft.Text("ESTADO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
                     _remito_status_pill(rem_row.get("estado")),
-                ], spacing=2),
-                ft.Column([
-                    ft.Text("V. DECLARADO", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
-                    ft.Row([
-                        text_valor_declarado,
-                        ft.IconButton(ft.icons.EDIT_OUTLINED, icon_size=16, on_click=_edit_remito_valor, tooltip="Editar valor", icon_color=COLOR_ACCENT)
-                    ], spacing=2)
                 ], spacing=2),
                 ft.Column([
                     ft.Text("ENTREGA", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
@@ -6115,7 +6067,6 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="numero_serie", label="Número", width=100),
             ColumnConfig(key="entidad", label="Entidad", width=200),
             ColumnConfig(key="total", label="Total", width=120, formatter=_format_money),
-            ColumnConfig(key="valor_declarado", label="V. Declarado", width=110, formatter=_format_money),
             ColumnConfig(key="forma_pago", label="Forma de Pago", width=130),
             ColumnConfig(key="estado", label="Estado", width=120, renderer=lambda row: _status_pill(row.get("estado"), row)),
             ColumnConfig(key="usuario", label="Usuario", width=120),
@@ -6383,7 +6334,6 @@ def main(page: ft.Page) -> None:
             ColumnConfig(key="entidad", label="Entidad", width=220),
             ColumnConfig(key="deposito", label="Depósito", width=160),
             ColumnConfig(key="documento_numero", label="Documento", width=160),
-            ColumnConfig(key="valor_declarado", label="V. Declarado", width=110, formatter=_format_money),
             ColumnConfig(key="total_unidades", label="Unidades", width=90, formatter=_format_quantity),
             ColumnConfig(
                 key="_detail",
@@ -9140,7 +9090,6 @@ def main(page: ft.Page) -> None:
         field_descuento_global_pct = ft.TextField(label="Desc. Global %", width=130, value=""); _style_input(field_descuento_global_pct)
         field_descuento_global_imp = ft.TextField(label="Desc. Global $", width=130, value=""); _style_input(field_descuento_global_imp)
         field_sena = ft.TextField(label="Seña $", width=120, value="0,00", on_change=lambda _: _recalc_total()); _style_input(field_sena)
-        field_valor_declarado = ft.TextField(label="Valor Declarado $", width=140, value="0,00"); _style_input(field_valor_declarado)
         for comprobante_ctrl in [
             field_fecha,
             field_vto,
@@ -9150,25 +9099,10 @@ def main(page: ft.Page) -> None:
             field_descuento_global_pct,
             field_descuento_global_imp,
             field_sena,
-            field_valor_declarado,
         ]:
             _style_comprobante_control(comprobante_ctrl)
         global_discount_mode = {"value": "percentage"}
         global_discount_last_edited = {"value": "percentage"}
-        
-        # Automatic sync for declared value
-        auto_valor_sync = ft.Switch(label="Auto", value=False, tooltip="Sincronizar con el Total")
-        
-        def _on_auto_sync_change(e):
-            if auto_valor_sync.value:
-                field_valor_declarado.value = sum_total.value
-                field_valor_declarado.read_only = True
-            else:
-                field_valor_declarado.read_only = False
-            _safe_update_multiple(field_valor_declarado, auto_valor_sync)
-            _refresh_keyboard_navigation_order()
-        
-        auto_valor_sync.on_change = _on_auto_sync_change
 
         # Filter tipos: NC/ND only allowed if it's a copy of an already "facturado" (with CAE) doc
         # AND the source document was a Factura (not Presupuesto, Remito, etc)
@@ -9244,7 +9178,6 @@ def main(page: ft.Page) -> None:
                 dropdown_lista_global.value = str(doc_data["id_lista_precio"])
             
             field_sena.value = normalize_input_value(doc_data.get("sena", 0), decimals=2, use_grouping=True)
-            field_valor_declarado.value = normalize_input_value(doc_data.get("valor_declarado", 0), decimals=2, use_grouping=True)
             
             _update_entidad_info(None, preserve_values=True)
         else:
@@ -9598,8 +9531,6 @@ def main(page: ft.Page) -> None:
 
             # Footer
             for control in [
-                field_valor_declarado,
-                auto_valor_sync,
                 field_descuento_global_pct,
                 field_descuento_global_imp,
                 manual_mode,
@@ -10069,9 +10000,6 @@ def main(page: ft.Page) -> None:
             except Exception:
                 pass
             
-            if auto_valor_sync.value:
-                _set_value_if_changed(field_valor_declarado, str(sum_total.value or "0,00"))
-
             if controls_to_update:
                 _safe_update_multiple(*controls_to_update)
 
@@ -10145,10 +10073,6 @@ def main(page: ft.Page) -> None:
             _recalc_total()
             return True
 
-        def _on_valor_declarado_commit(_):
-            _normalize_field_numeric(field_valor_declarado, decimals=2, use_grouping=True)
-            return True
-
         for manual_field in [sum_subtotal, sum_iva, sum_total]:
             manual_field.on_submit = _chain_handler_and_focus(
                 lambda _, fld=manual_field: _normalize_field_numeric(fld, decimals=2, use_grouping=True),
@@ -10162,15 +10086,12 @@ def main(page: ft.Page) -> None:
         field_descuento_global_pct.on_submit = _chain_handler_and_focus(_on_global_desc_pct_commit, field_descuento_global_pct)
         field_descuento_global_imp.on_submit = _chain_handler_and_focus(_on_global_desc_imp_commit, field_descuento_global_imp)
         field_sena.on_submit = _chain_handler_and_focus(_on_sena_commit, field_sena)
-        field_valor_declarado.on_submit = _chain_handler_and_focus(_on_valor_declarado_commit, field_valor_declarado)
         if hasattr(field_descuento_global_pct, "on_blur"):
             field_descuento_global_pct.on_blur = _on_global_desc_pct_commit  # type: ignore[attr-defined]
         if hasattr(field_descuento_global_imp, "on_blur"):
             field_descuento_global_imp.on_blur = _on_global_desc_imp_commit  # type: ignore[attr-defined]
         if hasattr(field_sena, "on_blur"):
             field_sena.on_blur = _on_sena_commit  # type: ignore[attr-defined]
-        if hasattr(field_valor_declarado, "on_blur"):
-            field_valor_declarado.on_blur = _on_valor_declarado_commit  # type: ignore[attr-defined]
 
         # Keyboard flow for header fields
         field_fecha.on_submit = _chain_handler_and_focus(field_fecha.on_submit, field_fecha)
@@ -11095,8 +11016,6 @@ def main(page: ft.Page) -> None:
                 field_direccion,
                 field_descuento_global_pct,
                 field_descuento_global_imp,
-                field_valor_declarado,
-                auto_valor_sync,
                 manual_mode,
                 sum_subtotal,
                 sum_iva,
@@ -11125,8 +11044,6 @@ def main(page: ft.Page) -> None:
                 field_direccion,
                 field_descuento_global_pct,
                 field_descuento_global_imp,
-                field_valor_declarado,
-                auto_valor_sync,
                 manual_mode,
                 sum_subtotal,
                 sum_iva,
@@ -11181,7 +11098,6 @@ def main(page: ft.Page) -> None:
             _normalize_field_numeric_preserve_blank_zero(field_descuento_global_pct, decimals=2, use_grouping=True)
             _normalize_field_numeric_preserve_blank_zero(field_descuento_global_imp, decimals=2, use_grouping=True)
             _normalize_field_numeric(field_sena, decimals=2, use_grouping=True)
-            _normalize_field_numeric(field_valor_declarado, decimals=2, use_grouping=True)
             if manual_mode.value:
                 _normalize_field_numeric(sum_subtotal, decimals=2, use_grouping=True)
                 _normalize_field_numeric(sum_iva, decimals=2, use_grouping=True)
@@ -11333,7 +11249,6 @@ def main(page: ft.Page) -> None:
                         direccion_entrega=field_direccion.value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
-                        valor_declarado=_parse_float(field_valor_declarado.value, "Valor Declarado"),
                         manual_values={
                             "subtotal": _parse_float(sum_subtotal.value, "Neto Manual"),
                             "iva_total": _parse_float(sum_iva.value, "IVA Manual"),
@@ -11357,7 +11272,6 @@ def main(page: ft.Page) -> None:
                         direccion_entrega=field_direccion.value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
-                        valor_declarado=_parse_float(field_valor_declarado.value, "Valor Declarado"),
                         manual_values={
                             "subtotal": _parse_float(sum_subtotal.value, "Neto Manual"),
                             "iva_total": _parse_float(sum_iva.value, "IVA Manual"),
@@ -11635,7 +11549,6 @@ def main(page: ft.Page) -> None:
                     ft.Row([btn_add_line], alignment=ft.MainAxisAlignment.START),
                     ft.Divider(),
                     # Financial Footer
-                    ft.Row([ft.Container(expand=True), auto_valor_sync, field_valor_declarado], alignment=ft.MainAxisAlignment.END, spacing=10),
                     ft.Row([
                         ft.Container(expand=True),
                         field_descuento_global_pct,
