@@ -77,6 +77,16 @@ Compatibilidad:
 - En comprobantes, `unidades_por_bulto_historico` se guarda por línea al crear/editar para mantener consistencia en reimpresiones futuras.
 - El snapshot histórico cubre la lógica de bultos; otros metadatos de presentación (por ejemplo nombre/código/unidad del artículo) pueden seguir resolviéndose desde maestros vigentes según el flujo de impresión.
 
+## Validación de detalle de remitos desde comprobantes
+- `Database._insert_remito_detalle_from_document` acepta líneas legacy (tupla/lista) y líneas en formato dict (`id_articulo`, `cantidad`, `observacion`).
+- El artículo se normaliza a ID entero válido por línea; si no se puede resolver, la operación falla con error explícito de línea.
+- La cantidad se normaliza con `Decimal` y debe cumplir:
+  - número válido,
+  - entero exacto (sin fracción),
+  - mayor a `0`.
+- `observacion` se trimmea y se persiste como `NULL` cuando queda vacía.
+- Objetivo: evitar registros inválidos en `app.remito_detalle` y mejorar trazabilidad de errores operativos.
+
 ## Descuentos en comprobantes
 - `app.documento` mantiene el descuento global:
   - `descuento_porcentaje`
@@ -92,9 +102,10 @@ Compatibilidad:
   - El total operativo visible en UI no suma IVA adicional.
   - El desglose fiscal (neto/IVA) se calcula internamente sobre la base neta resultante.
 - UX actual en comprobantes:
-  - El campo de IVA visible por línea inicia en `0,00` (editable).
+  - El campo de IVA visible por línea inicia vacío (editable).
   - Si el usuario ingresa IVA visible `> 0`, ese valor actúa como override fiscal de la línea.
-  - Si el usuario deja IVA visible en `0,00`, la alícuota fiscal interna usa fallback del artículo.
+  - Si el usuario deja IVA visible vacío (o en `0`), la alícuota fiscal interna usa fallback del artículo.
+  - Los campos de descuento por línea (`descuento_porcentaje` y `descuento_importe`) pueden verse vacíos en UI y se interpretan internamente como `0`.
   - En persistencia (`app.documento_detalle.porcentaje_iva`) se guarda siempre la alícuota fiscal real.
   - Para AFIP se arma `Iva` por alícuota real, sin hardcodear 21%.
 

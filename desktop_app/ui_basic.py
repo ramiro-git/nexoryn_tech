@@ -1137,10 +1137,24 @@ def main(page: ft.Page) -> None:
 
     # --- SHARED DIALOGS ---
     # --- SHARED DIALOGS (Custom Modal to allow nesting) ---
+    _FORM_SCROLL_BOTTOM_KEY = "form_scroll_bottom_anchor"
     _form_title = ft.Text(size=18, weight=ft.FontWeight.BOLD)
     _form_content_area = ft.Container()
     _form_actions_area = ft.Row(alignment=ft.MainAxisAlignment.END, spacing=10)
     _form_header = ft.Row([_form_title, ft.IconButton(ft.icons.CLOSE_ROUNDED, icon_size=20, on_click=lambda _: close_form())], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+    _form_scroll_bottom_anchor = ft.Container(key=_FORM_SCROLL_BOTTOM_KEY, height=1, opacity=0)
+    _form_scroll_column = ft.Column(
+        [
+            _form_header,
+            _form_content_area,
+            _form_actions_area,
+            _form_scroll_bottom_anchor,
+        ],
+        tight=True,
+        spacing=15,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+    )
     
     # This replaces the native AlertDialog to allow multiple layers of modals
     form_dialog = ft.Container(
@@ -1150,11 +1164,7 @@ def main(page: ft.Page) -> None:
             content=ft.Container(
                 padding=24,
                 # Flexible sizing based on content
-                content=ft.Column([
-                    _form_header,
-                    _form_content_area,
-                    _form_actions_area
-                ], tight=True, spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
+                content=_form_scroll_column
             )
         ),
         bgcolor="#80000000",
@@ -9108,8 +9118,8 @@ def main(page: ft.Page) -> None:
         field_direccion = ft.TextField(label="Dirección de Entrega *", expand=True); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
         _style_input(field_numero)
-        field_descuento_global_pct = ft.TextField(label="Desc. Global %", width=130, value="0,00"); _style_input(field_descuento_global_pct)
-        field_descuento_global_imp = ft.TextField(label="Desc. Global $", width=130, value="0,00"); _style_input(field_descuento_global_imp)
+        field_descuento_global_pct = ft.TextField(label="Desc. Global %", width=130, value=""); _style_input(field_descuento_global_pct)
+        field_descuento_global_imp = ft.TextField(label="Desc. Global $", width=130, value=""); _style_input(field_descuento_global_imp)
         field_sena = ft.TextField(label="Seña $", width=120, value="0,00", on_change=lambda _: _recalc_total()); _style_input(field_sena)
         field_valor_declarado = ft.TextField(label="Valor Declarado $", width=140, value="0,00"); _style_input(field_valor_declarado)
         for comprobante_ctrl in [
@@ -9197,6 +9207,10 @@ def main(page: ft.Page) -> None:
             
             field_descuento_global_pct.value = normalize_input_value(doc_data.get("descuento_porcentaje", 0), decimals=2, use_grouping=True)
             field_descuento_global_imp.value = normalize_input_value(doc_data.get("descuento_importe", 0), decimals=2, use_grouping=True)
+            if _parse_float(field_descuento_global_pct.value, "Desc. Global %") <= 0:
+                field_descuento_global_pct.value = ""
+            if _parse_float(field_descuento_global_imp.value, "Desc. Global $") <= 0:
+                field_descuento_global_imp.value = ""
             if _parse_float(field_descuento_global_pct.value, "Desc. Global %") > 0:
                 global_discount_mode["value"] = "percentage"
             elif _parse_float(field_descuento_global_imp.value, "Desc. Global $") > 0:
@@ -9488,7 +9502,7 @@ def main(page: ft.Page) -> None:
             return (
                 art_val == ""
                 and lista_val in {"", "0"}
-                and cant_val in {"", "1", "1,00", "1.00"}
+                and cant_val in {"", "0", "0,00", "0.00", "1", "1,00", "1.00"}
                 and price_val in {"", "0", "0,00", "0.00"}
                 and iva_val in {"", "0", "0,00", "0.00"}
                 and desc_pct_val in {"", "0", "0,00", "0.00"}
@@ -9799,11 +9813,44 @@ def main(page: ft.Page) -> None:
         def _dec_to_input(value: Any, decimals: int = 2, use_grouping: bool = False) -> str:
             return normalize_input_value(quantize_2(to_decimal(value)), decimals=decimals, use_grouping=use_grouping)
 
+        def _dec_to_input_or_blank(
+            value: Any,
+            decimals: int = 2,
+            use_grouping: bool = False,
+        ) -> str:
+            normalized_value = quantize_2(to_decimal(value))
+            if normalized_value == to_decimal("0"):
+                return ""
+            return normalize_input_value(normalized_value, decimals=decimals, use_grouping=use_grouping)
+
         def _normalize_field_numeric(field: Optional[ft.TextField], decimals: int = 2, use_grouping: bool = True) -> None:
             if not field:
                 return
             normalized = normalize_input_value(field.value, decimals=decimals, use_grouping=use_grouping)
             field.value = normalized if normalized else normalize_input_value("0", decimals=decimals, use_grouping=use_grouping)
+            _safe_update_control(field)
+
+        def _normalize_field_numeric_preserve_blank_zero(
+            field: Optional[ft.TextField],
+            decimals: int = 2,
+            use_grouping: bool = True,
+        ) -> None:
+            if not field:
+                return
+            raw_value = str(field.value or "").strip()
+            if not raw_value:
+                field.value = ""
+                _safe_update_control(field)
+                return
+
+            normalized = normalize_input_value(raw_value, decimals=decimals, use_grouping=use_grouping)
+            if not normalized:
+                field.value = ""
+                _safe_update_control(field)
+                return
+
+            parsed = parse_locale_number(normalized)
+            field.value = "" if parsed is not None and parsed == 0 else normalized
             _safe_update_control(field)
 
         def _normalize_quantity_field(field: Optional[ft.TextField], *, label: str = "Cantidad") -> int:
@@ -9872,10 +9919,10 @@ def main(page: ft.Page) -> None:
                 mode="amount" if mode == "amount" else "percentage",
             )
             if active_field is not field_descuento_global_pct or normalize_active:
-                field_descuento_global_pct.value = _dec_to_input(pct_norm, use_grouping=True)
+                field_descuento_global_pct.value = _dec_to_input_or_blank(pct_norm, use_grouping=True)
                 _safe_update_control(field_descuento_global_pct)
             if active_field is not field_descuento_global_imp or normalize_active:
-                field_descuento_global_imp.value = _dec_to_input(imp_norm, use_grouping=True)
+                field_descuento_global_imp.value = _dec_to_input_or_blank(imp_norm, use_grouping=True)
                 _safe_update_control(field_descuento_global_imp)
         
         def _recalc_total(active_field: Optional[ft.TextField] = None):
@@ -9937,6 +9984,10 @@ def main(page: ft.Page) -> None:
                 sena=sena_val,
                 pricing_mode="tax_included",
             )
+            has_manual_visible_iva = any(
+                to_decimal((item or {}).get("porcentaje_iva", 0)) > to_decimal("0")
+                for item in calc_items
+            )
 
             for i, priced_item in enumerate(result["items"]):
                 if i >= len(row_refs):
@@ -9949,17 +10000,21 @@ def main(page: ft.Page) -> None:
                 if active_field is not field_descuento_global_pct:
                     _set_value_if_changed(
                         field_descuento_global_pct,
-                        _dec_to_input(result["descuento_global_porcentaje"], use_grouping=True),
+                        _dec_to_input_or_blank(result["descuento_global_porcentaje"], use_grouping=True),
                     )
                 if active_field is not field_descuento_global_imp:
                     _set_value_if_changed(
                         field_descuento_global_imp,
-                        _dec_to_input(result["descuento_global_importe"], use_grouping=True),
+                        _dec_to_input_or_blank(result["descuento_global_importe"], use_grouping=True),
                     )
                 _set_value_if_changed(sum_desc_lineas, _dec_to_input(result["descuento_lineas_importe"], use_grouping=True))
                 _set_value_if_changed(sum_desc_global, _dec_to_input(result["descuento_global_importe"], use_grouping=True))
-                _set_value_if_changed(sum_subtotal, _dec_to_input(result["ui_subtotal"], use_grouping=True))
-                _set_value_if_changed(sum_iva, _dec_to_input(result["ui_iva_total"], use_grouping=True))
+                if has_manual_visible_iva:
+                    _set_value_if_changed(sum_subtotal, _dec_to_input(result["neto"], use_grouping=True))
+                    _set_value_if_changed(sum_iva, _dec_to_input(result["iva_total"], use_grouping=True))
+                else:
+                    _set_value_if_changed(sum_subtotal, _dec_to_input(result["ui_subtotal"], use_grouping=True))
+                    _set_value_if_changed(sum_iva, _dec_to_input(0, use_grouping=True))
                 _set_value_if_changed(sum_total, _dec_to_input(result["total"], use_grouping=True))
                 _set_value_if_changed(sum_saldo, _dec_to_input(result["saldo"], use_grouping=True))
             except Exception:
@@ -10074,8 +10129,25 @@ def main(page: ft.Page) -> None:
         manual_mode.on_change = _chain_handler_and_focus(toggle_manual, manual_mode)
         
         # Use ListView with internal padding to prevent "first item cut-off" issue
-        lines_container = ft.ListView(spacing=10, padding=ft.padding.only(top=15, left=5, right=10, bottom=5), expand=True)
+        lines_container = ft.ListView(
+            spacing=10,
+            padding=ft.padding.only(top=15, left=5, right=10, bottom=5),
+            expand=True,
+            auto_scroll=True,
+        )
         duplicate_item_dialog = ft.AlertDialog(modal=True)
+        modal_bottom_scroll_done_ref = {"value": False}
+
+        def _scroll_comprobante_modal_to_bottom_once() -> None:
+            if modal_bottom_scroll_done_ref["value"]:
+                return
+            try:
+                if hasattr(_form_scroll_column, "scroll_to"):
+                    _form_scroll_column.scroll_to(key=_FORM_SCROLL_BOTTOM_KEY, duration=0)
+                if _safe_update_control(_form_scroll_column) or _safe_update_control(form_dialog):
+                    modal_bottom_scroll_done_ref["value"] = True
+            except Exception:
+                logger.debug("No se pudo hacer auto-scroll del modal de comprobantes", exc_info=True)
 
         def _normalize_duplicate_text(value: Any) -> str:
             text = str(value or "").strip().lower()
@@ -10143,15 +10215,15 @@ def main(page: ft.Page) -> None:
             if lista_drop_ctrl is not None:
                 lista_drop_ctrl.value = None
             if cant_field_ctrl is not None:
-                cant_field_ctrl.value = "1"
+                cant_field_ctrl.value = ""
             if price_field_ctrl is not None:
                 price_field_ctrl.value = "0,00"
             if iva_field_ctrl is not None:
-                iva_field_ctrl.value = "0,00"
+                iva_field_ctrl.value = ""
             if desc_pct_field_ctrl is not None:
-                desc_pct_field_ctrl.value = "0,00"
+                desc_pct_field_ctrl.value = ""
             if desc_imp_field_ctrl is not None:
-                desc_imp_field_ctrl.value = "0,00"
+                desc_imp_field_ctrl.value = ""
             if bultos_field_ctrl is not None:
                 bultos_field_ctrl.value = ""
             if total_field_ctrl is not None:
@@ -10310,11 +10382,11 @@ def main(page: ft.Page) -> None:
                 keyboard_accessible=True,
                 **comprobante_async_select_style,
             )
-            cant_field = ft.TextField(label="Cant. *", width=80, value="1"); _style_input(cant_field); _style_comprobante_control(cant_field)
+            cant_field = ft.TextField(label="Cant. *", width=80, value=""); _style_input(cant_field); _style_comprobante_control(cant_field)
             price_field = ft.TextField(label="Precio *",width=90, value="0,00"); _style_input(price_field); _style_comprobante_control(price_field)
-            iva_field = ft.TextField(label="IVA % *", width=60, value="0,00"); _style_input(iva_field); _style_comprobante_control(iva_field)
-            desc_pct_field = ft.TextField(label="Desc. %", width=90, value="0,00"); _style_input(desc_pct_field); _style_comprobante_control(desc_pct_field)
-            desc_imp_field = ft.TextField(label="Desc. $", width=100, value="0,00"); _style_input(desc_imp_field); _style_comprobante_control(desc_imp_field)
+            iva_field = ft.TextField(label="IVA % *", width=60, value=""); _style_input(iva_field); _style_comprobante_control(iva_field)
+            desc_pct_field = ft.TextField(label="Desc. %", width=90, value=""); _style_input(desc_pct_field); _style_comprobante_control(desc_pct_field)
+            desc_imp_field = ft.TextField(label="Desc. $", width=100, value=""); _style_input(desc_imp_field); _style_comprobante_control(desc_imp_field)
             bultos_field = ft.TextField(label="Bultos", width=75, value="", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(bultos_field); _style_comprobante_control(bultos_field)
             total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field); _style_comprobante_control(total_field)
             line_discount_mode = {"value": "percentage"}
@@ -10331,9 +10403,9 @@ def main(page: ft.Page) -> None:
                     # Compatibilidad histórica: mantenemos decimales visibles, pero se bloqueará guardado hasta corregir.
                     cant_field.value = normalize_input_value(initial_data["cantidad"], decimals=2, use_grouping=False)
                 price_field.value = normalize_input_value(initial_data["precio_unitario"], decimals=2, use_grouping=True)
-                iva_field.value = "0,00"
-                desc_pct_field.value = normalize_input_value(initial_data.get("descuento_porcentaje", 0), decimals=2, use_grouping=True)
-                desc_imp_field.value = normalize_input_value(initial_data.get("descuento_importe", 0), decimals=2, use_grouping=True)
+                iva_field.value = ""
+                desc_pct_field.value = _dec_to_input_or_blank(initial_data.get("descuento_porcentaje", 0), use_grouping=True)
+                desc_imp_field.value = _dec_to_input_or_blank(initial_data.get("descuento_importe", 0), use_grouping=True)
                 if _parse_float(desc_pct_field.value, "Desc. %") > 0:
                     line_discount_mode["value"] = "percentage"
                 elif _parse_float(desc_imp_field.value, "Desc. $") > 0:
@@ -10344,7 +10416,7 @@ def main(page: ft.Page) -> None:
                     lista_drop.value = dropdown_lista_global.value
                 else:
                     lista_drop.value = ""
-                iva_field.value = "0,00"
+                iva_field.value = ""
 
             def _get_selected_article() -> Optional[Dict[str, Any]]:
                 if not art_drop.value:
@@ -10431,10 +10503,10 @@ def main(page: ft.Page) -> None:
                         mode="amount" if line_discount_mode["value"] == "amount" else "percentage",
                     )
                     if active_field is not desc_pct_field or normalize_active:
-                        desc_pct_field.value = _dec_to_input(d_pct, use_grouping=True)
+                        desc_pct_field.value = _dec_to_input_or_blank(d_pct, use_grouping=True)
                         _safe_update_control(desc_pct_field)
                     if active_field is not desc_imp_field or normalize_active:
-                        desc_imp_field.value = _dec_to_input(d_imp, use_grouping=True)
+                        desc_imp_field.value = _dec_to_input_or_blank(d_imp, use_grouping=True)
                         _safe_update_control(desc_imp_field)
                     line_sign = to_decimal("1") if base_line >= to_decimal("0") else to_decimal("-1")
                     line_total = base_line - (line_sign * d_imp)
@@ -10554,6 +10626,7 @@ def main(page: ft.Page) -> None:
                 # Automation: if an article is selected and this is the last line, add a new one
                 if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
                     _add_line()
+                    _scroll_comprobante_modal_to_bottom_once()
                 return True
 
             def _on_art_change_and_focus_qty(e):
@@ -10625,7 +10698,7 @@ def main(page: ft.Page) -> None:
                 return True
 
             def _on_iva_commit(_):
-                _normalize_field_numeric(iva_field, decimals=2, use_grouping=True)
+                _normalize_field_numeric_preserve_blank_zero(iva_field, decimals=2, use_grouping=True)
                 _sync_fiscal_iva_from_visible(source="user")
                 _update_line_total()
                 _recalc_total()
@@ -10994,8 +11067,8 @@ def main(page: ft.Page) -> None:
                 return False
 
             # Normalización final para persistir formato consistente sin forzar durante tipeo.
-            _normalize_field_numeric(field_descuento_global_pct, decimals=2, use_grouping=True)
-            _normalize_field_numeric(field_descuento_global_imp, decimals=2, use_grouping=True)
+            _normalize_field_numeric_preserve_blank_zero(field_descuento_global_pct, decimals=2, use_grouping=True)
+            _normalize_field_numeric_preserve_blank_zero(field_descuento_global_imp, decimals=2, use_grouping=True)
             _normalize_field_numeric(field_sena, decimals=2, use_grouping=True)
             _normalize_field_numeric(field_valor_declarado, decimals=2, use_grouping=True)
             if manual_mode.value:
@@ -11011,12 +11084,12 @@ def main(page: ft.Page) -> None:
                     show_toast(str(exc), kind="error")
                     return False
                 _normalize_field_numeric(row_map.get("price_field"), decimals=2, use_grouping=True)
-                _normalize_field_numeric(row_map.get("iva_field"), decimals=2, use_grouping=True)
+                _normalize_field_numeric_preserve_blank_zero(row_map.get("iva_field"), decimals=2, use_grouping=True)
                 sync_fiscal = row_map.get("sync_fiscal_iva")
                 if callable(sync_fiscal):
                     sync_fiscal(source="user")
-                _normalize_field_numeric(row_map.get("desc_pct_field"), decimals=2, use_grouping=True)
-                _normalize_field_numeric(row_map.get("desc_imp_field"), decimals=2, use_grouping=True)
+                _normalize_field_numeric_preserve_blank_zero(row_map.get("desc_pct_field"), decimals=2, use_grouping=True)
+                _normalize_field_numeric_preserve_blank_zero(row_map.get("desc_imp_field"), decimals=2, use_grouping=True)
 
             def _resolve_discount_mode(raw_mode: Any, pct_val: float, imp_val: float) -> str:
                 mode = "amount" if str(raw_mode).lower() == "amount" else "percentage"

@@ -316,6 +316,12 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - Confirmar permisos de carpeta temporal.
 - Si falla la impresión directa, el sistema abre el PDF para impresión manual.
 
+## Error al generar ejecutable (.exe)
+
+- No usar `python -m flet` ni `py -m flet`.
+- Si `flet` no aparece en `PATH`, usar la ruta completa a `flet.exe`.
+- Para el paso a paso actualizado de empaquetado, seguir `docs/GUIA_EMPAQUETADO.md`.
+
 
 # 15. Resumen de Atajos
 
