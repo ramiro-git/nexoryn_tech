@@ -9261,8 +9261,6 @@ def main(page: ft.Page) -> None:
             "f10_token_seq": 0,
             "f10_double_window_s": 0.28,
             "confirming": False,
-            "last_entidad_enter_ts": 0.0,
-            "entidad_enter_window_s": 1.2,
         }
 
         def _control_name(control: Any) -> str:
@@ -9684,17 +9682,6 @@ def main(page: ft.Page) -> None:
 
             _run_in_background(_delayed)
 
-        def _mark_recent_entidad_enter() -> None:
-            shortcut_state["last_entidad_enter_ts"] = time.monotonic()
-
-        def _consume_recent_entidad_enter() -> bool:
-            last_ts = float(shortcut_state.get("last_entidad_enter_ts") or 0.0)
-            shortcut_state["last_entidad_enter_ts"] = 0.0
-            if last_ts <= 0:
-                return False
-            window_s = float(shortcut_state.get("entidad_enter_window_s") or 1.2)
-            return (time.monotonic() - last_ts) <= max(window_s, 0.0)
-
         def _on_modal_keyboard_event(event: Any) -> None:
             if not form_dialog.visible:
                 _forward_modal_previous_keyboard_handler(event)
@@ -9709,15 +9696,6 @@ def main(page: ft.Page) -> None:
             if not _is_modal_keydown_event(event):
                 _forward_modal_previous_keyboard_handler(event)
                 return
-
-            if _is_duplicate_item_dialog_open():
-                if key in {"enter", "return", "numpad enter", "esc", "escape"}:
-                    _resolve_duplicate_item_dialog("clear")
-                return
-
-            if key in {"enter", "return", "numpad enter"}:
-                if modal_focus_state.get("current_control") is dropdown_entidad:
-                    _mark_recent_entidad_enter()
 
             if key in {"tab"}:
                 shift_raw = getattr(event, "shift", False)
@@ -10138,31 +10116,11 @@ def main(page: ft.Page) -> None:
         field_direccion.on_submit = _chain_handler_and_focus(field_direccion.on_submit, field_direccion)
         field_numero.on_submit = _chain_handler_and_focus(field_numero.on_submit, field_numero)
 
-        comprobante_items_anchor_key = "comprobante-items-section-anchor"
-        items_autoscroll_started = {"value": False}
-        line_key_seq = {"value": 0}
-
-        def _scroll_to_comprobante_items() -> None:
-            try:
-                _form_scroll_column.scroll_to(key=comprobante_items_anchor_key, duration=160)
-                return
-            except Exception:
-                pass
-            try:
-                _form_scroll_column.scroll_to(delta=100000, duration=160)
-            except Exception:
-                pass
-
         def _on_entidad_change_with_item_focus(_: Any) -> Any:
             _update_entidad_info(None)
-            should_auto_scroll = _consume_recent_entidad_enter()
             target_control = _resolve_primary_line_article_focus()
             if target_control is not None and _focus_control(target_control):
-                if should_auto_scroll:
-                    _scroll_to_comprobante_items()
                 return False
-            if should_auto_scroll:
-                _scroll_to_comprobante_items()
             return True
 
         dropdown_tipo.on_change = _chain_handler_and_focus(dropdown_tipo.on_change, dropdown_tipo)
@@ -10178,66 +10136,6 @@ def main(page: ft.Page) -> None:
             auto_scroll=True,
         )
         duplicate_item_dialog = ft.AlertDialog(modal=True)
-        duplicate_item_dialog_state: Dict[str, Any] = {"is_open": False, "on_merge": None, "on_clear": None}
-
-        def _is_duplicate_item_dialog_open() -> bool:
-            return bool(
-                duplicate_item_dialog_state.get("is_open")
-                or getattr(duplicate_item_dialog, "open", False)
-                or getattr(duplicate_item_dialog, "visible", False)
-            )
-
-        def _close_duplicate_item_dialog(_: Any = None) -> None:
-            duplicate_item_dialog_state["is_open"] = False
-            duplicate_item_dialog_state["on_merge"] = None
-            duplicate_item_dialog_state["on_clear"] = None
-            _safe_page_close(page, duplicate_item_dialog, "duplicate_item_confirmation")
-
-        def _resolve_duplicate_item_dialog(action: str) -> bool:
-            if not _is_duplicate_item_dialog_open():
-                return False
-            callback_key = "on_merge" if action == "merge" else "on_clear"
-            callback = duplicate_item_dialog_state.get(callback_key)
-            _close_duplicate_item_dialog(None)
-            if callable(callback):
-                callback()
-            return True
-
-        def _next_comprobante_line_key() -> str:
-            line_key_seq["value"] = int(line_key_seq.get("value") or 0) + 1
-            return f"comprobante-line-{line_key_seq['value']}"
-
-        def _scroll_items_list_to_row(row: Any) -> None:
-            if row is None:
-                return
-            row_key = str(getattr(row, "key", "") or "").strip()
-            if row_key:
-                try:
-                    lines_container.scroll_to(key=row_key, duration=160)
-                    return
-                except Exception:
-                    pass
-            try:
-                lines_container.scroll_to(delta=100000, duration=160)
-            except Exception:
-                pass
-
-        def _scroll_items_list_to_bottom() -> None:
-            rows = _list_line_rows()
-            if rows:
-                _scroll_items_list_to_row(rows[-1])
-                return
-            try:
-                lines_container.scroll_to(delta=100000, duration=160)
-            except Exception:
-                pass
-
-        def _ensure_first_item_modal_scroll() -> None:
-            if bool(items_autoscroll_started.get("value")):
-                return
-            _scroll_to_comprobante_items()
-            items_autoscroll_started["value"] = True
-
         modal_bottom_scroll_done_ref = {"value": False}
 
         def _scroll_comprobante_modal_to_bottom_once() -> None:
@@ -10315,10 +10213,7 @@ def main(page: ft.Page) -> None:
             if art_drop_ctrl is not None:
                 art_drop_ctrl.value = None
             if lista_drop_ctrl is not None:
-                if dropdown_lista_global.value and dropdown_lista_global.value != "":
-                    lista_drop_ctrl.value = dropdown_lista_global.value
-                else:
-                    lista_drop_ctrl.value = ""
+                lista_drop_ctrl.value = None
             if cant_field_ctrl is not None:
                 cant_field_ctrl.value = ""
             if price_field_ctrl is not None:
@@ -10403,18 +10298,16 @@ def main(page: ft.Page) -> None:
             _recalc_total()
 
         def _ask_duplicate_item_confirmation(source_row: Any, target_row: Any) -> None:
+            def _close(_: Any = None) -> None:
+                _safe_page_close(page, duplicate_item_dialog, "duplicate_item_confirmation")
+
             def _confirm_merge(_: Any) -> None:
-                _resolve_duplicate_item_dialog("merge")
+                _close(None)
+                _merge_duplicate_rows(source_row, target_row)
 
             def _confirm_clear(_: Any) -> None:
-                _resolve_duplicate_item_dialog("clear")
-
-            if _is_duplicate_item_dialog_open():
-                _close_duplicate_item_dialog(None)
-
-            duplicate_item_dialog_state["on_merge"] = lambda: _merge_duplicate_rows(source_row, target_row)
-            duplicate_item_dialog_state["on_clear"] = lambda: _clear_line_for_duplicate(source_row)
-            duplicate_item_dialog_state["is_open"] = True
+                _close(None)
+                _clear_line_for_duplicate(source_row)
 
             duplicate_item_dialog.title = ft.Text("Artículo ya ingresado", size=20, weight=ft.FontWeight.BOLD)
             duplicate_item_dialog.content = ft.Container(
@@ -10436,9 +10329,7 @@ def main(page: ft.Page) -> None:
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                 ),
             ]
-            opened = _safe_page_open(page, duplicate_item_dialog, "duplicate_item_confirmation")
-            if not opened:
-                _close_duplicate_item_dialog(None)
+            _safe_page_open(page, duplicate_item_dialog, "duplicate_item_confirmation")
 
         def _add_line(_=None, update_ui=True, initial_data=None):
             if is_read_only_ref["value"]:
@@ -10679,10 +10570,7 @@ def main(page: ft.Page) -> None:
             def _check_stock_warning(*, force_refresh: bool = False):
                 if not art_drop.value: return
                 try:
-                    requested: Optional[int] = None
-                    requested_raw = str(cant_field.value or "").strip()
-                    if requested_raw:
-                        requested = _parse_int_quantity(cant_field.value, "Cantidad")
+                    requested = _parse_int_quantity(cant_field.value, "Cantidad")
                     current_art_id = int(art_drop.value)
                     cached_art_id = stock_cache.get("article_id")
                     cached_available = stock_cache.get("available")
@@ -10697,10 +10585,7 @@ def main(page: ft.Page) -> None:
                         stock_cache["article_id"] = current_art_id
                         stock_cache["available"] = available
                     stock_text.value = f"Stock: {available}"
-                    if requested is None:
-                        stock_text.color = COLOR_TEXT_MUTED
-                        stock_text.weight = ft.FontWeight.NORMAL
-                    elif requested > available:
+                    if requested > available:
                         stock_text.color = COLOR_ERROR
                         stock_text.weight = ft.FontWeight.BOLD
                     else:
@@ -10711,35 +10596,15 @@ def main(page: ft.Page) -> None:
                     logger.warning(f"Falló al actualizar interfaz: {e}")
 
             def _refresh_lista_labels_with_prices() -> None:
-                current_value = lista_drop.value
                 try:
                     items, _ = item_price_list_loader("", 0, 100)
-                except Exception as ex:
-                    logger.warning(f"No se pudieron refrescar labels de listas con precios: {ex}")
-                    items = []
-
-                # Mantener un fallback robusto evita que el selector quede vacío tras flujos de duplicados.
-                if not items:
-                    items = [{"value": l["id"], "label": l["nombre"]} for l in listas if l.get("activa", True)]
-                opts = [
-                    {"value": i.get("value"), "label": i.get("label")}
-                    for i in items
-                    if i.get("value") not in (None, "")
-                ]
-                valid_values = {str(i["value"]) for i in opts}
-                normalized_current = str(current_value) if current_value not in (None, "") else ""
-
-                try:
+                    opts = [ft.dropdown.Option(str(i["value"]), i["label"]) for i in items]
+                    current_value = lista_drop.value
                     lista_drop.options = opts
-                    if normalized_current and normalized_current in valid_values:
-                        lista_drop.value = normalized_current
-                    elif dropdown_lista_global.value and str(dropdown_lista_global.value) in valid_values:
-                        lista_drop.value = str(dropdown_lista_global.value)
-                    else:
-                        lista_drop.value = ""
+                    lista_drop.value = current_value
                     _safe_update_control(lista_drop)
                 except Exception as ex:
-                    logger.warning(f"No se pudo aplicar refresh de listas: {ex}")
+                    logger.warning(f"No se pudieron refrescar labels de listas con precios: {ex}")
 
             def _on_art_change(e):
                 current_row_map = row.data or {}
@@ -10757,17 +10622,11 @@ def main(page: ft.Page) -> None:
                 _sync_fiscal_iva_from_visible(source="article_change")
                 _update_price_from_list()
                 _check_stock_warning(force_refresh=True)
-                if art_drop.value:
-                    is_user_selection = e is not None
-                    if is_user_selection:
-                        _ensure_first_item_modal_scroll()
-
-                    is_last_row = bool(lines_container.controls) and lines_container.controls[-1] == row
-                    if is_last_row:
-                        _add_line()
-                        _scroll_comprobante_modal_to_bottom_once()
-                        if is_user_selection:
-                            _scroll_items_list_to_bottom()
+                
+                # Automation: if an article is selected and this is the last line, add a new one
+                if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
+                    _add_line()
+                    _scroll_comprobante_modal_to_bottom_once()
                 return True
 
             def _on_art_change_and_focus_qty(e):
@@ -10942,12 +10801,7 @@ def main(page: ft.Page) -> None:
             row_map["delete_btn"] = delete_btn
 
             # [Articulo, Lista, Cant, Precio, IVA, Desc %, Desc $, Bultos, Total, Delete]
-            row = ft.Row(
-                [art_drop, lista_drop, cant_container, price_field, iva_field, desc_pct_field, desc_imp_field, bultos_field, total_field, delete_btn],
-                alignment=ft.MainAxisAlignment.START,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-                key=_next_comprobante_line_key(),
-            )
+            row = ft.Row([art_drop, lista_drop, cant_container, price_field, iva_field, desc_pct_field, desc_imp_field, bultos_field, total_field, delete_btn], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
             row.data = row_map # Attack callbacks to row
 
             _sync_fiscal_iva_from_visible(source="auto")
@@ -11548,8 +11402,6 @@ def main(page: ft.Page) -> None:
             _confirm_afip_authorization(doc_row, close_after=False, on_success=_handle_modal_doc_state_change)
 
         def _close_comprobante_form(e: Any = None) -> None:
-            if _is_duplicate_item_dialog_open():
-                _close_duplicate_item_dialog(None)
             if _is_confirm_dialog_open():
                 confirm_dialog_state["on_confirm"] = None
                 confirm_dialog_state["is_open"] = False
@@ -11562,10 +11414,7 @@ def main(page: ft.Page) -> None:
             shortcut_state["f9_pressed"] = False
             shortcut_state["f10_pending_token"] = 0
             shortcut_state["last_f10_ts"] = 0.0
-            shortcut_state["last_entidad_enter_ts"] = 0.0
             shortcut_state["confirming"] = False
-            items_autoscroll_started["value"] = False
-            line_key_seq["value"] = 0
             _maybe_set(main_app_container, "disabled", False)
             close_form(e)
             _safe_update_control(main_app_container)
@@ -11650,7 +11499,6 @@ def main(page: ft.Page) -> None:
 
 
         # Custom Dialog Content (replacing generic open_form to control layout fully)
-        items_section_anchor = ft.Container(key=comprobante_items_anchor_key, height=1)
         dialog_content = ft.Container(
             content=ft.Column(
                 controls=[
@@ -11666,7 +11514,6 @@ def main(page: ft.Page) -> None:
                     ft.Row([ft.Container(expand=True, content=field_obs)], spacing=10),
                     ft.Row([field_direccion], spacing=10),
                     ft.Divider(),
-                    items_section_anchor,
                     ft.Text("Ítems", weight=ft.FontWeight.BOLD),
                     ft.Container(
                         content=lines_container,

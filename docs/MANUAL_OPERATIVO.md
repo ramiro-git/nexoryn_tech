@@ -45,7 +45,6 @@ La barra lateral agrupa las vistas principales operativas:
 - En `AsyncSelect`: `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.
 - `Esc`: cerrar modal o cancelar acción activa.
-- En confirmación de artículo duplicado (comprobantes): `Enter` o `Esc` ejecuta **Limpiar línea**.
 - En modal de comprobantes: `F9` imprime directo (sin descargar PDF).
 - En modal de comprobantes: `F10` confirma comprobante y con segundo `F10` confirma el diálogo.
 - En modal de comprobantes: `F11` resetea el formulario a estado inicial de venta rápida.
@@ -140,12 +139,8 @@ La vista **Comprobantes** concentra ventas, compras y presupuestos.
 
 - El depósito se inicializa automáticamente con el primero disponible.
 - La lista de precios global puede autocompletarse según la entidad (si tiene lista asignada).
-- Al confirmar la entidad con `Enter`, el foco pasa al primer ítem y el modal puede desplazarse automáticamente a la sección **Ítems**.
 - En el modal de comprobantes, `Tab / Shift + Tab` quedan confinados al modal mientras está abierto.
 - En el modal de comprobantes, `Esc` cierra el modal (y cancela acciones/modales auxiliares abiertos).
-- En cada nueva línea de ítem, **Cantidad** inicia vacía (carga obligatoria por el operador).
-- Si se selecciona un artículo en la última línea, el sistema agrega una nueva línea automáticamente y desplaza la lista al final.
-- Si se repite un artículo, se abre una confirmación para fusionar cantidades o limpiar la línea actual.
 - En impresión de comprobantes, `Incluir precios e importes` queda activo por defecto; desmarcar sólo en excepciones.
 - En comprobantes, la impresión usa la impresora predeterminada de Windows en forma directa.
 
@@ -201,12 +196,6 @@ La vista **Remitos** permite seguir despachos y entregas.
 ## Recomendación
 
 Actualizar estado del remito en el momento operativo real para mantener trazabilidad logística.
-
-## Validaciones al generar detalle
-
-- Al generar detalle de remito desde un comprobante, cada línea debe tener artículo válido y cantidad entera positiva.
-- Cantidades decimales, cero, negativas o no numéricas se rechazan con detalle de la línea para corrección operativa.
-- La observación de cada línea se normaliza (sin espacios sobrantes) para evitar registros inconsistentes.
 
 
 # 9. Movimientos de Stock
@@ -327,12 +316,6 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - Confirmar permisos de carpeta temporal.
 - Si falla la impresión directa, el sistema abre el PDF para impresión manual.
 
-## Error al generar remito por cantidad inválida
-
-- Revisar línea por línea del comprobante origen.
-- Corregir cantidades no enteras o menores/iguales a cero.
-- Reintentar la generación del remito luego de guardar los cambios.
-
 ## Error al generar ejecutable (.exe)
 
 - No usar `python -m flet` ni `py -m flet`.
@@ -350,7 +333,6 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - En comprobantes, `F11` resetea a formulario nuevo.
 - En comprobantes, `F12` guarda/crea comprobante.
 - En comprobantes, `Esc` cierra el modal.
-- En confirmación de artículo duplicado (comprobantes), `Enter` y `Esc` aplican **Limpiar línea**.
 - En `AsyncSelect`, `ArrowDown / ArrowUp` mueve el resultado activo.
 - En `AsyncSelect`, `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.
