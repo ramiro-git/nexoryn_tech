@@ -9906,6 +9906,34 @@ def main(page: ft.Page) -> None:
 
             return None
 
+        def _resolve_global_discount_mode_for_commit(preferred_mode: str) -> str:
+            current_mode = (
+                global_discount_mode["value"]
+                if global_discount_mode["value"] in ("percentage", "amount")
+                else "percentage"
+            )
+            if preferred_mode not in ("percentage", "amount"):
+                return current_mode
+            if current_mode == preferred_mode:
+                return current_mode
+
+            base_for_global = _base_neto_lineas()
+            pct_current, imp_current = normalize_discount_pair(
+                base_amount=base_for_global,
+                descuento_porcentaje=field_descuento_global_pct.value,
+                descuento_importe=field_descuento_global_imp.value,
+                mode="amount" if current_mode == "amount" else "percentage",
+            )
+            pct_entered = max(to_decimal("0"), to_decimal(field_descuento_global_pct.value))
+            imp_entered = max(to_decimal("0"), to_decimal(field_descuento_global_imp.value))
+            epsilon = to_decimal("0.0001")
+
+            if preferred_mode == "percentage" and abs(pct_entered - pct_current) > epsilon:
+                return "percentage"
+            if preferred_mode == "amount" and abs(imp_entered - imp_current) > epsilon:
+                return "amount"
+            return current_mode
+
         def _sync_global_discount_pair_from_mode(
             active_field: Optional[ft.TextField] = None,
             normalize_active: bool = False,
@@ -10048,9 +10076,10 @@ def main(page: ft.Page) -> None:
             _recalc_total(active_field=field_descuento_global_imp)
 
         def _on_global_desc_pct_commit(_):
-            global_discount_mode["value"] = "percentage"
+            global_discount_mode["value"] = _resolve_global_discount_mode_for_commit("percentage")
+            mode = global_discount_mode["value"]
             limit_msg = _discount_limit_message(
-                mode="percentage",
+                mode=mode,
                 descuento_porcentaje=field_descuento_global_pct.value,
                 descuento_importe=field_descuento_global_imp.value,
                 max_importe=_base_neto_lineas(),
@@ -10063,9 +10092,10 @@ def main(page: ft.Page) -> None:
             return True
 
         def _on_global_desc_imp_commit(_):
-            global_discount_mode["value"] = "amount"
+            global_discount_mode["value"] = _resolve_global_discount_mode_for_commit("amount")
+            mode = global_discount_mode["value"]
             limit_msg = _discount_limit_message(
-                mode="amount",
+                mode=mode,
                 descuento_porcentaje=field_descuento_global_pct.value,
                 descuento_importe=field_descuento_global_imp.value,
                 max_importe=_base_neto_lineas(),
@@ -10661,6 +10691,40 @@ def main(page: ft.Page) -> None:
                     scope_label="Descuento de línea",
                 )
 
+            def _resolve_line_discount_mode_for_commit(preferred_mode: str) -> str:
+                current_mode = (
+                    line_discount_mode["value"]
+                    if line_discount_mode["value"] in ("percentage", "amount")
+                    else "percentage"
+                )
+                if preferred_mode not in ("percentage", "amount"):
+                    return current_mode
+                if current_mode == preferred_mode:
+                    return current_mode
+
+                try:
+                    c_cant = _parse_int_quantity(cant_field.value, "Cantidad")
+                    c_price = _parse_float(price_field.value, "Precio")
+                except Exception:
+                    return current_mode
+
+                base_line = to_decimal(c_cant) * to_decimal(c_price)
+                pct_current, imp_current = normalize_discount_pair(
+                    base_amount=base_line,
+                    descuento_porcentaje=desc_pct_field.value,
+                    descuento_importe=desc_imp_field.value,
+                    mode="amount" if current_mode == "amount" else "percentage",
+                )
+                pct_entered = max(to_decimal("0"), to_decimal(desc_pct_field.value))
+                imp_entered = max(to_decimal("0"), to_decimal(desc_imp_field.value))
+                epsilon = to_decimal("0.0001")
+
+                if preferred_mode == "percentage" and abs(pct_entered - pct_current) > epsilon:
+                    return "percentage"
+                if preferred_mode == "amount" and abs(imp_entered - imp_current) > epsilon:
+                    return "amount"
+                return current_mode
+
             cant_field.on_change = lambda _: (_check_stock_warning(), _update_line_total(), _recalc_total())
             
             def _on_desc_pct_change(_):
@@ -10674,7 +10738,7 @@ def main(page: ft.Page) -> None:
                 _recalc_total()
 
             def _on_desc_pct_commit(_):
-                line_discount_mode["value"] = "percentage"
+                line_discount_mode["value"] = _resolve_line_discount_mode_for_commit("percentage")
                 limit_msg = _line_discount_limit_message()
                 if limit_msg:
                     show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
@@ -10683,7 +10747,7 @@ def main(page: ft.Page) -> None:
                 return True
 
             def _on_desc_imp_commit(_):
-                line_discount_mode["value"] = "amount"
+                line_discount_mode["value"] = _resolve_line_discount_mode_for_commit("amount")
                 limit_msg = _line_discount_limit_message()
                 if limit_msg:
                     show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
