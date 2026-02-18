@@ -9154,6 +9154,7 @@ def main(page: ft.Page) -> None:
         ]:
             _style_comprobante_control(comprobante_ctrl)
         global_discount_mode = {"value": "percentage"}
+        global_discount_last_edited = {"value": "percentage"}
         
         # Automatic sync for declared value
         auto_valor_sync = ft.Switch(label="Auto", value=False, tooltip="Sincronizar con el Total")
@@ -9234,6 +9235,7 @@ def main(page: ft.Page) -> None:
                 global_discount_mode["value"] = "percentage"
             elif _parse_float(field_descuento_global_imp.value, "Desc. Global $") > 0:
                 global_discount_mode["value"] = "amount"
+            global_discount_last_edited["value"] = global_discount_mode["value"]
             field_vto.value = doc_data["fecha_vencimiento"]
             field_direccion.value = doc_data.get("direccion_entrega", "") or ""
             
@@ -10086,16 +10088,23 @@ def main(page: ft.Page) -> None:
 
         def _on_global_desc_pct_change(_):
             global_discount_mode["value"] = "percentage"
+            global_discount_last_edited["value"] = "percentage"
             _sync_global_discount_pair_from_mode(active_field=field_descuento_global_pct)
             _recalc_total(active_field=field_descuento_global_pct)
 
         def _on_global_desc_imp_change(_):
             global_discount_mode["value"] = "amount"
+            global_discount_last_edited["value"] = "amount"
             _sync_global_discount_pair_from_mode(active_field=field_descuento_global_imp)
             _recalc_total(active_field=field_descuento_global_imp)
 
         def _on_global_desc_pct_commit(_):
-            global_discount_mode["value"] = _resolve_global_discount_mode_for_commit("percentage")
+            preferred_mode = (
+                global_discount_last_edited["value"]
+                if global_discount_last_edited.get("value") in ("percentage", "amount")
+                else "percentage"
+            )
+            global_discount_mode["value"] = _resolve_global_discount_mode_for_commit(preferred_mode)
             mode = global_discount_mode["value"]
             limit_msg = _discount_limit_message(
                 mode=mode,
@@ -10111,7 +10120,12 @@ def main(page: ft.Page) -> None:
             return True
 
         def _on_global_desc_imp_commit(_):
-            global_discount_mode["value"] = _resolve_global_discount_mode_for_commit("amount")
+            preferred_mode = (
+                global_discount_last_edited["value"]
+                if global_discount_last_edited.get("value") in ("percentage", "amount")
+                else "percentage"
+            )
+            global_discount_mode["value"] = _resolve_global_discount_mode_for_commit(preferred_mode)
             mode = global_discount_mode["value"]
             limit_msg = _discount_limit_message(
                 mode=mode,
@@ -10439,6 +10453,7 @@ def main(page: ft.Page) -> None:
             bultos_field = ft.TextField(label="Bultos", width=75, value="", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(bultos_field); _style_comprobante_control(bultos_field)
             total_field = ft.TextField(label="Total", width=100, value="0,00", read_only=True, text_align=ft.TextAlign.RIGHT); _style_input(total_field); _style_comprobante_control(total_field)
             line_discount_mode = {"value": "percentage"}
+            line_discount_last_edited = {"value": "percentage"}
             quantity_warning_guard = {"raw": None, "ts": 0.0}
             stock_cache: Dict[str, Any] = {"article_id": None, "available": None}
             
@@ -10459,6 +10474,7 @@ def main(page: ft.Page) -> None:
                     line_discount_mode["value"] = "percentage"
                 elif _parse_float(desc_imp_field.value, "Desc. $") > 0:
                     line_discount_mode["value"] = "amount"
+                line_discount_last_edited["value"] = line_discount_mode["value"]
             else:
                 # Usar lista global si está seleccionada
                 if dropdown_lista_global.value and dropdown_lista_global.value != "":
@@ -10748,16 +10764,23 @@ def main(page: ft.Page) -> None:
             
             def _on_desc_pct_change(_):
                 line_discount_mode["value"] = "percentage"
+                line_discount_last_edited["value"] = "percentage"
                 _update_line_total(active_field=desc_pct_field)
                 _recalc_total()
 
             def _on_desc_imp_change(_):
                 line_discount_mode["value"] = "amount"
+                line_discount_last_edited["value"] = "amount"
                 _update_line_total(active_field=desc_imp_field)
                 _recalc_total()
 
             def _on_desc_pct_commit(_):
-                line_discount_mode["value"] = _resolve_line_discount_mode_for_commit("percentage")
+                preferred_mode = (
+                    line_discount_last_edited["value"]
+                    if line_discount_last_edited.get("value") in ("percentage", "amount")
+                    else "percentage"
+                )
+                line_discount_mode["value"] = _resolve_line_discount_mode_for_commit(preferred_mode)
                 limit_msg = _line_discount_limit_message()
                 if limit_msg:
                     show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
@@ -10766,7 +10789,12 @@ def main(page: ft.Page) -> None:
                 return True
 
             def _on_desc_imp_commit(_):
-                line_discount_mode["value"] = _resolve_line_discount_mode_for_commit("amount")
+                preferred_mode = (
+                    line_discount_last_edited["value"]
+                    if line_discount_last_edited.get("value") in ("percentage", "amount")
+                    else "percentage"
+                )
+                line_discount_mode["value"] = _resolve_line_discount_mode_for_commit(preferred_mode)
                 limit_msg = _line_discount_limit_message()
                 if limit_msg:
                     show_discount_limit_modal(f"{limit_msg} Se ajustó al máximo permitido.")
