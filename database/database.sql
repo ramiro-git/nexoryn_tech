@@ -1011,6 +1011,22 @@ FROM seguridad.rol r
 WHERE r.nombre = 'ADMIN'
 ON CONFLICT (lower(email)) DO NOTHING;
 
+-- Default guest user (passwordless access is managed by application logic)
+INSERT INTO seguridad.usuario(nombre, id_rol, activo, contrasena_hash, email)
+SELECT
+  'Invitado',
+  r.id,
+  TRUE,
+  crypt(gen_random_uuid()::text, gen_salt('bf', 12)),
+  'invitado@nexoryn.local'
+FROM seguridad.rol r
+WHERE r.nombre = 'GERENTE'
+ON CONFLICT (lower(email)) DO UPDATE
+SET nombre = EXCLUDED.nombre,
+    id_rol = EXCLUDED.id_rol,
+    activo = TRUE,
+    fecha_actualizacion = now();
+
 -- Default backup config
 INSERT INTO seguridad.backup_config(frecuencia, hora, retencion_dias)
 SELECT 'OFF', '03:00:00', 30

@@ -31,6 +31,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+GUEST_USER_NAME = "Invitado"
+GUEST_USER_EMAIL = "invitado@nexoryn.local"
+GUEST_USER_ROLE = "GERENTE"
 
 def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
     columns = [
@@ -461,6 +464,13 @@ class Database:
                         END;
                         $fn$ LANGUAGE plpgsql;
                     """)
+
+                    # 8. Ensure the default guest account exists for quick access.
+                    if self._ensure_guest_user(cur) is None:
+                        logger.warning(
+                            "Could not provision guest user because role %s was not found.",
+                            GUEST_USER_ROLE,
+                        )
                     conn.commit()
                     logger.info("Database schema updates applied successfully.")
         except Exception as e:
@@ -1281,6 +1291,129 @@ class Database:
     # =========================================================================
     # Authentication
     # =========================================================================
+    def _ensure_guest_user(self, cur: Any) -> Optional[int]:
+        """
+        Ensure the default guest user exists and is aligned with the GERENTE role.
+        Returns guest user ID, or None if the role does not exist.
+        """
+        cur.execute(
+            "SELECT id FROM seguridad.rol WHERE upper(nombre) = %s ORDER BY id LIMIT 1",
+            (GUEST_USER_ROLE,),
+        )
+        role_row = cur.fetchone()
+        role_id = role_row.get("id") if isinstance(role_row, dict) else (role_row[0] if role_row else None)
+        if not role_id:
+            return None
+
+        cur.execute(
+            """
+            SELECT id
+            FROM seguridad.usuario
+            WHERE lower(email) = lower(%s)
+            ORDER BY id
+            LIMIT 1
+            """,
+            (GUEST_USER_EMAIL,),
+        )
+        guest_row = cur.fetchone()
+
+        if guest_row:
+            guest_id = guest_row.get("id") if isinstance(guest_row, dict) else guest_row[0]
+            cur.execute(
+                """
+                UPDATE seguridad.usuario
+                SET nombre = %s,
+                    id_rol = %s,
+                    activo = TRUE,
+                    fecha_actualizacion = now()
+                WHERE id = %s
+                  AND (
+                    nombre IS DISTINCT FROM %s
+                    OR id_rol IS DISTINCT FROM %s
+                    OR activo IS DISTINCT FROM TRUE
+                  )
+                """,
+                (GUEST_USER_NAME, role_id, guest_id, GUEST_USER_NAME, role_id),
+            )
+            return guest_id
+
+        cur.execute(
+            """
+            INSERT INTO seguridad.usuario (nombre, email, contrasena_hash, id_rol, activo)
+            VALUES (%s, %s, crypt(gen_random_uuid()::text, gen_salt('bf', 12)), %s, TRUE)
+            RETURNING id
+            """,
+            (GUEST_USER_NAME, GUEST_USER_EMAIL, role_id),
+        )
+        created = cur.fetchone()
+        if not created:
+            return None
+        return created.get("id") if isinstance(created, dict) else created[0]
+
+    def authenticate_guest_user(self) -> Optional[Dict[str, Any]]:
+        """
+        Authenticate using the default guest user without requiring credentials.
+        """
+        try:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    guest_id = self._ensure_guest_user(cur)
+                    if guest_id is None:
+                        conn.rollback()
+                        self._log_login_attempt(None, GUEST_USER_EMAIL, False, "Rol GERENTE no disponible")
+                        return None
+
+                    cur.execute(
+                        """
+                        SELECT
+                            u.id,
+                            u.nombre,
+                            u.email,
+                            u.activo,
+                            r.nombre AS rol
+                        FROM seguridad.usuario u
+                        JOIN seguridad.rol r ON r.id = u.id_rol
+                        WHERE u.id = %s
+                        """,
+                        (guest_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        conn.rollback()
+                        self._log_login_attempt(None, GUEST_USER_EMAIL, False, "Usuario invitado no encontrado")
+                        return None
+
+                    if isinstance(row, dict):
+                        user_id = row.get("id")
+                        nombre = row.get("nombre")
+                        email = row.get("email")
+                        activo = row.get("activo")
+                        rol = row.get("rol")
+                    else:
+                        user_id, nombre, email, activo, rol = row
+
+                    if not activo:
+                        conn.rollback()
+                        self._log_login_attempt(user_id, GUEST_USER_EMAIL, False, "Usuario inactivo")
+                        return None
+
+                    cur.execute(
+                        "UPDATE seguridad.usuario SET ultimo_login = now() WHERE id = %s",
+                        (user_id,),
+                    )
+                    conn.commit()
+
+                    self._log_login_attempt(user_id, GUEST_USER_EMAIL, True, "Modo invitado")
+                    return {
+                        "id": user_id,
+                        "nombre": nombre,
+                        "email": email,
+                        "rol": rol,
+                    }
+        except Exception as e:
+            logger.error("Error during guest authentication", exc_info=e)
+            return None
+
     def authenticate_user(self, email_or_username: str, password: str) -> Optional[Dict[str, Any]]:
         """
         Authenticate a user by email and password.

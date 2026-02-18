@@ -8243,50 +8243,17 @@ def main(page: ft.Page) -> None:
 
         _run_in_background(_run)
 
-    def do_login(_=None):
-        nonlocal CURRENT_USER_ROLE, current_user, logout_logged
-        login_error.visible = False
-        login_loading.visible = True
-        page.update()
-        
-        email = login_email.value.strip() if login_email.value else ""
-        password = login_password.value if login_password.value else ""
-        
-        if not email or not password:
-            login_error.value = "Por favor complete todos los campos"
-            login_error.visible = True
-            login_loading.visible = False
-            page.update()
-            return
-        
-        if db is None:
-            login_error.value = f"Error de conexión: {db_error or 'Base de datos no disponible'}"
-            login_error.visible = True
-            login_loading.visible = False
-            page.update()
-            return
-        
-        user = db.authenticate_user(email, password)
-        login_loading.visible = False
-        
-        if user is None:
-            login_error.value = "Credenciales inválidas. Verifique su email y contraseña."
-            login_error.visible = True
-            login_password.value = ""
-            page.update()
-            return
-        
-        # Successful login
+    def _complete_login(user: Dict[str, Any], *, mode: str) -> None:
+        nonlocal CURRENT_USER_ROLE, current_user, logout_logged, monitor_started
         current_user = user
         CURRENT_USER_ROLE = user.get("rol") or "EMPLEADO"
         logout_logged = False
         mark_activity()
         db.set_context(user["id"], local_ip)
-        
-        # Update sidebar info
+
         set_sidebar_session_state(True, user)
         apply_role_permissions()
-        
+
         def start_background_monitor():
             nonlocal monitor_started
             last_check_wrapper = {"ts": time.time()}
@@ -8294,19 +8261,7 @@ def main(page: ft.Page) -> None:
             def background_monitor():
                 while not window_is_closing:
                     try:
-                        # Check for inactivity timeout - DISABLED per user request
-                        # if current_user and current_user.get("id"):
-                        #     elapsed = time.time() - last_activity_time
-                        #     if elapsed > INACTIVITY_TIMEOUT:
-                        #         # Log timeout and logout
-                        #         if db:
-                        #             db.log_activity("SISTEMA", "TIMEOUT_INACTIVIDAD", detalle={"timeout_seg": INACTIVITY_TIMEOUT})
-                        #         _run_on_ui(do_logout)
-                        #         continue # Skip remainder of this loop cycle after logout
-
-                        # Only refresh if logged in
                         if db and db.current_user_id:
-                            # Comprehensive list of entities to monitor for changes
                             tables = [
                                 "DOCUMENTO", "PAGO", "ENTIDAD", "ARTICULO", "PAGO_CC", "AJUSTE_CC",
                                 "REMITO", "MOVIMIENTO", "USUARIO", "SISTEMA", "CONFIG",
@@ -8315,11 +8270,10 @@ def main(page: ft.Page) -> None:
                             ]
                             if db.check_recent_activity(last_check_wrapper["ts"], tables):
                                 last_check_wrapper["ts"] = time.time()
-                                
+
                                 refresh_all_stats()
-                                
+
                                 key = current_view.get("key")
-                                # Route refresh to current active table/view in Basic UI
                                 if key == "entidades":
                                     _run_in_background(_run_on_ui, entidades_table.refresh, silent=True)
                                 elif key == "articulos":
@@ -8347,30 +8301,27 @@ def main(page: ft.Page) -> None:
                                 elif key == "logs":
                                     _run_in_background(_run_on_ui, logs_table.refresh, silent=True)
                                 elif key == "dashboard":
-                                    # Dashboard view has its own load_data in Basic UI component
                                     if dashboard_view_component:
                                         _run_in_background(dashboard_view_component.request_auto_refresh)
-                            
                     except Exception:
                         pass
-                    # Refresh every 5 seconds for real-time feel
                     for _ in range(5):
-                        if window_is_closing: break
+                        if window_is_closing:
+                            break
                         time.sleep(1)
 
             threading.Thread(target=background_monitor, daemon=True).start()
 
         start_background_monitor()
-        
-        # Log login and load system config
-        db.log_activity("SISTEMA", "LOGIN_OK", detalle={"modo": "BASIC_UI", "usuario": user["nombre"]})
+
+        db.log_activity("SISTEMA", "LOGIN_OK", detalle={"modo": "BASIC_UI", "usuario": user["nombre"], "acceso": mode})
         try:
             nombre_sistema = db.get_config_value("nombre_sistema")
             if nombre_sistema and nombre_sistema.strip():
                 page.title = nombre_sistema
         except Exception:
             pass
-        
+
         def finalize_login() -> None:
             update_nav()
             set_view("dashboard")
@@ -8378,6 +8329,65 @@ def main(page: ft.Page) -> None:
             page.update()
 
         run_startup_maintenance(finalize_login)
+
+    def do_login(_=None):
+        login_error.visible = False
+        login_loading.visible = True
+        page.update()
+
+        email = login_email.value.strip() if login_email.value else ""
+        password = login_password.value if login_password.value else ""
+
+        if not email or not password:
+            login_error.value = "Por favor complete todos los campos"
+            login_error.visible = True
+            login_loading.visible = False
+            page.update()
+            return
+
+        if db is None:
+            login_error.value = f"Error de conexión: {db_error or 'Base de datos no disponible'}"
+            login_error.visible = True
+            login_loading.visible = False
+            page.update()
+            return
+
+        user = db.authenticate_user(email, password)
+        login_loading.visible = False
+
+        if user is None:
+            login_error.value = "Credenciales inválidas. Verifique su email y contraseña."
+            login_error.visible = True
+            login_password.value = ""
+            page.update()
+            return
+
+        _complete_login(user, mode="credenciales")
+
+    def do_guest_login(_=None):
+        login_error.visible = False
+        login_loading.visible = True
+        page.update()
+
+        if db is None:
+            login_error.value = f"Error de conexión: {db_error or 'Base de datos no disponible'}"
+            login_error.visible = True
+            login_loading.visible = False
+            page.update()
+            return
+
+        user = db.authenticate_guest_user()
+        login_loading.visible = False
+
+        if user is None:
+            login_error.value = "No se pudo iniciar en modo invitado."
+            login_error.visible = True
+            page.update()
+            return
+
+        login_email.value = ""
+        login_password.value = ""
+        _complete_login(user, mode="invitado")
     
     def do_logout(_=None):
         nonlocal CURRENT_USER_ROLE, current_user, logout_logged
@@ -8404,6 +8414,7 @@ def main(page: ft.Page) -> None:
         login_email.value = ""
         login_password.value = ""
         login_error.visible = False
+        login_loading.visible = False
         
         # Switch to login
         main_app_container.visible = False
@@ -8463,6 +8474,14 @@ def main(page: ft.Page) -> None:
                                     elevation=4,
                                 ),
                                 on_click=do_login,
+                            ),
+                            ft.Container(height=10),
+                            ft.OutlinedButton(
+                                "Iniciar como invitado",
+                                icon=ft.icons.PERSON_OUTLINE_ROUNDED,
+                                width=320,
+                                height=46,
+                                on_click=do_guest_login,
                             ),
                         ],
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
