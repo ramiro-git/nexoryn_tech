@@ -29,6 +29,14 @@ En Windows también puedes usar:
 py -3 -m pip install -r requirements.txt
 ```
 
+### Si vas a empaquetar `.exe` en Windows
+
+```powershell
+py -3.12 -m pip install --user flet-cli==0.25.2
+```
+
+No usar `python -m flet` ni `py -m flet`; para empaquetado usar la guía `docs/GUIA_EMPAQUETADO.md`.
+
 ---
 
 ## 2. Variables de Entorno (.env)

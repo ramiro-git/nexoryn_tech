@@ -23,6 +23,57 @@ En Windows, recomendado:
 py -3.12 -m pip install -r requirements.txt
 ```
 
+### Flujo rápido validado (Windows)
+
+Usar esta secuencia exacta en PowerShell:
+
+```powershell
+py -3.12 -m pip install -r requirements.txt
+py -3.12 -m pip install --user flet-cli==0.25.2
+$flet = py -3.12 -c "import site,sys;print(site.getuserbase()+r'\Python'+str(sys.version_info[0])+str(sys.version_info[1])+r'\Scripts\flet.exe')"
+& $flet --version
+& $flet pack desktop_app/main.py --name "NexorynTech" --icon "exe_nexoryn_tech.png" --add-data "database;database"
+```
+
+> Nota importante: **no usar** `python -m flet` ni `py -m flet`.  
+> `flet` es un comando de CLI y, si se ejecuta con `-m`, falla con:  
+> `No module named flet.__main__; 'flet' is a package and cannot be directly executed`.
+
+### Verificar CLI de Flet
+
+Si `flet` está en `PATH`:
+
+```powershell
+flet --version
+```
+
+Si `flet` no está en `PATH`:
+
+```powershell
+py -3.12 -m pip show flet-cli
+```
+
+Si no aparece `flet-cli`, instalarlo explícitamente:
+
+```powershell
+py -3.12 -m pip install flet-cli==0.25.2
+```
+
+Ejemplo común (Python 3.12 de Microsoft Store):
+
+```powershell
+& "$env:LOCALAPPDATA\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts\flet.exe" --version
+```
+
+### Errores frecuentes de empaquetado
+
+- Error: `No module named flet.__main__`
+  - Causa: ejecución con `python -m flet` o `py -m flet`.
+  - Solución: usar `flet pack` o la ruta completa a `flet.exe`.
+- Error: `'flet' no se reconoce como un comando`
+  - Causa: `Scripts` del usuario no está en `PATH`.
+  - Solución: usar el flujo rápido validado (variable `$flet`) o la ruta completa a `flet.exe`.
+
 ### Comandos de Empaquetado
 Caso 1: si `flet` está en `PATH`:
 

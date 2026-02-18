@@ -102,9 +102,10 @@ Compatibilidad:
   - El total operativo visible en UI no suma IVA adicional.
   - El desglose fiscal (neto/IVA) se calcula internamente sobre la base neta resultante.
 - UX actual en comprobantes:
-  - El campo de IVA visible por línea inicia en `0,00` (editable).
+  - El campo de IVA visible por línea inicia vacío (editable).
   - Si el usuario ingresa IVA visible `> 0`, ese valor actúa como override fiscal de la línea.
-  - Si el usuario deja IVA visible en `0,00`, la alícuota fiscal interna usa fallback del artículo.
+  - Si el usuario deja IVA visible vacío (o en `0`), la alícuota fiscal interna usa fallback del artículo.
+  - Los campos de descuento por línea (`descuento_porcentaje` y `descuento_importe`) pueden verse vacíos en UI y se interpretan internamente como `0`.
   - En persistencia (`app.documento_detalle.porcentaje_iva`) se guarda siempre la alícuota fiscal real.
   - Para AFIP se arma `Iva` por alícuota real, sin hardcodear 21%.
 
