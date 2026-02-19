@@ -8142,12 +8142,14 @@ def main(page: ft.Page) -> None:
                 backup_manager = BackupManager(db, pg_bin_path=config.pg_bin_path)
                 
                 # Limpiar registros de backups cuyos archivos físicos no existen
-                try:
-                    purged = backup_manager.purge_invalid_backups()
-                    # if purged > 0:
-                    #     print(f"DEBUG: Se limpiaron {purged} registros de backups inexistentes.", flush=True)
-                except Exception as e:
-                    pass # print(f"DEBUG: Error al purgar backups: {e}", flush=True)
+                # DESACTIVADO: La purga automática en inicio causa falsos positivos si OneDrive/FS está ocupado,
+                # lo que borra el registro y dispara el backup de nuevo.
+                # try:
+                #     purged = backup_manager.purge_invalid_backups()
+                #     # if purged > 0:
+                #     #     print(f"DEBUG: Se limpiaron {purged} registros de backups inexistentes.", flush=True)
+                # except Exception as e:
+                #     pass # print(f"DEBUG: Error al purgar backups: {e}", flush=True)
 
                 # print("DEBUG: Checking missed backups...", flush=True)
                 missed = backup_manager.check_missed_backups()

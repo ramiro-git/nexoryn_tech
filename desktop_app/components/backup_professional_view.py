@@ -69,12 +69,13 @@ class BackupProfessionalView:
             from desktop_app.services.backup_manager import BackupManager
             self._backup_manager = BackupManager(self.db, pg_bin_path=self.pg_bin_path)
             # Purgar registros huérfanos (archivos que ya no existen)
-            try:
-                purged = self._backup_manager.purge_invalid_backups()
-                if purged > 0:
-                    print(f"Purgados {purged} registros de backups huérfanos")
-            except Exception as e:
-                print(f"Error purgando backups inválidos: {e}")
+            # DESACTIVADO: Evitar borrado accidental por latencia de disco/red
+            # try:
+            #     purged = self._backup_manager.purge_invalid_backups()
+            #     if purged > 0:
+            #         print(f"Purgados {purged} registros de backups huérfanos")
+            # except Exception as e:
+            #     print(f"Error purgando backups inválidos: {e}")
         return self._backup_manager
     
     def _load_cloud_config(self) -> Dict:
@@ -312,29 +313,10 @@ class BackupProfessionalView:
         )
         
         # Configuración de retención
-        self.retention_full = ft.TextField(
-            label="Retención FULL (meses)",
-            value="12",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            helper_text="Meses a conservar copias completas"
-        )
-        
-        self.retention_dif = ft.TextField(
-            label="Retención DIF (semanas)",
-            value="8",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            helper_text="Semanas a conservar copias diferenciales"
-        )
-        
-        self.retention_inc = ft.TextField(
-            label="Retención INC (días)",
-            value="7",
-            width=150,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            helper_text="Días a conservar copias incrementales"
-        )
+        # RETIRADO POR SOLICITUD DEL USUARIO
+        # self.retention_full = ...
+        # self.retention_dif = ...
+        # self.retention_inc = ...
         
         # Configuración de nube
         self.cloud_provider = ft.Dropdown(
@@ -1056,13 +1038,13 @@ class BackupProfessionalView:
             
             self.inc_schedule_hour.value = str(schedules['INCREMENTAL'].get('hour', 23))
             
-            # Retención
-            retention = self.db.get_config("backup_retention")
-            if retention:
-                if isinstance(retention, str): retention = json.loads(retention)
-                self.retention_full.value = str(retention.get('full_months', 12))
-                self.retention_dif.value = str(retention.get('dif_weeks', 8))
-                self.retention_inc.value = str(retention.get('inc_days', 7))
+            # Retención (ELIMINADO)
+            # retention = self.db.get_config("backup_retention")
+            # if retention:
+            #     if isinstance(retention, str): retention = json.loads(retention)
+            #     self.retention_full.value = str(retention.get('full_months', 12))
+            #     self.retention_dif.value = str(retention.get('dif_weeks', 8))
+            #     self.retention_inc.value = str(retention.get('inc_days', 7))
             
             # Nube (volver a cargar para asegurar que está al día)
             try:
@@ -1103,21 +1085,9 @@ class BackupProfessionalView:
         except Exception as e:
             self.show_message(f"Error guardando horarios: {str(e)}", "error")
     
-    def _save_retention(self):
-        try:
-            retention_config = {
-                'full_months': int(self.retention_full.value or 12),
-                'dif_weeks': int(self.retention_dif.value or 8),
-                'inc_days': int(self.retention_inc.value or 7)
-            }
-            self.db.set_config("backup_retention", json.dumps(retention_config), tipo='TEXT', descripcion='Política de retención de backups')
-            self.show_message("Política de retención guardada correctamente", "success")
-            try:
-                self.db.log_activity("BACKUP", "UPDATE_RETENTION", detalle=retention_config)
-            except Exception as e:
-                self._log_suppressed("log_activity UPDATE_RETENTION", e)
-        except Exception as e:
-            self.show_message(f"Error guardando retención: {str(e)}", "error")
+    # def _save_retention(self):
+    #     METODO ELIMINADO POR SOLICITUD DEL USUARIO
+    #     pass
 
     def _save_cloud_config(self):
         try:
@@ -1329,30 +1299,9 @@ class BackupProfessionalView:
                 ft.Divider(height=20),
 
                 # Configuración de retención
-                ft.Text("Política de Retención", size=16, weight=ft.FontWeight.BOLD),
-                ft.Text(
-                    "Define cuánto tiempo se conservarán los archivos de backup antes de ser eliminados automáticamente para ahorrar espacio. "
-                    "El sistema mantiene una cadena de dependencia: los backups Incrementales dependen del Diferencial, y el Diferencial del FULL.",
-                    size=12, color=self.COLOR_TEXT_MUTED
-                ),
-                ft.Divider(),
-
-                ft.Row([
-                    self.retention_full,
-                    self.retention_dif,
-                    self.retention_inc,
-                ]),
-                ft.ElevatedButton(
-                    "Guardar Política de Retención",
-                    icon=ft.icons.HISTORY_ROUNDED,
-                    bgcolor=self.COLOR_WARNING,
-                    color=ft.Colors.WHITE,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12)
-                    ),
-                    on_click=lambda e: self._save_retention()
-                ),
+                # RETIRADO POR SOLICITUD DEL USUARIO
+                # ft.Text("Política de Retención", ...),
+                # ...
 
                 ft.Divider(height=20),
 
