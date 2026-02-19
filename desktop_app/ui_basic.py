@@ -1451,6 +1451,57 @@ def main(page: ft.Page) -> None:
     discount_limit_dialog = ft.AlertDialog(modal=True)
     confirm_dialog_state: Dict[str, Any] = {"on_confirm": None, "is_open": False}
 
+    def _is_keydown_event(event: Any) -> bool:
+        event_type = str(
+            getattr(event, "event_type", "") or getattr(event, "type", "") or getattr(event, "data", "")
+        ).strip().lower()
+        if not event_type:
+            return True
+        if event_type in {"keyup", "up", "key_up"}:
+            return False
+        if event_type in {"keydown", "down", "key_down"}:
+            return True
+        return "up" not in event_type
+
+    def _is_keyup_event(event: Any) -> bool:
+        event_type = str(
+            getattr(event, "event_type", "") or getattr(event, "type", "") or getattr(event, "data", "")
+        ).strip().lower()
+        if not event_type:
+            return False
+        if event_type in {"keyup", "up", "key_up"}:
+            return True
+        if event_type in {"keydown", "down", "key_down"}:
+            return False
+        return "up" in event_type and "down" not in event_type
+
+    def _cancel_windows_menu_mode() -> None:
+        if not str(sys.platform).lower().startswith("win"):
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return
+            wm_cancelmode = 0x001F
+            wm_exitmenuloop = 0x0212
+            user32.PostMessageW(hwnd, wm_cancelmode, 0, 0)
+            user32.PostMessageW(hwnd, wm_exitmenuloop, 0, 0)
+        except Exception:
+            logger.debug("No se pudo cancelar el modo menú de Windows", exc_info=True)
+
+    def _cancel_windows_menu_mode_debounced() -> None:
+        _cancel_windows_menu_mode()
+
+        def _delayed_cancel() -> None:
+            for _ in range(10):
+                time.sleep(0.03)
+                _cancel_windows_menu_mode()
+
+        _run_in_background(_delayed_cancel)
+
     def _is_confirm_dialog_open() -> bool:
         return bool(
             confirm_dialog_state.get("is_open")
@@ -1495,17 +1546,76 @@ def main(page: ft.Page) -> None:
         _safe_page_open(page, discount_limit_dialog, "discount_limit_modal")
 
     def ask_confirm(title: str, message: str, confirm_label: str, on_confirm, button_color: str = None) -> None:
-        def close(_: Any) -> None:
+        # Create refs to control focus programmatically
+        confirm_btn_ref = ft.Ref[ft.ElevatedButton]()
+        cancel_btn_ref = ft.Ref[ft.ElevatedButton]()
+        confirm_focus_state: Dict[str, str] = {"action": "confirm"}
+        
+        # Track previous handler to restore it later
+        previous_handler = getattr(page, "on_keyboard_event", None)
+
+        def _set_focused_action(action: str) -> None:
+            confirm_focus_state["action"] = action
+
+        def _is_confirm_keydown_event(event: Any) -> bool:
+            return _is_keydown_event(event)
+
+        def close(_: Any = None) -> None:
+            # Restore previous keyboard handler
+            if previous_handler:
+                page.on_keyboard_event = previous_handler
+            else:
+                page.on_keyboard_event = None
+            
             confirm_dialog_state["on_confirm"] = None
             confirm_dialog_state["is_open"] = False
             _safe_page_close(page, confirm_dialog, "ask_confirm")
 
-        def do_confirm(_: Any) -> None:
+        def do_confirm(_: Any = None) -> None:
             close(None)
             try:
                 on_confirm()
             except Exception as exc:
                 show_toast(f"Error: {exc}", kind="error")
+
+        def _on_confirm_dialog_key(e: ft.KeyboardEvent):
+            key = str(getattr(e, "key", "") or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+
+            if key in {"f10"}:
+                if _is_confirm_keydown_event(e):
+                    do_confirm(None)
+                elif _is_keyup_event(e):
+                    _cancel_windows_menu_mode_debounced()
+                return
+
+            if not _is_confirm_keydown_event(e):
+                return
+
+            if key in {"arrowleft", "left"}:
+                _set_focused_action("cancel")
+                if cancel_btn_ref.current:
+                    cancel_btn_ref.current.focus()
+                return
+
+            if key in {"arrowright", "right"}:
+                _set_focused_action("confirm")
+                if confirm_btn_ref.current:
+                    confirm_btn_ref.current.focus()
+                return
+
+            if key in {"enter", "numpadenter", "return"}:
+                if confirm_focus_state.get("action") == "cancel":
+                    close(None)
+                else:
+                    do_confirm(None)
+                return
+
+            if key in {"esc", "escape"}:
+                close(None)
+                return
+
+        # Install local handler
+        page.on_keyboard_event = _on_confirm_dialog_key
 
         final_color = button_color if button_color else COLOR_ERROR
         confirm_dialog_state["on_confirm"] = on_confirm
@@ -1516,19 +1626,50 @@ def main(page: ft.Page) -> None:
             padding=ft.padding.symmetric(vertical=10)
         )
         confirm_dialog.shape = ft.RoundedRectangleBorder(radius=16)
+        
         confirm_dialog.actions = [
-            _cancel_button("Cancelar", on_click=close),
+            ft.TextButton(
+                "Cancelar", 
+                ref=cancel_btn_ref,
+                on_click=close,
+                on_focus=lambda _: _set_focused_action("cancel"),
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+            ),
             ft.ElevatedButton(
                 confirm_label, 
+                ref=confirm_btn_ref,
                 bgcolor=final_color, 
                 color="#FFFFFF", 
                 on_click=do_confirm,
-                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+                on_focus=lambda _: _set_focused_action("confirm"),
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                autofocus=True # Focus this button by default
             ),
         ]
         opened = _safe_page_open(page, confirm_dialog, "ask_confirm")
         if not opened:
             confirm_dialog_state["is_open"] = False
+            # Restore handler if open failed
+            if previous_handler:
+                 page.on_keyboard_event = previous_handler
+            else:
+                page.on_keyboard_event = None
+        else:
+            # Force focus on confirm button; run an immediate and delayed pass so
+            # Enter works as soon as the dialog appears on slower clients.
+            def _focus_confirm_button() -> None:
+                if confirm_btn_ref.current:
+                    _set_focused_action("confirm")
+                    confirm_btn_ref.current.focus()
+
+            def _delayed_focus():
+                try:
+                    time.sleep(0.08)
+                    _run_on_ui(_focus_confirm_button)
+                except Exception:
+                    pass
+            _run_on_ui(_focus_confirm_button)
+            _run_in_background(_delayed_focus)
 
     marcas_values: List[str] = []
     rubros_values: List[str] = []
@@ -5261,7 +5402,7 @@ def main(page: ft.Page) -> None:
         ask_confirm(
             "Confirmar Comprobante",
             "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
-            "Confirmar [F10]",
+            "Confirmar [Enter/F10]",
             on_confirm_real,
             button_color=COLOR_SUCCESS,
         )
@@ -5348,7 +5489,7 @@ def main(page: ft.Page) -> None:
         ask_confirm(
             "Confirmar Comprobante",
             "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
-            "Confirmar [F10]",
+            "Confirmar [Enter/F10]",
             on_confirm_real,
             button_color=COLOR_SUCCESS,
         )
@@ -8772,8 +8913,6 @@ def main(page: ft.Page) -> None:
             "last_f9_ts": 0.0,
             "last_f10_ts": 0.0,
             "f10_pending_token": 0,
-            "f10_token_seq": 0,
-            "f10_double_window_s": 0.28,
             "confirming": False,
         }
 
@@ -9187,22 +9326,15 @@ def main(page: ft.Page) -> None:
                 next_control = capture_controls[0]
             return _focus_control(next_control)
 
-        def _schedule_single_f10_confirmation(token: int) -> None:
-            def _delayed() -> None:
-                time.sleep(float(shortcut_state.get("f10_double_window_s") or 0.28))
-                if token != int(shortcut_state.get("f10_pending_token") or 0):
-                    return
-                shortcut_state["f10_pending_token"] = 0
-                _run_on_ui(_confirm_current_document)
-
-            _run_in_background(_delayed)
-
         def _on_modal_keyboard_event(event: Any) -> None:
             if not form_dialog.visible:
                 _forward_modal_previous_keyboard_handler(event)
                 return
 
             key = str(getattr(event, "key", "") or "").strip().lower().replace("_", " ").replace("-", " ")
+            if key in {"f10"} and _is_keyup_event(event):
+                _cancel_windows_menu_mode_debounced()
+                return
             if key in {"f8", "f9"} and not _is_modal_keydown_event(event):
                 if key == "f8":
                     shortcut_state["f8_pressed"] = False
@@ -9246,20 +9378,12 @@ def main(page: ft.Page) -> None:
                     is_repeat = bool(repeat_raw)
                 if is_repeat:
                     return
-                now_ts = time.monotonic()
-                last_f10_ts = float(shortcut_state.get("last_f10_ts") or 0.0)
-                window_s = float(shortcut_state.get("f10_double_window_s") or 0.28)
-                if 0 < (now_ts - last_f10_ts) <= window_s:
-                    shortcut_state["last_f10_ts"] = 0.0
-                    shortcut_state["f10_pending_token"] = 0
-                    _confirm_current_document(force_direct=True)
-                    return
-
-                shortcut_state["last_f10_ts"] = now_ts
-                token = int(shortcut_state.get("f10_token_seq") or 0) + 1
-                shortcut_state["f10_token_seq"] = token
-                shortcut_state["f10_pending_token"] = token
-                _schedule_single_f10_confirmation(token)
+                # Open confirmation immediately on F10 to avoid the delay window
+                # where Windows may capture F10 for the native title/menu bar.
+                shortcut_state["last_f10_ts"] = 0.0
+                shortcut_state["f10_pending_token"] = 0
+                _confirm_current_document(force_direct=False)
+                _cancel_windows_menu_mode_debounced()
                 return
 
             if key in {"f11"}:
@@ -11001,7 +11125,7 @@ def main(page: ft.Page) -> None:
             ask_confirm(
                 "Confirmar Comprobante",
                 "¿Está seguro que desea confirmar este comprobante? Esto generará movimientos de stock y afectará la cuenta corriente.",
-                "Confirmar [F10]",
+                "Confirmar [Enter/F10]",
                 lambda: _confirm_after_save(force_direct=True),
                 button_color=COLOR_SUCCESS,
             )
