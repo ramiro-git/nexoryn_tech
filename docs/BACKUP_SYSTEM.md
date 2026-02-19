@@ -40,7 +40,6 @@ Tablas principales:
 - `seguridad.backup_manifest`
 - `seguridad.backup_chain`
 - `seguridad.backup_validation`
-- `seguridad.backup_event` (estructura disponible, no siempre poblada)
 
 Configuración en `seguridad.config_sistema`:
 - `backup_schedules` (JSON)

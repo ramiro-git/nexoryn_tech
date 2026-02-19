@@ -4833,20 +4833,6 @@ def main(page: ft.Page) -> None:
         show_inline_controls=True, show_mass_actions=False, auto_load=False, page_size=20, show_export_scope=False,
     )
 
-    sesiones_table = GenericTable(
-        columns=[
-            ColumnConfig(key="nombre", label="Nombre", width=180),
-            ColumnConfig(key="email", label="Email", width=200),
-            ColumnConfig(key="rol", label="Rol", width=100),
-            ColumnConfig(key="desde", label="Desde", width=160, formatter=_format_datetime),
-            ColumnConfig(key="ip", label="Dirección IP", width=140),
-        ],
-        data_provider=create_catalog_provider(db.fetch_active_sessions, db.count_active_sessions),
-        auto_load=False, page_size=10,
-        show_selection=False, show_mass_actions=False, # cleaner for sessions
-        show_export_button=False,
-    )
-
     # User creation fields
     nuevo_user_nombre = ft.TextField(label="Nombre *", width=380); _style_input(nuevo_user_nombre)
     nuevo_user_email = ft.TextField(label="Email *", width=380); _style_input(nuevo_user_email)
@@ -4934,24 +4920,11 @@ def main(page: ft.Page) -> None:
                     )
                 )
             ),
-            make_tab(
-                text="Sesiones Activas",
-                icon=ft.icons.SATELLITE_ALT_ROUNDED,
-                content=ft.Container(
-                    padding=10,
-                    content=make_card(
-                        "Sesiones Activas",
-                        "Usuarios conectados actualmente al sistema.",
-                        sesiones_table.build()
-                    )
-                )
-            ),
         ],
     )
 
     usuarios_view = ft.Column([
         ft.Row([
-            make_stat_card("Sesiones Activas", "0", "PERSON_ROUNDED", COLOR_ACCENT, key="usuarios_activos"),
             make_stat_card("Último Acceso", "N/A", "SHIELD_ROUNDED", COLOR_SUCCESS, key="usuarios_ultimo"),
             make_stat_card("Estado Servidor", "ONLINE", "SECURITY_ROUNDED", COLOR_WARNING),
         ], spacing=20),
@@ -7123,411 +7096,12 @@ def main(page: ft.Page) -> None:
         expand=True
     )
 
-    # Logs View
-
-    logs_adv_user = ft.TextField(label="Usuario contiene", width=180); _style_input(logs_adv_user)
-    logs_adv_ent = ft.TextField(label="Entidad contiene", width=180); _style_input(logs_adv_ent)
-    logs_adv_acc = ft.TextField(label="Acción contiene", width=180); _style_input(logs_adv_acc)
-    logs_adv_res = ft.Dropdown(
-        label="Resultado", 
-        width=140,
-        options=[
-            ft.dropdown.Option("Todas", "Todos"),
-            ft.dropdown.Option("OK", "OK"),
-            ft.dropdown.Option("FALLO", "FALLO"),
-            ft.dropdown.Option("WARNING", "ADVERTENCIA"),
-        ],
-        value="Todas"
-    ); _style_input(logs_adv_res)
-    logs_adv_ide = ft.TextField(label="Id. Registro", width=110, keyboard_type=ft.KeyboardType.NUMBER); _style_input(logs_adv_ide)
-    logs_adv_desde = _date_field(page, "Desde", 140)
-    logs_adv_hasta = _date_field(page, "Hasta", 140)
-
-    # Toggle for historical logs
-    logs_historico_toggle = ft.Switch(label="Registros Históricos", value=False)
-    logs_historico_rango = ft.Dropdown(
-        label="Período",
-        options=[
-            ft.dropdown.Option("7", "Últimos 7 días"),
-            ft.dropdown.Option("14", "Últimos 14 días"),
-            ft.dropdown.Option("30", "Últimos 30 días"),
-            ft.dropdown.Option("60", "Últimos 60 días"),
-            ft.dropdown.Option("90", "Últimos 90 días"),
-        ],
-        value="30",
-        width=150,
-        visible=False,
-    )
-    _style_input(logs_historico_rango)
-
-    # State for logs view
-    logs_state = {"solo_hoy": True}
-
-    def _on_logs_toggle_change(e):
-        is_historico = logs_historico_toggle.value
-        logs_historico_rango.visible = is_historico
-        logs_state["solo_hoy"] = not is_historico
-        
-        _safe_update_control(logs_historico_rango)
-        
-        if is_historico:
-            # Apply current range immediately
-            _on_logs_rango_change(None)
-        else:
-            # Clear dates so solo_hoy logic works
-            logs_adv_desde.value = ""
-            logs_adv_hasta.value = ""
-            _safe_update_multiple(logs_adv_desde, logs_adv_hasta)
-            logs_table.refresh()
-
-    def _on_logs_rango_change(e):
-        # When the range changes, apply the date filter and refresh
-        if logs_historico_toggle.value:
-            from datetime import datetime, timedelta
-            days = int(logs_historico_rango.value or 30)
-            desde_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            logs_adv_desde.value = desde_date
-            logs_adv_hasta.value = ""
-            _safe_update_multiple(logs_adv_desde, logs_adv_hasta)
-        logs_table.refresh()
-
-    logs_historico_toggle.on_change = _on_logs_toggle_change
-    logs_historico_rango.on_change = _on_logs_rango_change
-
-    # Custom data provider that respects solo_hoy state
-    def logs_data_provider(offset, limit, search, simple, advanced, sorts):
-        if not db:
-            raise provider_error()
-        solo_hoy = logs_state.get("solo_hoy", True)
-        rows = db.fetch_logs(search=search, simple=simple, advanced=advanced, sorts=sorts, limit=limit, offset=offset, solo_hoy=solo_hoy)
-        total = db.count_logs(search=search, simple=simple, advanced=advanced, solo_hoy=solo_hoy)
-        return rows, total
-
-    logs_table = GenericTable(
-        columns=[
-            ColumnConfig(key="fecha", label="Fecha", width=160, formatter=_format_datetime),
-            ColumnConfig(key="usuario", label="Usuario", width=120),
-            ColumnConfig(key="entidad", label="Entidad", width=120),
-            ColumnConfig(key="id_entidad", label="Id. Reg.", width=70),
-            ColumnConfig(key="accion", label="Acción", width=100),
-            ColumnConfig(key="resultado", label="Res.", width=80),
-            ColumnConfig(key="ip", label="IP", width=120),
-            ColumnConfig(key="detalle", label="Detalle", width=300),
-        ],
-        data_provider=logs_data_provider,
-        advanced_filters=[
-            AdvancedFilterControl("usuario", logs_adv_user),
-            AdvancedFilterControl("entidad", logs_adv_ent),
-            AdvancedFilterControl("accion", logs_adv_acc),
-            AdvancedFilterControl(
-                "resultado",
-                logs_adv_res,
-                getter=lambda ctrl: None if getattr(ctrl, "value", None) in (None, "", "Todas", "Todos", "---") else getattr(ctrl, "value", None),
-            ),
-            AdvancedFilterControl("id_entidad", logs_adv_ide),
-            AdvancedFilterControl("desde", logs_adv_desde),
-            AdvancedFilterControl("hasta", logs_adv_hasta),
-        ],
-        show_inline_controls=False, show_mass_actions=False, show_selection=True, auto_load=True, page_size=50,
-        show_export_button=True, show_export_scope=True,
-    )
-
-    def _on_logs_filter_change(e=None) -> None:
-        logs_table.trigger_refresh()
-
-    def _on_logs_filter_submit(e=None) -> None:
-        logs_table.refresh()
-
-    for _ctrl in (
-        logs_adv_user,
-        logs_adv_ent,
-        logs_adv_acc,
-        logs_adv_res,
-        logs_adv_ide,
-        logs_adv_desde,
-        logs_adv_hasta,
-    ):
-        _maybe_set(_ctrl, "on_change", _on_logs_filter_change)
-        if hasattr(_ctrl, "on_submit"):
-            _ctrl.on_submit = _on_logs_filter_submit
-
     precios_view = make_card(
         "Listas de Precio", "Definición y actualización de listas.",
         ft.Column([
             ft.Row([nueva_lp_nom, nueva_lp_orden, ft.ElevatedButton("Crear Lista", height=40, icon=ft.icons.ADD_ROUNDED, on_click=agregar_lp, bgcolor=COLOR_ACCENT, color="#FFFFFF", style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], spacing=10),
             precios_table.build()
         ], expand=True, spacing=10)
-    )
-
-    # --- LOGS CONFIGURATION LOGIC ---
-    logs_conf_retencion = ft.TextField(label="Días de Retención", width=150, keyboard_type=ft.KeyboardType.NUMBER)
-    logs_conf_dir = ft.TextField(label="Directorio Archivo", width=300)
-    log_conf_progress = ft.ProgressBar(width=400, visible=False)
-    log_conf_status = ft.Text("", size=12, italic=True, color="grey", visible=False)
-    log_conf_btn_run = ft.ElevatedButton("Ejecutar Archivado Ahora", icon=ft.icons.PLAY_ARROW_ROUNDED)
-    
-    # State control for dialogs
-    _archive_running = False
-    _current_dialog = None
-
-    # File Picker setup
-    def pick_folder_result(e: ft.FilePickerResultEvent):
-        if e.path:
-            logs_conf_dir.value = e.path
-            _safe_update_control(logs_conf_dir)
-
-    file_picker = ft.FilePicker(on_result=pick_folder_result)
-    # We need to add file_picker to page.overlay, but page might not be fully ready?
-    # Usually it's safe to add here if page is passed to main.
-    try:
-        if file_picker not in page.overlay:
-            page.overlay.append(file_picker)
-    except Exception as e:
-        logger.warning(f"Falló al actualizar interfaz: {e}")
-
-    def open_log_config_dialog(e):
-        try:
-            # Load values
-            retention = db.get_config("log_retencion_dias", "90")
-            directory = db.get_config("log_directorio_archivo", "logs_archive")
-            logs_conf_retencion.value = str(retention)
-            logs_conf_dir.value = str(directory)
-            logs_conf_retencion.error_text = None
-            
-            # Set and open dialog
-            page.dialog = log_config_dialog
-            log_config_dialog.open = True
-            page.update()
-        except Exception as ex:
-            print(f"Error opening config: {ex}")
-
-    def save_log_config(e):
-        nonlocal _current_dialog
-        try:
-            val_days = int(logs_conf_retencion.value)
-            val_dir = logs_conf_dir.value.strip()
-            if not val_dir: val_dir = "logs_archive"
-            
-            db.set_config("log_retencion_dias", str(val_days), "NUMBER", "Días retención logs")
-            db.set_config("log_directorio_archivo", val_dir, "PATH", "Directorio archivo logs")
-            
-            log_config_dialog.open = False
-            page.update()
-            
-            # Close any existing dialog before showing new one
-            if _current_dialog:
-                try:
-                    _current_dialog.open = False
-                except Exception as e:
-                    logger.warning(f"Fallo al llamar on_submit: {e}")
-            
-            # Show success message with dialog
-            def close_success_dialog(x=None):
-                nonlocal _current_dialog
-                success_dialog.open = False
-                _current_dialog = None
-                page.update()
-            
-            success_dialog = ft.AlertDialog(
-                title=ft.Text("✓ Configuración Guardada"),
-                content=ft.Column([
-                    ft.Text(f"Días de retención: {val_days}"),
-                    ft.Text(f"Directorio: {val_dir}")
-                ], tight=True),
-                actions=[
-                    ft.TextButton("Aceptar", on_click=close_success_dialog)
-                ]
-            )
-            _current_dialog = success_dialog
-            page.dialog = success_dialog
-            success_dialog.open = True
-            page.update()
-            
-        except ValueError:
-            logs_conf_retencion.error_text = "Debe ser un número entero"
-            logs_conf_retencion.update()
-
-    def run_archive_now(e):
-        """Execute log archiving in background with non-modal progress dialog."""
-        nonlocal _archive_running, _current_dialog
-        
-        # Prevent concurrent execution
-        if _archive_running:
-            return
-        _archive_running = True
-        
-        try:
-            # Close the config modal first so user can interact
-            log_config_dialog.open = False
-            page.update()
-            
-            # Close any existing dialog before showing new one
-            if _current_dialog:
-                try:
-                    _current_dialog.open = False
-                except Exception as e:
-                    logger.warning(f"Fallo al llamar on_submit: {e}")
-            
-            # Create progress dialog (non-modal so user can still interact)
-            progress_dialog = ft.AlertDialog(
-                modal=False,
-                title=ft.Text("Archivando Logs"),
-                content=ft.Column([
-                    ft.Text("Procesando archivado de logs...", size=12, italic=True, color="grey"),
-                    ft.ProgressBar(width=400),
-                    ft.Text("", size=11, italic=True, color="grey")
-                ], tight=True, width=450, spacing=10)
-            )
-            
-            progress_bar = progress_dialog.content.controls[1]
-            status_text = progress_dialog.content.controls[2]
-            
-            _current_dialog = progress_dialog
-            page.dialog = progress_dialog
-            progress_dialog.open = True
-            page.update()
-            
-            def _run_thread():
-                nonlocal _archive_running, _current_dialog
-                try:
-                    from pathlib import Path
-                    import time
-                    
-                    base_dir = Path.cwd() / "data"
-                    from desktop_app.log_archiver import LogArchiver
-                    archiver = LogArchiver(db, app_data_dir=str(base_dir))
-                    
-                    # Callback to update UI (thread-safe)
-                    def _on_progress(curr, total, msg):
-                        def _apply_progress():
-                            try:
-                                if total > 0:
-                                    progress_bar.value = min(curr / total, 1.0)
-                                else:
-                                    progress_bar.value = 0 if curr == 0 else 1.0
-                                status_text.value = msg
-                                page.update()
-                            except Exception as update_ex:
-                                print(f"UI update error in progress: {update_ex}")
-                        _run_on_ui(_apply_progress)
-                    
-                    try:
-                        result = archiver.archive_old_logs(progress_callback=_on_progress)
-                        
-                        msg = f"Proceso completado.\n\nArchivados: {result['archived']}\nEliminados: {result['deleted']}"
-                        if result['file']:
-                            msg += f"\n\nArchivo generado:\n{result['file']}"
-                        if result['error']:
-                            msg = f"Error: {result['error']}"
-                        
-                        success = True
-                        
-                    except Exception as archive_ex:
-                        msg = f"Error durante el archivado:\n{str(archive_ex)}"
-                        success = False
-                    
-                    def _on_finish():
-                        nonlocal _archive_running, _current_dialog
-                        try:
-                            def _close_progress():
-                                progress_dialog.open = False
-                                page.update()
-                            _run_on_ui(_close_progress)
-
-                            # Small delay
-                            time.sleep(0.1)
-
-                            def _show_result():
-                                # Show result alert
-                                title_text = "Resultado del Archivado" if success else "Error en Archivado"
-                                result_dialog = ft.AlertDialog(
-                                    title=ft.Text(title_text), 
-                                    content=ft.Column([ft.Text(msg)], tight=True, width=450),
-                                    actions=[
-                                        ft.TextButton("Cerrar", on_click=lambda x: _close_result_dialog())
-                                    ]
-                                )
-                                
-                                def _close_result_dialog():
-                                    nonlocal _current_dialog
-                                    result_dialog.open = False
-                                    _current_dialog = None
-                                    _archive_running = False
-                                    page.update()
-                                
-                                _current_dialog = result_dialog
-                                page.dialog = result_dialog
-                                result_dialog.open = True
-                                page.update()
-
-                            _run_on_ui(_show_result)
-                        except Exception as finish_ex:
-                            print(f"Error en finish callback: {finish_ex}")
-                            _archive_running = False
-
-                    _on_finish()
-                    
-                except Exception as ex:
-                    print(f"Manual archive error: {ex}")
-                    import traceback
-                    traceback.print_exc()
-                    _archive_running = False
-            
-            _run_in_background(_run_thread)
-        except Exception as ex:
-            print(f"Error en run_archive_now: {ex}")
-            _archive_running = False
-
-    log_conf_btn_run.on_click = run_archive_now
-
-    def close_log_config_dialog(e):
-        """Close the log config dialog safely."""
-        try:
-            log_config_dialog.open = False
-            page.update()
-        except Exception as ex:
-            print(f"Error closing log config dialog: {ex}")
-
-    log_config_dialog = ft.AlertDialog(
-        modal=True,
-        title=ft.Text("Configuración de Logs"),
-        content=ft.Column([
-            ft.Text("Política de Retención Automática", weight=ft.FontWeight.BOLD),
-            ft.Text("Días a conservar antes de archivar y borrar:", size=12, color="grey"),
-            logs_conf_retencion,
-            ft.Text("Carpeta de Archivo (Destino):", size=12, color="grey"),
-            ft.Row([
-                logs_conf_dir, 
-                ft.IconButton(ft.icons.FOLDER_OPEN, tooltip="Seleccionar carpeta", on_click=lambda _: file_picker.get_directory_path())
-            ]),
-            ft.Divider(),
-            ft.Text("Ejecución Manual", weight=ft.FontWeight.BOLD),
-            ft.Text("Forzar el archivado ahora mismo respetando la configuración actual.", size=12, color="grey"),
-            log_conf_btn_run,
-        ], tight=True, width=500, spacing=10),
-        actions=[
-            ft.TextButton("Cancelar", on_click=close_log_config_dialog),
-            ft.ElevatedButton("Guardar Configuración", on_click=save_log_config),
-        ],
-    )
-    
-    logs_config_btn = ft.IconButton(icon=ft.icons.SETTINGS_ROUNDED, tooltip="Configurar Retención y Archivado", on_click=open_log_config_dialog)
-
-    # Build logs view with toggle controls
-    logs_toggle_row = ft.Row([
-        logs_config_btn,
-        logs_historico_toggle,
-        logs_historico_rango,
-        ft.Text("(Por defecto: solo logs de hoy)", size=11, color=COLOR_TEXT_MUTED, italic=True),
-    ], spacing=15, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-
-    logs_view = make_card(
-        "Logs de Sistema", "Registro histórico de movimientos y acciones.",
-        ft.Column([
-            logs_toggle_row,
-            ft.Divider(height=1, color=COLOR_BORDER),
-            logs_table.build()
-        ], spacing=10, expand=True)
     )
 
     nueva_marca.on_submit = agregar_marca  # type: ignore[attr-defined]
@@ -7731,10 +7305,6 @@ def main(page: ft.Page) -> None:
         [mov_adv_art, mov_adv_tipo, mov_adv_depo, mov_adv_user, mov_adv_desde, mov_adv_hasta],
     )
     # Note: pagos_table advanced filters redefined inline; wire_live_search handles them.
-    wire_refresh(
-        logs_table,
-        [logs_adv_user, logs_adv_ent, logs_adv_acc, logs_adv_desde],
-    )
 
     # Entidades and Artículos views are already defined above with stats and actions.
 
@@ -7833,7 +7403,6 @@ def main(page: ft.Page) -> None:
                             if "pagos_recientes" in card_registry: card_registry["pagos_recientes"].value = f"{sf.get('pagos_recientes', 0):,}"
 
                         # Usuarios
-                        if "usuarios_activos" in card_registry: card_registry["usuarios_activos"].value = f"{so.get('usuarios_activos', 0):,}"
                         if "usuarios_ultimo" in card_registry: card_registry["usuarios_ultimo"].value = so.get('ultimo_login', "N/A")
 
                         # Movimientos
@@ -7886,8 +7455,7 @@ def main(page: ft.Page) -> None:
         remitos_table, 
         movimientos_table, 
         pagos_table, 
-        cuentas_table, 
-        logs_table
+        cuentas_table,
     ]
 
     def apply_role_permissions() -> None:
@@ -7939,11 +7507,6 @@ def main(page: ft.Page) -> None:
             if btn:
                 btn.visible = is_privileged
 
-        # 4. Specific view elements
-        # For example, sensitive stats or actions
-        if "usuarios_activos" in card_registry:
-            card_registry["usuarios_activos"].visible = is_admin
-        
         # 5. Commit all visibility changes to the page
         try:
             page.update()
@@ -8247,11 +7810,8 @@ def main(page: ft.Page) -> None:
                                 elif key == "usuarios":
                                     try:
                                         _run_in_background(_run_on_ui, usuarios_table.refresh)
-                                        _run_in_background(_run_on_ui, sesiones_table.refresh)
                                     except Exception as e:
                                         logger.warning(f"Falló al actualizar: {e}")
-                                elif key == "logs":
-                                    _run_in_background(_run_on_ui, logs_table.refresh, silent=True)
                                 elif key == "dashboard":
                                     if dashboard_view_component:
                                         _run_in_background(dashboard_view_component.request_auto_refresh)
@@ -8456,7 +8016,7 @@ def main(page: ft.Page) -> None:
 
 
     def set_view(key: str) -> None:
-        if key in ["usuarios", "backups", "logs"] and CURRENT_USER_ROLE != "ADMIN":
+        if key in ["usuarios", "backups"] and CURRENT_USER_ROLE != "ADMIN":
             show_toast("Acceso restringido a administradores", kind="error")
             return
             
@@ -8485,8 +8045,6 @@ def main(page: ft.Page) -> None:
             refresh_loc_provs()
         elif key == "precios":
             content_holder.content = precios_view
-        elif key == "logs":
-            content_holder.content = logs_view
         elif key == "usuarios":
             content_holder.content = usuarios_view
         elif key == "backups":
@@ -8527,7 +8085,6 @@ def main(page: ft.Page) -> None:
         table_map = {
             "entidades": entidades_table,
             "precios": precios_table,
-            "logs": logs_table,
             "usuarios": usuarios_table,
             "documentos": documentos_summary_table,
             "remitos": remitos_table,
@@ -8551,7 +8108,6 @@ def main(page: ft.Page) -> None:
             def safe_refresh():
                 try:
                     _run_on_ui(usuarios_table.refresh)
-                    _run_on_ui(sesiones_table.refresh)
                 except (RuntimeError, Exception):
                     pass
             _run_in_background(safe_refresh)
@@ -8575,7 +8131,7 @@ def main(page: ft.Page) -> None:
                 print(f"Error refreshing locations/provinces: {e}")
 
     nav_items: Dict[str, ft.Container] = {}
-    admin_only_keys = {"usuarios", "backups", "logs"}
+    admin_only_keys = {"usuarios", "backups"}
 
     def nav_item(key: str, label: str, icon_name: str):
         icon_value = getattr(ft.icons, icon_name, ft.icons.QUESTION_MARK_ROUNDED)
@@ -8709,7 +8265,7 @@ def main(page: ft.Page) -> None:
                 new_controls.append(item)
             
             # Admin Only Items
-            admin_keys = ["usuarios", "logs", "backups"]
+            admin_keys = ["usuarios", "backups"]
             if show_admin_items:
                 for key in admin_keys:
                     if key in nav_items:
@@ -8807,7 +8363,6 @@ def main(page: ft.Page) -> None:
             ),
             nav_item("config", "Configuración", "SETTINGS_SUGGEST_ROUNDED"),
             nav_item("usuarios", "Usuarios", "ADMIN_PANEL_SETTINGS_ROUNDED"),
-            nav_item("logs", "Logs de Actividad", "HISTORY_EDU_ROUNDED"),
             nav_item("backups", "Respaldos", "CLOUD_SYNC_ROUNDED"),
         ],
         spacing=6,
@@ -11620,27 +11175,10 @@ def main(page: ft.Page) -> None:
     
     # Initial catalog load after all UI is ready
     if db is not None and not db_error:
-        # Check and run automatic log partition migration
-        try:
-            from desktop_app.db_migration import migrate_to_partitioned_logs
-            # Run in a separate thread to avoid UI freeze if migration is heavy? 
-            # Ideally blocking for safety, but if large data, better show loading.
-            # User wants "automatic", blocking is safest for integrity.
-            migrate_to_partitioned_logs(db)
-        except Exception as exc:
-            print(f"Auto-migration error: {exc}")
-
         try:
             reload_catalogs()
         except Exception as exc:
             print(f"Error enitial reload: {exc}")
-        
-        # Start log archiver in background (archives old logs after 30s delay)
-        try:
-            from desktop_app.log_archiver import start_log_archiver
-            start_log_archiver(db, app_data_dir=str(PROJECT_ROOT / "data"), delay_seconds=30)
-        except Exception as exc:
-            print(f"Log archiver init error: {exc}")
 
     page.update()
 

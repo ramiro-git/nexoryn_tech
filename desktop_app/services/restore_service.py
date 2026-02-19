@@ -281,8 +281,8 @@ class RestoreService:
         env = self._build_pg_env(config["password"])
         
         try:
-            # Las tablas de sistema de backup (backup_manifest, backup_event) ya fueron
-            # excluidas del pg_dump, por lo que no es necesario excluirlas aquí
+            # backup_manifest ya fue excluida del pg_dump, por lo que no
+            # es necesario excluirla aquí.
             cmd = [
                 pg_restore,
                 "-h", config["host"],

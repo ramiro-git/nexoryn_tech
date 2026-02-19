@@ -62,6 +62,10 @@ class BackupProfessionalView:
 
     def _log_suppressed(self, context: str, exc: Exception) -> None:
         self.logger.debug("%s: %s", context, exc)
+
+    def _track_backup_event(self, *args, **kwargs) -> None:
+        """No-op: backup audit logging was intentionally decoupled from DB logs."""
+        _ = (args, kwargs)
     
     @property
     def backup_manager(self):
@@ -344,20 +348,6 @@ class BackupProfessionalView:
         # Cargar configuración de nube guardada
         self._load_cloud_config_initial()
         
-        # Logs
-        self.logs_table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("Fecha", size=11)),
-                ft.DataColumn(ft.Text("Tipo", size=11)),
-                ft.DataColumn(ft.Text("Mensaje", size=11)),
-                ft.DataColumn(ft.Text("Estado", size=11)),
-            ],
-            rows=[],
-            border_radius=10,
-            border=ft.border.all(1, self.COLOR_BORDER),
-            heading_row_color=ft.Colors.with_opacity(0.05, self.COLOR_PRIMARY),
-        )
-
     def _update_metrics(self):
         try:
             # Cargar estadísticas
@@ -398,9 +388,6 @@ class BackupProfessionalView:
             
             # Cargar tabla de backups
             self._load_backups_table()
-            
-            # Cargar logs
-            self._load_logs()
             
             # Cargar configuraciones de la DB
             self._load_configs()
@@ -544,69 +531,13 @@ class BackupProfessionalView:
          # Logic moved to generic table provider
         try:
             if self.db:
-                self.db.log_activity("BACKUP", "VIEW")
+                self._track_backup_event("BACKUP", "VIEW")
         except Exception as e:
             self._log_suppressed("log_activity BACKUP VIEW", e)
         self.backups_table.refresh()
         # Ensure metrics are updated whenever table is refreshed
         import threading
         threading.Thread(target=self._update_metrics, daemon=True).start()
-
-    def _load_logs(self):
-        try:
-            query = """
-            SELECT fecha_hora, tipo_evento, detalle, nivel_log
-            FROM seguridad.backup_event
-            ORDER BY fecha_hora DESC
-            LIMIT 20
-            """
-            
-            with self.db.pool.connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query)
-                    rows = cur.fetchall()
-                    
-                    table_rows = []
-                    for row in rows:
-                        fecha = row[0]
-                        tipo = row[1] or "SISTEMA"
-                        detalle = row[2] or "{}"
-                        nivel = row[3] or "INFO"
-                        
-                        if isinstance(detalle, str):
-                            detalle_text = detalle
-                        else:
-                            import json
-                            detalle_text = json.dumps(detalle, ensure_ascii=False)
-                        
-                        nivel_color = {
-                            "ERROR": self.COLOR_ERROR,
-                            "WARNING": self.COLOR_WARNING,
-                            "INFO": self.COLOR_INFO,
-                            "DEBUG": self.COLOR_TEXT_MUTED
-                        }.get(nivel, self.COLOR_TEXT_MUTED)
-                        
-                        row_cell = ft.DataRow(
-                            cells=[
-                                ft.DataCell(ft.Text(self._format_datetime(fecha), size=11)),
-                                ft.DataCell(ft.Text(tipo, size=11)),
-                                ft.DataCell(ft.Text(detalle_text[:50], size=11)),
-                                ft.DataCell(
-                                    ft.Container(
-                                        content=ft.Text(nivel, size=11, color="#FFFFFF"),
-                                        bgcolor=nivel_color,
-                                        padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                                        border_radius=12
-                                    )
-                                ),
-                            ]
-                        )
-                        table_rows.append(row_cell)
-                    
-                    self.logs_table.rows = table_rows
-                    
-        except Exception as e:
-            print(f"Error cargando logs: {e}")
 
     def _get_backup_type_badge(self, tipo: str) -> ft.Container:
         colors = {
@@ -655,16 +586,16 @@ class BackupProfessionalView:
             try:
                 # Log intent
                 try:
-                    self.db.log_activity("BACKUP", f"EXEC_INIT_{backup_type}", detalle={"tipo": backup_type})
+                    self._track_backup_event("BACKUP", f"EXEC_INIT_{backup_type}", detalle={"tipo": backup_type})
                 except Exception as e:
                     self._log_suppressed(f"log_activity EXEC_INIT_{backup_type}", e)
 
                 resultado = self.backup_manager.execute_scheduled_backup(backup_type)
                 
                 if resultado['exitoso']:
-                    # Log activity in system logs
+                    # Trazabilidad desacoplada: no se persiste en DB.
                     try:
-                        self.db.log_activity(
+                        self._track_backup_event(
                             entidad="SISTEMA",
                             accion=f"BACKUP_{backup_type}",
                             resultado="OK",
@@ -680,7 +611,7 @@ class BackupProfessionalView:
                     self.backups_table.refresh()
                 else:
                     try:
-                        self.db.log_activity(
+                        self._track_backup_event(
                             entidad="SISTEMA",
                             accion=f"BACKUP_{backup_type}",
                             resultado="FAIL",
@@ -702,7 +633,7 @@ class BackupProfessionalView:
             try:
                 # Log intent
                 try:
-                    self.db.log_activity("BACKUP", "VALIDATE_INIT", id_entidad=backup['id'])
+                    self._track_backup_event("BACKUP", "VALIDATE_INIT", id_entidad=backup['id'])
                 except Exception as e:
                     self._log_suppressed("log_activity VALIDATE_INIT", e)
 
@@ -711,20 +642,20 @@ class BackupProfessionalView:
                 if result['valido']:
                     self.show_message("Backup validado correctamente", "success")
                     try:
-                        self.db.log_activity("BACKUP", "VALIDATE_OK", id_entidad=backup['id'])
+                        self._track_backup_event("BACKUP", "VALIDATE_OK", id_entidad=backup['id'])
                     except Exception as e:
                         self._log_suppressed("log_activity VALIDATE_OK", e)
                 else:
                     self.show_message(f"Backup inválido: {result['mensaje']}", "warning")
                     try:
-                        self.db.log_activity("BACKUP", "VALIDATE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
+                        self._track_backup_event("BACKUP", "VALIDATE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
                     except Exception as e:
                         self._log_suppressed("log_activity VALIDATE_FAIL", e)
                     
             except Exception as e:
                 self.show_message(f"Error validando backup: {str(e)}", "error")
                 try:
-                    self.db.log_activity("BACKUP", "VALIDATE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                    self._track_backup_event("BACKUP", "VALIDATE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
                 except Exception as exc:
                     self._log_suppressed("log_activity VALIDATE_ERROR", exc)
         
@@ -739,7 +670,7 @@ class BackupProfessionalView:
         def run_upload():
             try:
                 try:
-                    self.db.log_activity("BACKUP", "UPLOAD_INIT", id_entidad=backup['id'], detalle={"provider": provider})
+                    self._track_backup_event("BACKUP", "UPLOAD_INIT", id_entidad=backup['id'], detalle={"provider": provider})
                 except Exception as e:
                     self._log_suppressed("log_activity UPLOAD_INIT", e)
 
@@ -756,7 +687,7 @@ class BackupProfessionalView:
                     if not sync_dir_value or not sync_dir_value.strip():
                         self.show_message("Error: Debes especificar la carpeta de sincronización para LOCAL", "error")
                         try:
-                            self.db.log_activity("BACKUP", "UPLOAD_CONFIG_MISSING", id_entidad=backup['id'], resultado="FAIL", detalle={"error": "sync_dir not configured"})
+                            self._track_backup_event("BACKUP", "UPLOAD_CONFIG_MISSING", id_entidad=backup['id'], resultado="FAIL", detalle={"error": "sync_dir not configured"})
                         except Exception as e:
                             self._log_suppressed("log_activity UPLOAD_CONFIG_MISSING", e)
                         return
@@ -774,20 +705,20 @@ class BackupProfessionalView:
                 if result.exitoso:
                     self.show_message("Backup subido a la nube exitosamente", "success")
                     try:
-                        self.db.log_activity("BACKUP", "UPLOAD_OK", id_entidad=backup['id'], detalle={"url": result.url, "tiempo_segundos": result.tiempo_segundos})
+                        self._track_backup_event("BACKUP", "UPLOAD_OK", id_entidad=backup['id'], detalle={"url": result.url, "tiempo_segundos": result.tiempo_segundos})
                     except Exception as e:
                         self._log_suppressed("log_activity UPLOAD_OK", e)
                 else:
                     self.show_message(f"Error subiendo a la nube: {result.mensaje}", "error")
                     try:
-                        self.db.log_activity("BACKUP", "UPLOAD_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result.mensaje})
+                        self._track_backup_event("BACKUP", "UPLOAD_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result.mensaje})
                     except Exception as e:
                         self._log_suppressed("log_activity UPLOAD_FAIL", e)
                     
             except Exception as e:
                 self.show_message(f"Error subiendo a la nube: {str(e)}", "error")
                 try:
-                    self.db.log_activity("BACKUP", "UPLOAD_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                    self._track_backup_event("BACKUP", "UPLOAD_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
                 except Exception as exc:
                     self._log_suppressed("log_activity UPLOAD_ERROR", exc)
         
@@ -799,7 +730,7 @@ class BackupProfessionalView:
 
         # Log intent
         try:
-            self.db.log_activity("BACKUP", "RESTORE_INIT", id_entidad=backup['id'], detalle={"tipo": backup['tipo'], "fecha": str(backup['fecha_inicio'])})
+            self._track_backup_event("BACKUP", "RESTORE_INIT", id_entidad=backup['id'], detalle={"tipo": backup['tipo'], "fecha": str(backup['fecha_inicio'])})
         except Exception as e:
             self._log_suppressed("log_activity RESTORE_INIT", e)
 
@@ -808,7 +739,7 @@ class BackupProfessionalView:
                 try:
                     # Log execution
                     try:
-                        self.db.log_activity("BACKUP", "RESTORE_EXEC", id_entidad=backup['id'])
+                        self._track_backup_event("BACKUP", "RESTORE_EXEC", id_entidad=backup['id'])
                     except Exception as e:
                         self._log_suppressed("log_activity RESTORE_EXEC", e)
 
@@ -817,19 +748,19 @@ class BackupProfessionalView:
                     if result['exitoso']:
                         self.show_message(f"Restauración completada: {result['mensaje']}", "success")
                         try:
-                            self.db.log_activity("BACKUP", "RESTORE_OK", id_entidad=backup['id'])
+                            self._track_backup_event("BACKUP", "RESTORE_OK", id_entidad=backup['id'])
                         except Exception as e:
                             self._log_suppressed("log_activity RESTORE_OK", e)
                     else:
                         self.show_message(f"Error en restauración: {result['mensaje']}", "error")
                         try:
-                            self.db.log_activity("BACKUP", "RESTORE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
+                            self._track_backup_event("BACKUP", "RESTORE_FAIL", id_entidad=backup['id'], resultado="FAIL", detalle={"error": result['mensaje']})
                         except Exception as e:
                             self._log_suppressed("log_activity RESTORE_FAIL", e)
                 except Exception as e:
                     self.show_message(f"Error crítico en restauración: {str(e)}", "error")
                     try:
-                        self.db.log_activity("BACKUP", "RESTORE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                        self._track_backup_event("BACKUP", "RESTORE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
                     except Exception as exc:
                         self._log_suppressed("log_activity RESTORE_ERROR", exc)
             
@@ -982,7 +913,7 @@ class BackupProfessionalView:
             try:
                 # Log intent
                 try:
-                    self.db.log_activity("BACKUP", "DELETE_EXEC", id_entidad=backup['id'], detalle={"archivo": backup['archivo']})
+                    self._track_backup_event("BACKUP", "DELETE_EXEC", id_entidad=backup['id'], detalle={"archivo": backup['archivo']})
                 except Exception as e:
                     self._log_suppressed("log_activity DELETE_EXEC", e)
 
@@ -1003,13 +934,13 @@ class BackupProfessionalView:
                 self.show_message("Backup eliminado correctamente", "success")
                 self.backups_table.refresh()
                 try:
-                    self.db.log_activity("BACKUP", "DELETE_OK", id_entidad=backup['id'])
+                    self._track_backup_event("BACKUP", "DELETE_OK", id_entidad=backup['id'])
                 except Exception as e:
                     self._log_suppressed("log_activity DELETE_OK", e)
             except Exception as e:
                 self.show_message(f"Error eliminando backup: {str(e)}", "error")
                 try:
-                    self.db.log_activity("BACKUP", "DELETE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
+                    self._track_backup_event("BACKUP", "DELETE_ERROR", id_entidad=backup['id'], resultado="ERROR", detalle={"error": str(e)})
                 except Exception as exc:
                     self._log_suppressed("log_activity DELETE_ERROR", exc)
 
@@ -1078,7 +1009,7 @@ class BackupProfessionalView:
             
             self.show_message("Horarios de backups actualizados correctamente", "success")
             try:
-                self.db.log_activity("BACKUP", "UPDATE_SCHEDULE", detalle={"FULL": self.full_schedule_day.value, "DIF": self.dif_schedule_weekday.value})
+                self._track_backup_event("BACKUP", "UPDATE_SCHEDULE", detalle={"FULL": self.full_schedule_day.value, "DIF": self.dif_schedule_weekday.value})
             except Exception as e:
                 self._log_suppressed("log_activity UPDATE_SCHEDULE", e)
             
@@ -1116,7 +1047,7 @@ class BackupProfessionalView:
             self.show_message(f"Configuración de nube guardada con éxito", "success")
             
             try:
-                self.db.log_activity("BACKUP", "UPDATE_CLOUD_CONFIG", detalle=cloud_config)
+                self._track_backup_event("BACKUP", "UPDATE_CLOUD_CONFIG", detalle=cloud_config)
             except Exception as e:
                 self._log_suppressed("log_activity UPDATE_CLOUD_CONFIG", e)
 

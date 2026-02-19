@@ -1,6 +1,6 @@
 # Gestión de Base de Datos - Nexoryn Tech
 
-Este documento describe los scripts de base de datos, el flujo de sincronización automática del esquema y el mantenimiento de logs en el sistema actual.
+Este documento describe los scripts de base de datos, el flujo de sincronización automática del esquema y la trazabilidad operativa vigente.
 
 ## Scripts Principales
 
@@ -135,23 +135,24 @@ SET app.user_id = 1;
 
 Los servicios de backup/restore toman `DB_MAINTENANCE_USER_ID` y lo convierten en `PGOPTIONS` automáticamente para evitar bloqueos por RLS.
 
-## Logs de Auditoría (particionado y archivado)
+## Logs y Trazabilidad (TXT diario)
 
-### Particionado automático
-En el arranque de la UI básica se ejecuta `migrate_to_partitioned_logs(db)` para:
-- Convertir `seguridad.log_actividad` en tabla particionada por semana.
-- Migrar datos históricos si existía una tabla no particionada.
+La auditoría dejó de persistirse en tablas de DB y ahora se guarda en archivos diarios:
+- Carpeta: `<PROJECT_ROOT>/logs/`
+- Archivo por día: `activity_YYYY-MM-DD.txt`
+- Formato: CSV delimitado por `,` con cabecera fija (`id`, `fecha_hora`, `id_usuario`, `entidad`, `id_entidad`, `accion`, `resultado`, `ip`, `user_agent`, `session_id`, `detalle`)
+- `detalle` se serializa como JSON string.
 
-### Archivado automático
-Se inicia un `LogArchiver` en segundo plano:
-- **Retención**: `log_retencion_dias` en `seguridad.config_sistema` (default 90).
-- **Directorio**: `log_directorio_archivo` (default `logs_archive`).
-- **Ruta final**: `<PROJECT_ROOT>/data/<log_directorio_archivo>`.
-- Archiva a `.jsonl.gz` y luego elimina los registros antiguos.
-- Ejecuta `seguridad.mantener_particiones_log()` si la función existe.
+Notas operativas:
+- `Database.log_activity`, `Database.log_logout` y `Database._log_login_attempt` escriben solo en archivo.
+- El logging es no bloqueante: si falla la escritura no rompe la operación principal.
+- No existe política automática de retención/archivado de logs.
 
-## Actualizaciones en Tiempo Real (UI básica y avanzada)
-La UI básica y la UI avanzada usan polling cada 5 segundos sobre `seguridad.log_actividad` mediante `Database.check_recent_activity()` para refrescar la vista activa.
+## Sesiones activas y refresco UI
+
+- `Database.fetch_active_sessions` y `Database.count_active_sessions` quedaron deshabilitadas (devuelven vacío/cero por compatibilidad).
+- `Database.check_recent_activity` usa marcas de actividad en memoria del proceso (sin consultar tablas de logs).
+- La UI básica ya no expone el módulo "Logs de Actividad" ni la vista de sesiones activas.
 
 ## Variables de Entorno Relevantes
 - `DATABASE_URL` o `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.

@@ -236,9 +236,8 @@ class BackupIncrementalService:
                 pg_dump,
                 "-h", config["host"], "-p", config["port"], "-U", config["user"],
                 "-F", "c", "-b", "-v",
-                # Excluir tablas de sistema de backup para evitar sobrescritura circular
+                # Excluir manifiesto para evitar sobrescritura circular
                 "--exclude-table=seguridad.backup_manifest",
-                "--exclude-table=seguridad.backup_event",
                 "-f", str(filepath),
                 config["name"]
             ]

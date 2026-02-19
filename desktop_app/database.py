@@ -1,3 +1,4 @@
+import csv
 import json
 import logging
 import re
@@ -7,6 +8,7 @@ import unicodedata
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from psycopg.errors import ForeignKeyViolation, IntegrityError
@@ -34,6 +36,19 @@ _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GUEST_USER_NAME = "Invitado"
 GUEST_USER_EMAIL = "invitado@nexoryn.local"
 GUEST_USER_ROLE = "GERENTE"
+_ACTIVITY_LOG_COLUMNS = [
+    "id",
+    "fecha_hora",
+    "id_usuario",
+    "entidad",
+    "id_entidad",
+    "accion",
+    "resultado",
+    "ip",
+    "user_agent",
+    "session_id",
+    "detalle",
+]
 
 def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
     columns = [
@@ -218,6 +233,12 @@ class Database:
         self.is_closing = False
         self._dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._dashboard_cache_lock = threading.RLock()
+        self._activity_state_lock = threading.RLock()
+        self._file_log_lock = threading.RLock()
+        self._entity_last_activity: Dict[str, float] = {}
+        self._last_activity_ts = 0.0
+        self._file_log_seq = int(time.time() * 1000)
+        self._logs_dir = Path.cwd() / "logs"
         
         # Apply necessary schema patches automatically
         self._run_migrations()
@@ -529,122 +550,198 @@ class Database:
                 else:
                     conn.commit()
 
-    def log_activity(self, entidad: str, accion: str, id_entidad: Optional[int] = None, resultado: str = "OK", detalle: Optional[Dict[str, Any]] = None) -> None:
-        if self.is_closing:
-            return # Silent skip on shutdown
-            
-        query = """
-            INSERT INTO seguridad.log_actividad (id_usuario, id_tipo_evento_log, entidad, id_entidad, accion, resultado, ip, detalle)
-            VALUES (
-                %s, 
-                COALESCE(
-                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = %s),
-                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR'),
-                    (SELECT id FROM seguridad.tipo_evento_log LIMIT 1)
-                ), 
-                %s, %s, %s, %s, %s, %s
-            )
-        """
+    def _ensure_logs_dir(self) -> Path:
+        self._logs_dir.mkdir(parents=True, exist_ok=True)
+        return self._logs_dir
+
+    def _daily_activity_log_path(self, when: datetime) -> Path:
+        return self._ensure_logs_dir() / f"activity_{when.strftime('%Y-%m-%d')}.txt"
+
+    def _next_activity_id(self) -> int:
+        with self._activity_state_lock:
+            self._file_log_seq += 1
+            return self._file_log_seq
+
+    def _entity_activity_keys(self, entidad: Optional[str]) -> List[str]:
+        raw = str(entidad or "").strip()
+        if not raw:
+            return []
+
+        keys: set[str] = {raw, raw.upper(), raw.lower()}
+        parts = [part for part in re.split(r"[^A-Za-z0-9_]+", raw) if part]
+        for part in parts:
+            keys.add(part)
+            keys.add(part.upper())
+            keys.add(part.lower())
+            if "_" in part:
+                for token in [tk for tk in part.split("_") if tk]:
+                    keys.add(token)
+                    keys.add(token.upper())
+                    keys.add(token.lower())
+
+        upper_raw = raw.upper()
+        alias_map = {
+            "ENTIDAD": ("ENTIDAD",),
+            "ARTICULO": ("ARTICULO",),
+            "DOCUMENTO": ("DOCUMENTO",),
+            "PAGO_CC": ("PAGO_CC",),
+            "AJUSTE_CC": ("AJUSTE_CC",),
+            "CUENTA_CORRIENTE": ("PAGO_CC", "AJUSTE_CC", "CUENTA_CORRIENTE"),
+            "PAGO": ("PAGO",),
+            "REMITO": ("REMITO",),
+            "MOVIMIENTO": ("MOVIMIENTO",),
+            "USUARIO": ("USUARIO",),
+            "SISTEMA": ("SISTEMA",),
+            "CONFIG": ("CONFIG",),
+            "LISTA_PRECIO": ("PRECIOS", "LISTA_PRECIO"),
+        }
+        for token, aliases in alias_map.items():
+            if token in upper_raw:
+                for alias in aliases:
+                    keys.add(alias)
+                    keys.add(alias.upper())
+                    keys.add(alias.lower())
+
+        return [key for key in keys if key]
+
+    def _should_track_runtime_activity(self, accion: Optional[str]) -> bool:
+        action = str(accion or "").strip().upper()
+        if not action:
+            return True
+        readonly_actions = {
+            "SELECT",
+            "VIEW",
+            "VIEW_DETAIL",
+            "NAVEGACION",
+            "CONFIG_TAB",
+            "LOGIN_OK",
+            "LOGIN_FAIL",
+            "LOGOUT",
+        }
+        if action in readonly_actions:
+            return False
+        if action.startswith("SELECT_") or action.startswith("VIEW_"):
+            return False
+        return True
+
+    def _record_runtime_activity(self, entidad: Optional[str], ts: float) -> None:
+        with self._activity_state_lock:
+            if ts > self._last_activity_ts:
+                self._last_activity_ts = ts
+            for key in self._entity_activity_keys(entidad):
+                self._entity_last_activity[key] = ts
+
+    def _serialize_activity_detail(self, detalle: Optional[Dict[str, Any]]) -> str:
+        if not detalle:
+            return ""
         try:
-            with self.pool.connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query, (
-                        self.current_user_id,
-                        accion.upper() if accion else "ERROR",
-                        entidad, id_entidad, accion, resultado, self.current_ip,
-                        json.dumps(detalle) if detalle else None
-                    ))
-                    conn.commit()
+            return json.dumps(detalle, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            return json.dumps({"raw": str(detalle)}, ensure_ascii=False, separators=(",", ":"))
+
+    def _append_activity_file_row(
+        self,
+        *,
+        id_usuario: Optional[int],
+        entidad: Optional[str],
+        id_entidad: Optional[int],
+        accion: Optional[str],
+        resultado: Optional[str],
+        ip: Optional[str],
+        detalle: Optional[Dict[str, Any]],
+        user_agent: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> bool:
+        now = datetime.now()
+        ts = now.timestamp()
+        row = {
+            "id": self._next_activity_id(),
+            "fecha_hora": now.isoformat(timespec="seconds"),
+            "id_usuario": id_usuario if id_usuario is not None else "",
+            "entidad": (str(entidad).strip() if entidad is not None else "") or "",
+            "id_entidad": id_entidad if id_entidad is not None else "",
+            "accion": (str(accion).strip() if accion is not None else "") or "",
+            "resultado": (str(resultado).strip().upper() if resultado is not None else "") or "OK",
+            "ip": (str(ip).strip() if ip is not None else "") or "",
+            "user_agent": (str(user_agent).strip() if user_agent is not None else "") or "",
+            "session_id": (str(session_id).strip() if session_id is not None else "") or "",
+            "detalle": self._serialize_activity_detail(detalle),
+        }
+        filepath = self._daily_activity_log_path(now)
+        try:
+            with self._file_log_lock:
+                file_exists = filepath.exists()
+                with filepath.open("a", encoding="utf-8", newline="") as fh:
+                    writer = csv.DictWriter(fh, fieldnames=_ACTIVITY_LOG_COLUMNS, delimiter=",")
+                    if not file_exists or filepath.stat().st_size == 0:
+                        writer.writeheader()
+                    writer.writerow(row)
+            if self._should_track_runtime_activity(row.get("accion")):
+                self._record_runtime_activity(row.get("entidad"), ts)
+            return True
         except Exception:
             logger.exception(
-                "Error logging activity (entidad=%s, accion=%s, id_entidad=%s, resultado=%s, detalle_present=%s)",
+                "Error writing activity file log (entidad=%s, accion=%s, id_entidad=%s)",
                 entidad,
                 accion,
                 id_entidad,
-                resultado,
-                bool(detalle),
             )
+            return False
+
+    def log_activity(self, entidad: str, accion: str, id_entidad: Optional[int] = None, resultado: str = "OK", detalle: Optional[Dict[str, Any]] = None) -> None:
+        if self.is_closing:
+            return # Silent skip on shutdown
+        self._append_activity_file_row(
+            id_usuario=self.current_user_id,
+            entidad=entidad,
+            id_entidad=id_entidad,
+            accion=accion,
+            resultado=resultado,
+            ip=self.current_ip,
+            detalle=detalle,
+        )
 
     def log_logout(self, motivo: str, usuario: Optional[str] = None, *, use_pool: bool = True) -> bool:
-        """Log a logout event, bypassing is_closing and falling back to direct connection."""
-        if not self.current_user_id:
+        """Log a logout event to activity file logs."""
+        _ = use_pool  # kept for backward compatibility
+        user_id = self.current_user_id
+        if not user_id:
             return False
 
         detalle = {"motivo": motivo} if motivo else {}
         if usuario:
             detalle["usuario"] = usuario
-
-        query = """
-            INSERT INTO seguridad.log_actividad (id_usuario, id_tipo_evento_log, entidad, id_entidad, accion, resultado, ip, detalle)
-            VALUES (
-                %s, 
-                COALESCE(
-                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = %s),
-                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR'),
-                    (SELECT id FROM seguridad.tipo_evento_log LIMIT 1)
-                ), 
-                %s, %s, %s, %s, %s, %s
-            )
-        """
-        params = (
-            self.current_user_id,
-            "LOGOUT",
-            "SISTEMA",
-            None,
-            "LOGOUT",
-            "OK",
-            self.current_ip,
-            json.dumps(detalle) if detalle else None,
+        logged = self._append_activity_file_row(
+            id_usuario=user_id,
+            entidad="SISTEMA",
+            id_entidad=None,
+            accion="LOGOUT",
+            resultado="OK",
+            ip=self.current_ip,
+            detalle=detalle,
         )
-
-        def _exec(conn) -> None:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                conn.commit()
-
-        if use_pool and self.pool:
-            try:
-                with self.pool.connection() as conn:
-                    _exec(conn)
-                    return True
-            except Exception:
-                pass
-
-        try:
-            import psycopg
-            with psycopg.connect(self.dsn, connect_timeout=3) as conn:
-                _exec(conn)
-            return True
-        except Exception:
-            return False
+        return logged
 
     def check_recent_activity(self, since_timestamp: float, tables: List[str] = None) -> bool:
         """
         Check if there has been any activity in the specified tables since the given timestamp.
         """
-        if not tables or self.is_closing or not self.pool:
+        if self.is_closing:
             return False
-            
         try:
-            with self.pool.connection() as conn:
-                with conn.cursor() as cur:
-                    # Convert timestamp to datetime
-                    since_dt = datetime.fromtimestamp(since_timestamp)
-                    
-                    query = """
-                        SELECT EXISTS(
-                            SELECT 1 
-                            FROM seguridad.log_actividad 
-                            WHERE fecha_hora > %s 
-                            AND entidad = ANY(%s)
-                        )
-                    """
-                    # Note: 'entidad' column in log_actividad stores the table name/entity type (e.g. 'ENTIDAD', 'DOCUMENTO')
-                    cur.execute(query, (since_dt, tables))
-                    row = cur.fetchone()
-                    return row[0] if row else False
-        except Exception:
-            # Silent failure for polling
+            since_value = float(since_timestamp)
+        except (TypeError, ValueError):
+            return False
+
+        with self._activity_state_lock:
+            if self._last_activity_ts <= since_value:
+                return False
+            if not tables:
+                return True
+            for table in tables:
+                for key in self._entity_activity_keys(table):
+                    if self._entity_last_activity.get(key, 0.0) > since_value:
+                        return True
             return False
 
     # =========================================================================
@@ -1005,22 +1102,10 @@ class Database:
 
     def _get_stats_operativas(self, cur, role, start_date_sql: str) -> Dict[str, Any]:
         """Operational and Productivity stats (20 metrics)"""
-        # Use literal date expression map to safely determine the date filter
-        date_expr = "date_trunc('month', now())"
-        if "current_date" in start_date_sql:
-            date_expr = "current_date"
-        elif "'week'" in start_date_sql:
-            date_expr = "date_trunc('week', now())"
-        elif "'year'" in start_date_sql:
-            date_expr = "date_trunc('year', now())"
-        
-        # Note: entregas_hoy are kept as current_date as the label implies.
-        # But logs are filtered by period.
-        query = f"""
+        query = """
             SELECT 
                 (SELECT COUNT(*) FROM app.remito WHERE estado = 'PENDIENTE') as remitos_pend,
-                (SELECT COUNT(*) FROM app.remito WHERE fecha >= current_date AND estado = 'ENTREGADO') as entregas_hoy,
-                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE fecha_hora >= {date_expr}) as logs_hoy
+                (SELECT COUNT(*) FROM app.remito WHERE fecha >= current_date AND estado = 'ENTREGADO') as entregas_hoy
         """
         cur.execute(query)
         row = cur.fetchone()
@@ -1028,7 +1113,7 @@ class Database:
         res = {
             "remitos_pend": row[0] or 0,
             "entregas_hoy": row[1] or 0,
-            "actividad_sistema": row[2] or 0
+            "actividad_sistema": 0
         }
         
         # Add "My Stats" for employees
@@ -1043,29 +1128,14 @@ class Database:
 
     def _get_stats_sistema_extended(self, cur, role) -> Dict[str, Any]:
         """Technical system stats (10 metrics) - ADMIN only"""
-        cur.execute("""
-            WITH last_active AS (
-                SELECT DISTINCT ON (id_usuario) id_usuario, accion
-                FROM seguridad.log_actividad
-                WHERE id_usuario IS NOT NULL
-                  AND accion IN ('LOGIN_OK', 'LOGOUT')
-                  AND fecha_hora > NOW() - INTERVAL '24 hours'
-                ORDER BY id_usuario, fecha_hora DESC
-            )
-            SELECT 
-                (SELECT COUNT(*) FROM last_active WHERE accion = 'LOGIN_OK') as sess_activas,
-                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE id_tipo_evento_log = (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = 'ERROR') AND fecha_hora >= date_trunc('month', now())) as errores_mes,
-                (SELECT COUNT(*) FROM seguridad.log_actividad WHERE accion = 'BACKUP' AND resultado = 'OK' AND fecha_hora >= date_trunc('month', now())) as backups_exitosos_mes,
-                (SELECT MAX(ultimo_login) FROM seguridad.usuario) as ultimo_login
-        """)
-
+        cur.execute("SELECT MAX(ultimo_login) FROM seguridad.usuario")
         row = cur.fetchone()
-        
+        ultimo_login = row[0] if row else None
+
         return {
-            "usuarios_activos": row[0] or 0,
-            "errores_mes": row[1] or 0,
-            "backups_mes": row[2] or 0,
-            "ultimo_login": row[3].strftime("%Y-%m-%d %H:%M") if row[3] else "N/A"
+            "errores_mes": 0,
+            "backups_mes": 0,
+            "ultimo_login": ultimo_login.strftime("%Y-%m-%d %H:%M") if ultimo_login else "N/A"
         }
 
 
@@ -1402,7 +1472,6 @@ class Database:
                         (user_id,),
                     )
                     conn.commit()
-
                     self._log_login_attempt(user_id, GUEST_USER_EMAIL, True, "Modo invitado")
                     return {
                         "id": user_id,
@@ -1499,7 +1568,6 @@ class Database:
                         (user_id,)
                     )
                     conn.commit()
-                    
                     # Log successful login
                     self._log_login_attempt(user_id, identifier, True)
                     
@@ -1517,33 +1585,18 @@ class Database:
         """Log login attempt to activity log."""
         try:
             event_code = "LOGIN_OK" if success else "LOGIN_FAIL"
-            query = """
-                INSERT INTO seguridad.log_actividad (id_usuario, id_tipo_evento_log, entidad, accion, resultado, ip, detalle)
-                VALUES (
-                    %s, 
-                    (SELECT id FROM seguridad.tipo_evento_log WHERE codigo = %s),
-                    'seguridad.usuario',
-                    %s,
-                    %s,
-                    %s,
-                    %s
-                )
-            """
             detalle = {"identifier": identifier}
             if detail:
                 detalle["motivo"] = detail
-            
-            with self.pool.connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query, (
-                        user_id,
-                        event_code,
-                        event_code,
-                        "OK" if success else "FAIL",
-                        self.current_ip,
-                        json.dumps(detalle)
-                    ))
-                    conn.commit()
+            self._append_activity_file_row(
+                id_usuario=user_id,
+                entidad="seguridad.usuario",
+                id_entidad=user_id,
+                accion=event_code,
+                resultado="OK" if success else "FAIL",
+                ip=self.current_ip,
+                detalle=detalle,
+            )
         except Exception as e:
             logger.error("Error logging login attempt", exc_info=e)
 
@@ -3154,6 +3207,15 @@ class Database:
                     cur.execute(q_list, (entity_id, int(lista_id), descuento, limite_credito))
 
         self.invalidate_catalog_cache("proveedores")
+        detalle_log: Dict[str, Any] = {"updates": dict(filtered)}
+        if lista_update:
+            detalle_log["id_lista_precio"] = lista_id
+        self.log_activity(
+            entidad="app.entidad_comercial",
+            accion="MODIFICACION",
+            id_entidad=entity_id,
+            detalle=detalle_log,
+        )
 
     def bulk_update_entities(self, ids: Sequence[int], updates: Dict[str, Any]) -> None:
         if not ids or not updates: return
@@ -4191,185 +4253,12 @@ class Database:
 
     # Logs
     def fetch_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 100, offset: int = 0, solo_hoy: bool = True) -> List[Dict[str, Any]]:
-        """Fetch logs with optional daily filter.
-        
-        Args:
-            solo_hoy: If True and no desde/hasta filters, only fetch today's logs.
-        """
-        filters = ["1=1"]
-        params = []
-        advanced = advanced or {}
-        if search:
-            search_term = search.strip()
-            search_filters = [
-                "u.nombre ILIKE %s",
-                "l.entidad ILIKE %s",
-                "l.accion ILIKE %s",
-                "l.resultado ILIKE %s",
-            ]
-            params.extend([f"%{search_term}%"] * 4)
-            result_terms = _normalize_log_result_filter(search_term)
-            if result_terms:
-                placeholders = ", ".join(["%s"] * len(result_terms))
-                search_filters.append(f"UPPER(l.resultado) IN ({placeholders})")
-                params.extend([term.upper() for term in result_terms])
-            filters.append("(" + " OR ".join(search_filters) + ")")
-        
-        user = advanced.get("usuario")
-        if user:
-            filters.append("u.nombre ILIKE %s")
-            params.append(f"%{user.strip()}%")
-        
-        ent = advanced.get("entidad")
-        if ent:
-            filters.append("l.entidad ILIKE %s")
-            params.append(f"%{ent.strip()}%")
-        
-        acc = advanced.get("accion")
-        if acc:
-            filters.append("l.accion ILIKE %s")
-            params.append(f"%{acc.strip()}%")
-            
-        res = advanced.get("resultado")
-        result_terms = _normalize_log_result_filter(res)
-        if result_terms:
-            placeholders = ", ".join(["%s"] * len(result_terms))
-            filters.append(f"UPPER(l.resultado) IN ({placeholders})")
-            params.extend([term.upper() for term in result_terms])
-            
-        ident = _to_id(advanced.get("id_entidad"))
-        if ident is not None:
-            filters.append("l.id_entidad = %s")
-            params.append(ident)
-
-        desde = advanced.get("desde")
-        hasta = advanced.get("hasta")
-        
-        # Apply solo_hoy filter only if no explicit date filters
-        if solo_hoy and not desde and not hasta:
-            filters.append("l.fecha_hora >= CURRENT_DATE")
-        else:
-            if desde:
-                desde_dt = _parse_date_only(desde)
-                filters.append("l.fecha_hora >= %s")
-                params.append(desde_dt if desde_dt is not None else desde)
-            if hasta:
-                hasta_dt = _parse_date_only(hasta)
-                if hasta_dt is not None:
-                    filters.append("l.fecha_hora < %s")
-                    params.append(hasta_dt + timedelta(days=1))
-                else:
-                    filters.append("l.fecha_hora <= %s")
-                    params.append(hasta)
-
-        ip = advanced.get("ip")
-        if ip:
-            filters.append("l.ip ILIKE %s")
-            params.append(f"%{ip.strip()}%")
-
-        where_clause = " AND ".join(filters)
-        sort_columns = {"id": "l.id", "fecha": "l.fecha_hora", "usuario": "u.nombre", "entidad": "l.entidad", "accion": "l.accion", "resultado": "l.resultado", "id_entidad": "l.id_entidad"}
-        order_by = self._build_order_by(sorts, sort_columns, default="l.fecha_hora DESC", tiebreaker="l.id DESC")
-        
-        query = f"""
-            SELECT l.id, l.fecha_hora as fecha, u.nombre as usuario, l.entidad, l.id_entidad, l.accion, l.resultado, l.ip, l.detalle
-            FROM seguridad.log_actividad l
-            LEFT JOIN seguridad.usuario u ON l.id_usuario = u.id
-            WHERE {where_clause}
-            ORDER BY {order_by}
-            LIMIT %s OFFSET %s
-        """
-        params.extend([limit, offset])
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                return _rows_to_dicts(cur)
+        _ = (search, simple, advanced, sorts, limit, offset, solo_hoy)
+        return []
 
     def count_logs(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, solo_hoy: bool = True) -> int:
-        """Count logs with optional daily filter.
-        
-        Args:
-            solo_hoy: If True and no desde/hasta filters, only count today's logs.
-        """
-        filters = ["1=1"]
-        params = []
-        advanced = advanced or {}
-        if search:
-            search_term = search.strip()
-            search_filters = [
-                "u.nombre ILIKE %s",
-                "l.entidad ILIKE %s",
-                "l.accion ILIKE %s",
-                "l.resultado ILIKE %s",
-            ]
-            params.extend([f"%{search_term}%"] * 4)
-            result_terms = _normalize_log_result_filter(search_term)
-            if result_terms:
-                placeholders = ", ".join(["%s"] * len(result_terms))
-                search_filters.append(f"UPPER(l.resultado) IN ({placeholders})")
-                params.extend([term.upper() for term in result_terms])
-            filters.append("(" + " OR ".join(search_filters) + ")")
-        
-        user = advanced.get("usuario")
-        if user:
-            filters.append("u.nombre ILIKE %s")
-            params.append(f"%{user.strip()}%")
-        
-        ent = advanced.get("entidad")
-        if ent:
-            filters.append("l.entidad ILIKE %s")
-            params.append(f"%{ent.strip()}%")
-        
-        acc = advanced.get("accion")
-        if acc:
-            filters.append("l.accion ILIKE %s")
-            params.append(f"%{acc.strip()}%")
-            
-        res = advanced.get("resultado")
-        result_terms = _normalize_log_result_filter(res)
-        if result_terms:
-            placeholders = ", ".join(["%s"] * len(result_terms))
-            filters.append(f"UPPER(l.resultado) IN ({placeholders})")
-            params.extend([term.upper() for term in result_terms])
-            
-        ident = _to_id(advanced.get("id_entidad"))
-        if ident is not None:
-            filters.append("l.id_entidad = %s")
-            params.append(ident)
-
-        desde = advanced.get("desde")
-        hasta = advanced.get("hasta")
-        
-        # Apply solo_hoy filter only if no explicit date filters
-        if solo_hoy and not desde and not hasta:
-            filters.append("l.fecha_hora >= CURRENT_DATE")
-        else:
-            if desde:
-                desde_dt = _parse_date_only(desde)
-                filters.append("l.fecha_hora >= %s")
-                params.append(desde_dt if desde_dt is not None else desde)
-            if hasta:
-                hasta_dt = _parse_date_only(hasta)
-                if hasta_dt is not None:
-                    filters.append("l.fecha_hora < %s")
-                    params.append(hasta_dt + timedelta(days=1))
-                else:
-                    filters.append("l.fecha_hora <= %s")
-                    params.append(hasta)
-
-        ip = advanced.get("ip")
-        if ip:
-            filters.append("l.ip ILIKE %s")
-            params.append(f"%{ip.strip()}%")
-        
-        where_clause = " AND ".join(filters)
-        query = f"SELECT COUNT(*) AS total FROM seguridad.log_actividad l LEFT JOIN seguridad.usuario u ON l.id_usuario = u.id WHERE {where_clause}"
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                res = cur.fetchone()
-                if res is None: return 0
-                return res.get("total", 0) if isinstance(res, dict) else res[0]
+        _ = (search, simple, advanced, solo_hoy)
+        return 0
 
     def fetch_remitos(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None, sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 60, offset: int = 0) -> List[Dict[str, Any]]:
         filters = ["1=1"]
@@ -4781,80 +4670,14 @@ class Database:
                 return _rows_to_dicts(cur)
 
     def fetch_active_sessions(self, search: str = "", sorts: Optional[Sequence[Tuple[str, str]]] = None, limit: int = 10, offset: int = 0, **kwargs) -> List[Dict[str, Any]]:
-        """Fetch users who have logged in recently. Approximate active status."""
-        query = """
-            WITH last_states AS (
-                SELECT 
-                    id_usuario,
-                    accion,
-                    fecha_hora,
-                    ip,
-                    ROW_NUMBER() OVER (PARTITION BY id_usuario ORDER BY fecha_hora DESC) as rn
-                FROM seguridad.log_actividad
-                WHERE id_usuario IS NOT NULL
-                  AND accion IN ('LOGIN_OK', 'LOGOUT')
-                  AND fecha_hora > NOW() - INTERVAL '24 hours'
-            )
-            SELECT 
-                u.id,
-                u.nombre,
-                u.email,
-                l.fecha_hora as desde,
-                l.ip,
-                r.nombre as rol
-            FROM last_states l
-            JOIN seguridad.usuario u ON l.id_usuario = u.id
-            JOIN seguridad.rol r ON u.id_rol = r.id
-            WHERE l.rn = 1 
-              AND l.accion = 'LOGIN_OK'
-        """
-        params = []
-        if search and search.strip():
-            query += " AND (u.nombre ILIKE %s OR u.email ILIKE %s)"
-            s = f"%{search.strip()}%"
-            params.extend([s, s])
-            
-        sort_columns = {"nombre": "u.nombre", "email": "u.email", "rol": "r.nombre", "desde": "l.fecha_hora", "ip": "l.ip"}
-        order_by = self._build_order_by(sorts, sort_columns, default="l.fecha_hora DESC")
-        query += f" ORDER BY {order_by} LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                return _rows_to_dicts(cur)
+        """Sesiones activas deshabilitadas: mantener compatibilidad devolviendo vacío."""
+        _ = (search, sorts, limit, offset, kwargs)
+        return []
 
     def count_active_sessions(self, search: str = "", **kwargs) -> int:
-        """Count active sessions with optional filtering."""
-        query = """
-            WITH last_states AS (
-                SELECT 
-                    id_usuario,
-                    accion,
-                    ROW_NUMBER() OVER (PARTITION BY id_usuario ORDER BY fecha_hora DESC) as rn
-                FROM seguridad.log_actividad
-                WHERE id_usuario IS NOT NULL
-                  AND accion IN ('LOGIN_OK', 'LOGOUT')
-                  AND fecha_hora > NOW() - INTERVAL '24 hours'
-            )
-            SELECT COUNT(*) 
-            FROM last_states l
-            JOIN seguridad.usuario u ON l.id_usuario = u.id
-            JOIN seguridad.rol r ON u.id_rol = r.id
-            WHERE l.rn = 1 
-              AND l.accion = 'LOGIN_OK'
-        """
-        params = []
-        if search and search.strip():
-            query += " AND (u.nombre ILIKE %s OR u.email ILIKE %s)"
-            s = f"%{search.strip()}%"
-            params.extend([s, s])
-            
-        with self.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                res = cur.fetchone()
-                return res.get("count") if isinstance(res, dict) else res[0]
+        """Sesiones activas deshabilitadas: mantener compatibilidad devolviendo cero."""
+        _ = (search, kwargs)
+        return 0
 
     # Backup Config
     def fetch_backup_config(self) -> Dict[str, Any]:

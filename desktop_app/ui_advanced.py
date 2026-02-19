@@ -194,7 +194,6 @@ def main(page: ft.Page) -> None:
                     refresh_cc_context(silent=True)
                 elif key == "usuarios":
                     usuarios_table.refresh()
-                    sesiones_table.refresh()
                 elif key == "logs":
                     logs_table.refresh()
                 elif key == "dashboard":

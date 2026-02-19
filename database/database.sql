@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NEXORYN TECH - Database Schema (PostgreSQL)
--- Version: 2.5 - Optimized with Smart Sync Version Stamp
+-- Version: 2.6 - Logs desacoplados a TXT diario
 -- ============================================================================
 
 -- Acquire advisory lock to prevent concurrent schema updates from multiple instances
@@ -130,26 +130,6 @@ CREATE TABLE IF NOT EXISTS seguridad.usuario (
   ultimo_login         TIMESTAMPTZ
 );
 
-CREATE TABLE IF NOT EXISTS seguridad.tipo_evento_log (
-  id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  codigo  VARCHAR(20) NOT NULL UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS seguridad.log_actividad (
-  id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  id_usuario          BIGINT REFERENCES seguridad.usuario(id) ON UPDATE CASCADE ON DELETE SET NULL,
-  id_tipo_evento_log  BIGINT NOT NULL REFERENCES seguridad.tipo_evento_log(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  fecha_hora          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  entidad             VARCHAR(100),
-  id_entidad          BIGINT,
-  accion              VARCHAR(100),
-  resultado           VARCHAR(10) NOT NULL DEFAULT 'OK',
-  ip                  INET,
-  user_agent          VARCHAR(500),
-  session_id          VARCHAR(255),
-  detalle             JSONB,
-  CONSTRAINT ck_log_resultado CHECK (resultado IN ('OK', 'FAIL', 'WARNING'))
-);
 
 CREATE TABLE IF NOT EXISTS seguridad.backup_config (
   id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -638,66 +618,7 @@ LEFT JOIN app.articulo_precio ap ON ap.id_articulo = a.id AND ap.id_lista_precio
 -- AUDIT FUNCTION
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION seguridad.trg_audit_dml()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
-DECLARE
-  v_user_id BIGINT;
-  v_event_id BIGINT;
-  v_id_entidad BIGINT;
-  v_payload JSONB;
-BEGIN
-  BEGIN
-    v_user_id := NULLIF(current_setting('app.user_id', true), '')::BIGINT;
-  EXCEPTION WHEN others THEN
-    v_user_id := NULL;
-  END;
-
-  SELECT id INTO v_event_id
-  FROM seguridad.tipo_evento_log
-  WHERE codigo = TG_OP;
-
-  IF v_event_id IS NULL THEN
-    SELECT id INTO v_event_id
-    FROM seguridad.tipo_evento_log
-    WHERE codigo = 'ERROR';
-  END IF;
-
-  IF TG_OP = 'DELETE' THEN
-    v_payload := to_jsonb(OLD);
-  ELSE
-    v_payload := to_jsonb(NEW);
-  END IF;
-
-  v_id_entidad := NULLIF(v_payload->>'id', '')::BIGINT;
-
-  INSERT INTO seguridad.log_actividad (
-    id_usuario,
-    id_tipo_evento_log,
-    entidad,
-    id_entidad,
-    accion,
-    resultado,
-    ip
-  )
-  VALUES (
-    v_user_id,
-    v_event_id,
-    TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
-    v_id_entidad,
-    TG_OP,
-    'OK',
-    NULLIF(current_setting('app.ip', true), '')::INET
-  );
-
-  IF TG_OP = 'DELETE' THEN
-    RETURN OLD;
-  END IF;
-  RETURN NEW;
-END;
-$$;
+-- Auditoría en DB deshabilitada: los logs se escriben en archivos TXT diarios.
 
 -- Function to keep stock summary synchronized
 CREATE OR REPLACE FUNCTION app.fn_sync_stock_resumen()
@@ -749,39 +670,18 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 
 DROP TRIGGER IF EXISTS tr_audit_documento ON app.documento;
-CREATE TRIGGER tr_audit_documento
-AFTER INSERT OR UPDATE OR DELETE ON app.documento
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 DROP TRIGGER IF EXISTS tr_audit_documento_detalle ON app.documento_detalle;
-CREATE TRIGGER tr_audit_documento_detalle
-AFTER INSERT OR UPDATE OR DELETE ON app.documento_detalle
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 DROP TRIGGER IF EXISTS tr_audit_pago ON app.pago;
-CREATE TRIGGER tr_audit_pago
-AFTER INSERT OR UPDATE OR DELETE ON app.pago
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 DROP TRIGGER IF EXISTS tr_audit_movimiento_articulo ON app.movimiento_articulo;
-CREATE TRIGGER tr_audit_movimiento_articulo
-AFTER INSERT OR UPDATE OR DELETE ON app.movimiento_articulo
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 DROP TRIGGER IF EXISTS tr_audit_remito ON app.remito;
-CREATE TRIGGER tr_audit_remito
-AFTER INSERT OR UPDATE OR DELETE ON app.remito
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 DROP TRIGGER IF EXISTS tr_audit_articulo ON app.articulo;
-CREATE TRIGGER tr_audit_articulo
-AFTER INSERT OR UPDATE OR DELETE ON app.articulo
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 DROP TRIGGER IF EXISTS tr_audit_entidad ON app.entidad_comercial;
-CREATE TRIGGER tr_audit_entidad
-AFTER INSERT OR UPDATE OR DELETE ON app.entidad_comercial
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 -- Trigger for stock summary synchronization
 DROP TRIGGER IF EXISTS trg_sync_stock_resumen ON app.movimiento_articulo;
@@ -878,26 +778,12 @@ CREATE INDEX IF NOT EXISTS idx_remito_fecha ON app.remito(fecha);
 CREATE INDEX IF NOT EXISTS idx_remito_estado ON app.remito(estado);
 CREATE INDEX IF NOT EXISTS idx_remito_numero ON app.remito(numero);
 
--- Log indexes
-CREATE INDEX IF NOT EXISTS idx_log_usuario_fecha ON seguridad.log_actividad(id_usuario, fecha_hora);
-CREATE INDEX IF NOT EXISTS idx_log_tipo_fecha ON seguridad.log_actividad(id_tipo_evento_log, fecha_hora);
-CREATE INDEX IF NOT EXISTS idx_log_entidad ON seguridad.log_actividad(entidad);
-CREATE INDEX IF NOT EXISTS idx_log_fecha_desc ON seguridad.log_actividad(fecha_hora DESC);
-
 -- ============================================================================
 -- SEED DATA (Universal)
 -- ============================================================================
 
 -- Roles
 INSERT INTO seguridad.rol(nombre) VALUES ('ADMIN'), ('GERENTE'), ('EMPLEADO') ON CONFLICT (nombre) DO NOTHING;
-
--- Event log types
-INSERT INTO seguridad.tipo_evento_log(codigo) VALUES 
-  ('LOGIN_OK'), ('LOGIN_FAIL'), ('LOGOUT'), 
-  ('INSERT'), ('UPDATE'), ('DELETE'), ('ERROR'),
-  ('BACKUP'), ('RESTORE'), ('EXPORT'), ('IMPORT'),
-  ('VIEW'), ('SELECT'), ('VIEW_DETAIL'), ('CONFIG_TAB'), ('SISTEMA')
-ON CONFLICT (codigo) DO NOTHING;
 
 -- Percentage types
 INSERT INTO ref.tipo_porcentaje(tipo) VALUES ('MARGEN'), ('DESCUENTO') ON CONFLICT (tipo) DO NOTHING;
@@ -1186,9 +1072,6 @@ CREATE INDEX IF NOT EXISTS idx_pago_referencia_lower_trgm ON app.pago USING gin 
 -- Document type search
 CREATE INDEX IF NOT EXISTS idx_tipo_documento_nombre_lower_trgm ON ref.tipo_documento USING gin (lower(nombre) gin_trgm_ops);
 
--- Log search optimizations
-CREATE INDEX IF NOT EXISTS idx_log_accion_lower_trgm ON seguridad.log_actividad USING gin (lower(accion) gin_trgm_ops);
-
 -- Fast adjustments lookup (movimientos sin documento)
 CREATE INDEX IF NOT EXISTS idx_mov_ajuste_fecha ON app.movimiento_articulo (fecha DESC) WHERE id_documento IS NULL;
 
@@ -1283,21 +1166,6 @@ CREATE TABLE IF NOT EXISTS seguridad.backup_retention_policy (
 INSERT INTO seguridad.backup_retention_policy (nombre, descripcion, retencion_full_meses, retencion_diferencial_semanas, retencion_incremental_dias)
 VALUES ('ESTANDAR', 'Política de retención estándar: 12 meses full, 8 semanas diferenciales, 7 días incrementales', 12, 8, 7)
 ON CONFLICT (nombre) DO NOTHING;
-
--- Tabla de eventos de backup (para auditoría)
-CREATE TABLE IF NOT EXISTS seguridad.backup_event (
-    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    tipo_evento           VARCHAR(50) NOT NULL,
-    backup_id             BIGINT REFERENCES seguridad.backup_manifest(id),
-    fecha_hora            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    detalle               JSONB,
-    nivel_log             VARCHAR(20) DEFAULT 'INFO',
-    CONSTRAINT ck_nivel_log CHECK (nivel_log IN ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_backup_event_fecha ON seguridad.backup_event (fecha_hora DESC);
-CREATE INDEX IF NOT EXISTS idx_backup_event_backup ON seguridad.backup_event (backup_id);
-CREATE INDEX IF NOT EXISTS idx_backup_event_tipo ON seguridad.backup_event (tipo_evento);
 
 -- Vista de resumen de backups
 CREATE OR REPLACE VIEW seguridad.v_backup_resumen AS
@@ -1460,7 +1328,6 @@ COMMENT ON TABLE seguridad.backup_manifest IS 'Registro de todos los backups rea
 COMMENT ON TABLE seguridad.backup_chain IS 'Relaciones entre backups para formar cadenas concatenables';
 COMMENT ON TABLE seguridad.backup_validation IS 'Historial de validaciones de backups';
 COMMENT ON TABLE seguridad.backup_retention_policy IS 'Políticas de retención de backups';
-COMMENT ON TABLE seguridad.backup_event IS 'Eventos del sistema de backups';
 
 -- ============================================================================
 -- SISTEMA DE CUENTAS CORRIENTES
@@ -1684,30 +1551,49 @@ ON CONFLICT (id_entidad_comercial) DO UPDATE SET
 
 -- Trigger auditoría para movimientos de cuenta corriente
 DROP TRIGGER IF EXISTS tr_audit_mov_cc ON app.movimiento_cuenta_corriente;
-CREATE TRIGGER tr_audit_mov_cc
-AFTER INSERT OR UPDATE OR DELETE ON app.movimiento_cuenta_corriente
-FOR EACH ROW EXECUTE FUNCTION seguridad.trg_audit_dml();
 
 COMMENT ON FUNCTION app.registrar_movimiento_cc IS 'Registra un movimiento de cuenta corriente calculando automáticamente el nuevo saldo';
 COMMENT ON VIEW app.v_cuenta_corriente_resumen IS 'Resumen de cuentas corrientes con estado calculado';
 COMMENT ON VIEW app.v_movimiento_cc_full IS 'Movimientos de cuenta corriente con información completa de entidad, documento y usuario';
 
 -- ============================================================================
--- CONFIGURACIÓN DE RETENCIÓN DE LOGS
+-- CLEANUP DE LOGS EN DB (IDEMPOTENTE)
 -- ============================================================================
 
-INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion) VALUES
-  ('log_retencion_dias', '90', 'NUMBER', 'Días de retención antes de archivar y purgar logs'),
-  ('log_directorio_archivo', 'logs_archive', 'PATH', 'Directorio donde se guardan los archivos de logs archivados')
-ON CONFLICT (clave) DO NOTHING;
+DROP TRIGGER IF EXISTS tr_audit_documento ON app.documento;
+DROP TRIGGER IF EXISTS tr_audit_documento_detalle ON app.documento_detalle;
+DROP TRIGGER IF EXISTS tr_audit_pago ON app.pago;
+DROP TRIGGER IF EXISTS tr_audit_movimiento_articulo ON app.movimiento_articulo;
+DROP TRIGGER IF EXISTS tr_audit_remito ON app.remito;
+DROP TRIGGER IF EXISTS tr_audit_articulo ON app.articulo;
+DROP TRIGGER IF EXISTS tr_audit_entidad ON app.entidad_comercial;
+DROP TRIGGER IF EXISTS tr_audit_mov_cc ON app.movimiento_cuenta_corriente;
+
+DROP FUNCTION IF EXISTS seguridad.trg_audit_dml();
+
+DROP INDEX IF EXISTS seguridad.idx_log_usuario_fecha;
+DROP INDEX IF EXISTS seguridad.idx_log_tipo_fecha;
+DROP INDEX IF EXISTS seguridad.idx_log_entidad;
+DROP INDEX IF EXISTS seguridad.idx_log_fecha_desc;
+DROP INDEX IF EXISTS seguridad.idx_log_accion_lower_trgm;
+DROP INDEX IF EXISTS seguridad.idx_backup_event_fecha;
+DROP INDEX IF EXISTS seguridad.idx_backup_event_backup;
+DROP INDEX IF EXISTS seguridad.idx_backup_event_tipo;
+
+DROP TABLE IF EXISTS seguridad.backup_event CASCADE;
+DROP TABLE IF EXISTS seguridad.log_actividad CASCADE;
+DROP TABLE IF EXISTS seguridad.tipo_evento_log CASCADE;
+
+DELETE FROM seguridad.config_sistema
+WHERE clave IN ('log_retencion_dias', 'log_directorio_archivo');
 
 -- ============================================================================
 -- VERSION STAMP
 -- ============================================================================
 INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
-VALUES ('db_version', '2.5', 'TEXT', 'Versión actual de la base de datos')
+VALUES ('db_version', '2.6', 'TEXT', 'Versión actual de la base de datos')
 ON CONFLICT (clave) DO UPDATE 
-SET valor = '2.5';
+SET valor = '2.6';
 
 -- Release advisory lock
 SELECT pg_advisory_unlock(543210);

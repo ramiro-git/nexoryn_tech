@@ -1142,23 +1142,16 @@ class DashboardView(ft.Container):
         
         stat_items = [
             self._stat_item("Entregas Hoy", o.get("entregas_hoy", 0), self.COLOR_SUCCESS, icon=ft.icons.LOCAL_SHIPPING_ROUNDED),
-        ]
-        if self.role == "ADMIN":
-             stat_items.append(self._stat_item("Actividad Sistema", o.get("actividad_sistema", 0), self.COLOR_INFO, icon=ft.icons.HISTORY_ROUNDED))
-             
-        stat_items.extend([
             self._stat_item("Mov. Ingresos", m.get("ingresos", 0), self.COLOR_SUCCESS, icon=ft.icons.ADD_BOX_ROUNDED),
             self._stat_item("Mov. Salidas", m.get("salidas", 0), self.COLOR_WARNING, icon=ft.icons.INDETERMINATE_CHECK_BOX_ROUNDED),
             self._stat_item("Ajustes", m.get("ajustes", 0), self.COLOR_ERROR, icon=ft.icons.EDIT_NOTE_ROUNDED),
-        ])
+        ]
 
         chart_items = [
             ("Remitos pend.", o.get("remitos_pend", 0)),
             ("Entregas hoy", o.get("entregas_hoy", 0)),
             ("Docs hoy", o.get("mis_operaciones_hoy", 0)),
         ]
-        if self.role == "ADMIN":
-            chart_items.append(("Logs hoy", o.get("actividad_sistema", 0)))
 
         return ft.Column([
             ft.ResponsiveRow(stat_items, spacing=10),
@@ -1230,10 +1223,7 @@ class DashboardView(ft.Container):
     def _build_sistema_section(self) -> ft.Control:
         sis = self.stats.get("sistema", {})
         return ft.ResponsiveRow([
-            self._stat_item("Usuarios Activos", sis.get("usuarios_activos", 0), icon=ft.icons.PEOPLE_OUTLINE_ROUNDED),
-            self._stat_item("Errores Mes", sis.get("errores_mes", 0), self.COLOR_ERROR, icon=ft.icons.BUG_REPORT_ROUNDED),
-            self._stat_item("Backups Ok", sis.get("backups_mes", 0), self.COLOR_SUCCESS, icon=ft.icons.BACKUP_ROUNDED),
-            self._stat_item("Última Actividad", self.stats.get("operativas", {}).get("actividad_sistema", 0), self.COLOR_INFO, icon=ft.icons.MONITOR_HEART_ROUNDED),
+            self._stat_item("Último Login", sis.get("ultimo_login", "N/A"), self.COLOR_INFO, icon=ft.icons.SCHEDULE_ROUNDED),
         ], spacing=10)
 
     def _badge(self, label: str, value: str) -> ft.Container:
