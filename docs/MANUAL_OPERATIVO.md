@@ -28,7 +28,7 @@ Después de autenticar:
 - Mientras corre ese mantenimiento, la UI principal permanece bloqueada con una pantalla de progreso.
 - Si falla el mantenimiento crítico de respaldos, la pantalla informa el error y no habilita la operación hasta resolverlo.
 
-## Navegación por rol
+## Navegación por perfil
 
 La barra lateral incluye:
 
@@ -41,25 +41,16 @@ La barra lateral incluye:
 - Caja y Pagos
 - Cuentas Corrientes
 - Lista de Precios
-- Actualización Masiva (solo roles de gestión)
-- Configuración (solo ADMIN/GERENTE)
-- Usuarios (solo ADMIN)
-- Respaldos (solo ADMIN)
+- Actualización Masiva (según permisos de gestión)
+- Configuración (según permisos del perfil)
+- Usuarios (según permisos de administración)
+- Respaldos (según permisos de administración)
 
-## Permisos por rol (resumen operativo)
+## Permisos por perfil (resumen operativo)
 
-- `ADMIN`:
-  - Acceso completo a navegación, incluyendo `Usuarios` y `Respaldos`.
-  - Botones de exportación habilitados.
-  - Acciones de alta/edición y acciones masivas habilitadas.
-- `GERENTE` (incluye el usuario invitado por defecto):
-  - Acceso a operación general y `Configuración`/`Actualización Masiva`.
-  - Sin acceso a `Usuarios` ni `Respaldos`.
-  - Sin botones de exportación.
-- `EMPLEADO`:
-  - Acceso a vistas operativas principales.
-  - Sin `Configuración`, `Actualización Masiva`, `Usuarios` ni `Respaldos`.
-  - Sin botones de exportación ni controles de edición masiva.
+- El sistema habilita navegación, acciones y visibilidad según los permisos del perfil autenticado.
+- Los módulos de administración (`Configuración`, `Usuarios`, `Respaldos`) y las acciones masivas/exportación requieren permisos específicos.
+- Los perfiles operativos mantienen acceso a las vistas principales con controles acordes a su alcance.
 
 ## Búsqueda y filtros
 
@@ -98,7 +89,7 @@ El **Tablero de Control** concentra indicadores del negocio:
 - Actividad operativa reciente.
 - Resumen financiero.
 
-> Nota: parte de los indicadores financieros varían según rol (más completos para ADMIN/GERENTE).
+> Nota: parte de los indicadores financieros varían según perfil (más completos para perfiles con permisos financieros avanzados).
 
 ## Controles
 
@@ -310,7 +301,7 @@ Mantener pocas listas bien definidas evita errores de selección en ventas.
 
 **Actualización Masiva** es una herramienta de alto impacto.
 
-> Disponible para roles con permisos de gestión (por ejemplo ADMIN/GERENTE en la UI básica).
+> Disponible para perfiles con permisos de gestión.
 
 ## Flujo recomendado
 
@@ -329,7 +320,7 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 
 ## Acceso y alcance
 
-- La vista `Respaldos` es exclusiva de `ADMIN`.
+- La vista `Respaldos` está disponible solo para perfiles con permisos de administración.
 - Desde allí se puede:
   - lanzar backups `FULL`, `DIFERENCIAL`, `INCREMENTAL` o `MANUAL`,
   - validar backups,
@@ -344,40 +335,7 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - La validación/purga automática de registros huérfanos de backup está desactivada por defecto para evitar falsos positivos en entornos con sincronización de archivos.
 
 
-# 15. Troubleshooting Operativo
-
-## La app no inicia o falla conexión a DB
-
-- Verificar `DATABASE_URL` o variables `DB_*`.
-- Confirmar que PostgreSQL esté activo.
-- Revisar conectividad y firewall si es red LAN.
-
-## Error AFIP / OpenSSL
-
-- Confirmar rutas de certificados.
-- Verificar entorno homologación/producción.
-- Validar disponibilidad de `openssl.exe`.
-
-## Diferencia entre stock físico y sistema
-
-- No corregir fuera de flujo.
-- Registrar movimiento de ajuste con observación.
-- Reconciliar depósito y comprobantes vinculados.
-
-## Impresión de comprobantes no sale
-
-- Revisar que exista impresora predeterminada en Windows.
-- Confirmar permisos de carpeta temporal.
-- Si falla la impresión directa, el sistema abre el PDF para impresión manual.
-
-## Error al generar ejecutable (.exe)
-
-- No usar `python -m flet` ni `py -m flet`.
-- Si `flet` no aparece en `PATH`, usar la ruta completa a `flet.exe`.
-- Para el paso a paso actualizado de empaquetado, seguir `docs/GUIA_EMPAQUETADO.md`.
-
-
-# 16. Resumen de Atajos
+# 15. Resumen de Atajos
 
 - `Enter`: avanzar/confirmar campo.
 - `Tab / Shift + Tab`: moverse entre controles.
