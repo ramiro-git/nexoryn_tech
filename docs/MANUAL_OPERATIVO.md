@@ -13,9 +13,24 @@ La consistencia del sistema depende de registrar correctamente cada operación, 
 - **Movimientos**: registran el impacto físico de stock (entradas, salidas y ajustes).
 
 
-# 2. Navegación, Filtros y Atajos
+# 2. Inicio de Sesión, Navegación y Atajos
 
-La barra lateral agrupa las vistas principales operativas:
+## Inicio de sesión (UI básica)
+
+La pantalla inicial permite dos modos:
+
+- Login con credenciales (`Email o Usuario` + `Contraseña`).
+- Login rápido en modo invitado (`Iniciar como invitado`).
+
+Después de autenticar:
+
+- El sistema ejecuta mantenimiento de arranque (principalmente ejecución de respaldos omitidos).
+- Mientras corre ese mantenimiento, la UI principal permanece bloqueada con una pantalla de progreso.
+- Si falla el mantenimiento crítico de respaldos, la pantalla informa el error y no habilita la operación hasta resolverlo.
+
+## Navegación por rol
+
+La barra lateral incluye:
 
 - Tablero de Control
 - Inventario
@@ -26,7 +41,25 @@ La barra lateral agrupa las vistas principales operativas:
 - Caja y Pagos
 - Cuentas Corrientes
 - Lista de Precios
-- Actualización Masiva
+- Actualización Masiva (solo roles de gestión)
+- Configuración (solo ADMIN/GERENTE)
+- Usuarios (solo ADMIN)
+- Respaldos (solo ADMIN)
+
+## Permisos por rol (resumen operativo)
+
+- `ADMIN`:
+  - Acceso completo a navegación, incluyendo `Usuarios` y `Respaldos`.
+  - Botones de exportación habilitados.
+  - Acciones de alta/edición y acciones masivas habilitadas.
+- `GERENTE` (incluye el usuario invitado por defecto):
+  - Acceso a operación general y `Configuración`/`Actualización Masiva`.
+  - Sin acceso a `Usuarios` ni `Respaldos`.
+  - Sin botones de exportación.
+- `EMPLEADO`:
+  - Acceso a vistas operativas principales.
+  - Sin `Configuración`, `Actualización Masiva`, `Usuarios` ni `Respaldos`.
+  - Sin botones de exportación ni controles de edición masiva.
 
 ## Búsqueda y filtros
 
@@ -64,6 +97,8 @@ El **Tablero de Control** concentra indicadores del negocio:
 - Alertas de stock.
 - Actividad operativa reciente.
 - Resumen financiero.
+
+> Nota: parte de los indicadores financieros varían según rol (más completos para ADMIN/GERENTE).
 
 ## Controles
 
@@ -290,7 +325,26 @@ Mantener pocas listas bien definidas evita errores de selección en ventas.
 Siempre revisar la vista previa antes de aplicar cambios masivos.
 
 
-# 14. Troubleshooting Operativo
+# 14. Respaldos y Mantenimiento de Inicio
+
+## Acceso y alcance
+
+- La vista `Respaldos` es exclusiva de `ADMIN`.
+- Desde allí se puede:
+  - lanzar backups `FULL`, `DIFERENCIAL`, `INCREMENTAL` o `MANUAL`,
+  - validar backups,
+  - restaurar desde una cadena disponible,
+  - configurar horarios,
+  - configurar sincronización de nube/carpeta local.
+
+## Mantenimiento al iniciar sesión
+
+- Luego del login, el sistema revisa backups omitidos y los ejecuta en orden (`FULL → DIFERENCIAL → INCREMENTAL`) cuando corresponde.
+- Durante ese proceso, la pantalla principal queda bloqueada temporalmente para proteger consistencia operativa.
+- La validación/purga automática de registros huérfanos de backup está desactivada por defecto para evitar falsos positivos en entornos con sincronización de archivos.
+
+
+# 15. Troubleshooting Operativo
 
 ## La app no inicia o falla conexión a DB
 
@@ -323,7 +377,7 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - Para el paso a paso actualizado de empaquetado, seguir `docs/GUIA_EMPAQUETADO.md`.
 
 
-# 15. Resumen de Atajos
+# 16. Resumen de Atajos
 
 - `Enter`: avanzar/confirmar campo.
 - `Tab / Shift + Tab`: moverse entre controles.

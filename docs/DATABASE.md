@@ -46,7 +46,7 @@ La app ejecuta la verificación de esquema en ambos modos de UI, pero en distint
 - **UI avanzada (`desktop_app/ui_advanced.py`)**: corre dentro del flujo de mantenimiento inicial.
 
 **Cómo funciona:**
-- Lee la versión del encabezado de `database/database.sql` (`-- Version: X.X`).
+- Lee la versión del encabezado de `database/database.sql` (actual: `-- Version: 2.6`).
 - Consulta `seguridad.config_sistema` (clave `db_version`) mediante `psql`.
 - Si la versión no coincide, ejecuta `psql -f database.sql` con `ON_ERROR_STOP=1`.
 
@@ -109,6 +109,21 @@ Compatibilidad:
   - En persistencia (`app.documento_detalle.porcentaje_iva`) se guarda siempre la alícuota fiscal real.
   - Para AFIP se arma `Iva` por alícuota real, sin hardcodear 21%.
 
+## Autenticación y usuarios
+
+- `Database.authenticate_user(email_or_username, password)`:
+  - acepta login por email (match exacto de casing),
+  - acepta login por nombre de usuario (match case-insensitive),
+  - valida contraseña con `crypt()` de PostgreSQL,
+  - actualiza `seguridad.usuario.ultimo_login` en login exitoso.
+- `Database.authenticate_guest_user()` permite acceso sin contraseña usando el usuario invitado del sistema.
+- El usuario invitado se asegura automáticamente en runtime (`_ensure_guest_user`) y en seed SQL:
+  - nombre: `Invitado`
+  - email: `invitado@nexoryn.local`
+  - rol objetivo: `GERENTE`
+  - activo: `TRUE`
+- Los intentos de login exitosos/fallidos se registran por `_log_login_attempt` (evento `LOGIN_OK` / `LOGIN_FAIL`) en logs TXT.
+
 ## RLS y contexto de sesión
 El esquema habilita RLS en tablas núcleo:
 - `app.documento`
@@ -147,6 +162,7 @@ Notas operativas:
 - `Database.log_activity`, `Database.log_logout` y `Database._log_login_attempt` escriben solo en archivo.
 - El logging es no bloqueante: si falla la escritura no rompe la operación principal.
 - No existe política automática de retención/archivado de logs.
+- La vista profesional de backups mantiene el tracking desacoplado del log operativo: no persiste eventos `BACKUP_*` en `activity_YYYY-MM-DD.txt` por defecto.
 
 ## Sesiones activas y refresco UI
 

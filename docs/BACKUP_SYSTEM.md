@@ -43,7 +43,6 @@ Tablas principales:
 
 Configuración en `seguridad.config_sistema`:
 - `backup_schedules` (JSON)
-- `backup_retention` (JSON)
 - `backup_cloud_config` (JSON)
 
 ## Scheduler Integrado
@@ -62,7 +61,7 @@ En UI básica, el scheduler profesional se inicializa con timezone `America/Arge
 - Los cambios se guardan en `backup_schedules`.
 
 **Backups omitidos:**
-Al iniciar la app, se detectan backups faltantes y se ejecutan en orden `FULL → DIFERENCIAL → INCREMENTAL`.
+En UI básica, luego de autenticar, se detectan backups faltantes y se ejecutan en orden `FULL → DIFERENCIAL → INCREMENTAL` antes de habilitar la interfaz principal.
 
 ## Uso desde la UI
 
@@ -70,7 +69,8 @@ En el panel **Respaldos** puedes:
 - Ejecutar backups manuales (FULL/DIF/INC/MANUAL).
 - Ver historial y métricas.
 - Validar backups existentes.
-- Configurar horarios y retención.
+- Configurar horarios.
+- Configurar sincronización local/nube.
 
 > Nota: en la implementación actual, `MANUAL` dispara el mismo flujo de generación que `FULL`.
 
@@ -142,11 +142,15 @@ La configuración se guarda en `backup_cloud_config`.
 
 ## Retención
 
-- La UI permite definir retención (FULL meses / DIF semanas / INC días).
-- La configuración se guarda en `backup_retention`.
-- **No hay purga automática por política de retención** en el sistema incremental actual.
-- Sí existe limpieza de registros huérfanos (archivo físico faltante) mediante `purge_invalid_backups()`.
-- Esa limpieza de huérfanos se ejecuta en el arranque/uso de flujos principales (startup de UI básica y carga del panel de backups profesional).
+- El esquema mantiene la tabla `seguridad.backup_retention_policy` para políticas de referencia.
+- La UI profesional ya no expone controles de retención.
+- **No hay purga automática por política de retención** en el flujo incremental actual.
+- Existe la utilidad `purge_invalid_backups()` para limpiar registros de backups huérfanos (archivo físico inexistente), pero su ejecución automática está desactivada para evitar falsos positivos en discos/redes sincronizadas (ej. OneDrive).
+
+## Trazabilidad de Eventos
+
+- Las operaciones de backup siguen registrándose en `seguridad.backup_manifest`.
+- El tracking operativo de la vista profesional (`BackupProfessionalView`) quedó desacoplado del log de actividad de la app (no escribe eventos BACKUP en `logs/activity_YYYY-MM-DD.txt` por defecto).
 
 ## Configuración
 
@@ -173,4 +177,4 @@ export PG_BIN_PATH="C:\Program Files\PostgreSQL\16\bin"
 ## Compatibilidad con Sistema Antiguo
 
 El sistema legacy (`backups/` con daily/weekly/monthly/manual) **no es modificado**.
-Si el sistema profesional falla al iniciar, la app intenta usar el servicio legacy como fallback para no detener el flujo de respaldos.
+Si el scheduler profesional falla al iniciar en UI básica, la app intenta usar el servicio legacy como fallback para no detener el flujo de respaldos.
