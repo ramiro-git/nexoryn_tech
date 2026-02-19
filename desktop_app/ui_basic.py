@@ -8475,6 +8475,7 @@ def main(page: ft.Page) -> None:
         is_read_only_ref = {"value": False}
         btn_add_line: Optional[ft.ElevatedButton] = None
         btn_modal_print: Optional[ft.ElevatedButton] = None
+        btn_modal_print_no_prices: Optional[ft.ElevatedButton] = None
         btn_modal_confirm: Optional[ft.ElevatedButton] = None
         btn_modal_afip: Optional[ft.ElevatedButton] = None
         btn_modal_save: Optional[ft.ElevatedButton] = None
@@ -8641,7 +8642,7 @@ def main(page: ft.Page) -> None:
         )
         
         field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs); _maybe_set(field_obs, "shift_enter", True)
-        field_direccion = ft.TextField(label="Dirección de Entrega *", expand=True); _style_input(field_direccion)
+        field_direccion = ft.TextField(label="Dirección de Entrega", expand=True); _style_input(field_direccion)
         field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
         _style_input(field_numero)
         field_descuento_global_pct = ft.TextField(label="Desc. Global %", width=130, value=""); _style_input(field_descuento_global_pct)
@@ -8765,6 +8766,8 @@ def main(page: ft.Page) -> None:
             "tracked_controls": set(),
         }
         shortcut_state: Dict[str, Any] = {
+            "f8_pressed": False,
+            "last_f8_ts": 0.0,
             "f9_pressed": False,
             "last_f9_ts": 0.0,
             "last_f10_ts": 0.0,
@@ -8965,6 +8968,7 @@ def main(page: ft.Page) -> None:
         def _modal_action_buttons_in_order() -> List[Any]:
             return [
                 btn_modal_print,
+                btn_modal_print_no_prices,
                 btn_modal_confirm,
                 btn_modal_afip,
                 btn_modal_reset,
@@ -8983,6 +8987,7 @@ def main(page: ft.Page) -> None:
         def _style_comprobante_action_buttons() -> None:
             _style_comprobante_button_focus(btn_add_line)
             _style_comprobante_button_focus(btn_modal_print)
+            _style_comprobante_button_focus(btn_modal_print_no_prices)
             _style_comprobante_button_focus(btn_modal_confirm)
             _style_comprobante_button_focus(btn_modal_afip)
             _style_comprobante_button_focus(btn_modal_reset)
@@ -9100,6 +9105,7 @@ def main(page: ft.Page) -> None:
             # Actions
             for control in [
                 btn_modal_print,
+                btn_modal_print_no_prices,
                 btn_modal_confirm,
                 btn_modal_afip,
                 btn_modal_reset,
@@ -9197,8 +9203,11 @@ def main(page: ft.Page) -> None:
                 return
 
             key = str(getattr(event, "key", "") or "").strip().lower().replace("_", " ").replace("-", " ")
-            if key == "f9" and not _is_modal_keydown_event(event):
-                shortcut_state["f9_pressed"] = False
+            if key in {"f8", "f9"} and not _is_modal_keydown_event(event):
+                if key == "f8":
+                    shortcut_state["f8_pressed"] = False
+                else:
+                    shortcut_state["f9_pressed"] = False
                 _forward_modal_previous_keyboard_handler(event)
                 return
 
@@ -9255,6 +9264,23 @@ def main(page: ft.Page) -> None:
 
             if key in {"f11"}:
                 _reset_comprobante_form()
+                return
+
+            if key in {"f8"}:
+                now_ts = time.monotonic()
+                last_ts = float(shortcut_state.get("last_f8_ts") or 0.0)
+                if shortcut_state.get("f8_pressed") and (now_ts - last_ts) < 0.45:
+                    return
+                repeat_raw = getattr(event, "repeat", False)
+                if isinstance(repeat_raw, str):
+                    is_repeat = repeat_raw.strip().lower() in {"true", "1", "yes"}
+                else:
+                    is_repeat = bool(repeat_raw)
+                if is_repeat:
+                    return
+                shortcut_state["f8_pressed"] = True
+                shortcut_state["last_f8_ts"] = now_ts
+                _print_current_document_direct(include_prices=False, copies=1)
                 return
 
             if key in {"f9"}:
@@ -10529,6 +10555,9 @@ def main(page: ft.Page) -> None:
             if btn_modal_print is not None:
                 btn_modal_print.visible = bool(current_doc_id)
 
+            if btn_modal_print_no_prices is not None:
+                btn_modal_print_no_prices.visible = bool(current_doc_id)
+
             if btn_modal_confirm is not None:
                 btn_modal_confirm.visible = bool(
                     current_doc_id
@@ -10607,6 +10636,7 @@ def main(page: ft.Page) -> None:
                 sum_total,
                 btn_add_line,
                 btn_modal_print,
+                btn_modal_print_no_prices,
                 btn_modal_confirm,
                 btn_modal_afip,
                 btn_modal_reset,
@@ -10634,7 +10664,15 @@ def main(page: ft.Page) -> None:
                 _set_form_read_only(True)
             else:
                 _refresh_modal_action_buttons()
-                _safe_update_multiple(btn_modal_print, btn_modal_confirm, btn_modal_afip, btn_modal_reset, btn_modal_save, btn_add_line)
+                _safe_update_multiple(
+                    btn_modal_print,
+                    btn_modal_print_no_prices,
+                    btn_modal_confirm,
+                    btn_modal_afip,
+                    btn_modal_reset,
+                    btn_modal_save,
+                    btn_add_line,
+                )
             _refresh_keyboard_navigation_order()
 
         def _save(_=None) -> bool:
@@ -10646,9 +10684,6 @@ def main(page: ft.Page) -> None:
                 return False
             if not (field_vto.value and str(field_vto.value).strip()):
                 show_toast("La fecha de vencimiento es obligatoria", kind="warning")
-                return False
-            if not (field_direccion.value and str(field_direccion.value).strip()):
-                show_toast("La dirección de entrega es obligatoria", kind="warning")
                 return False
 
             # Normalización final para persistir formato consistente sin forzar durante tipeo.
@@ -10783,6 +10818,7 @@ def main(page: ft.Page) -> None:
             if not numero_val and current_doc_row_ref["value"]:
                 numero_val = str((current_doc_row_ref["value"] or {}).get("numero_serie") or "").strip()
             numero_serie_value = numero_val if numero_val else None
+            direccion_entrega_value = str(field_direccion.value or "").strip() or None
 
             current_doc_id = active_doc_id_ref["value"]
             doc_id = None
@@ -10803,7 +10839,7 @@ def main(page: ft.Page) -> None:
                         descuento_global_mode=global_mode_to_persist,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
-                        direccion_entrega=field_direccion.value,
+                        direccion_entrega=direccion_entrega_value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
                         manual_values={
@@ -10826,7 +10862,7 @@ def main(page: ft.Page) -> None:
                         descuento_global_mode=global_mode_to_persist,
                         fecha=field_fecha.value, 
                         fecha_vencimiento=field_vto.value,
-                        direccion_entrega=field_direccion.value,
+                        direccion_entrega=direccion_entrega_value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
                         manual_values={
@@ -10993,6 +11029,7 @@ def main(page: ft.Page) -> None:
             if getattr(discount_limit_dialog, "open", False):
                 _safe_page_close(page, discount_limit_dialog, "close_comprobante_discount_limit")
             _restore_modal_keyboard_handler()
+            shortcut_state["f8_pressed"] = False
             shortcut_state["f9_pressed"] = False
             shortcut_state["f10_pending_token"] = 0
             shortcut_state["last_f10_ts"] = 0.0
@@ -11027,6 +11064,15 @@ def main(page: ft.Page) -> None:
             "Imprimir [F9]",
             icon=ft.icons.PRINT_ROUNDED,
             on_click=_print_current_document,
+            bgcolor="#F1F5F9",
+            color=COLOR_TEXT,
+            visible=False,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        btn_modal_print_no_prices = ft.ElevatedButton(
+            "Imprimir s/precios [F8]",
+            icon=ft.icons.PRINT_ROUNDED,
+            on_click=lambda _: _print_current_document_direct(include_prices=False, copies=1),
             bgcolor="#F1F5F9",
             color=COLOR_TEXT,
             visible=False,
@@ -11072,7 +11118,7 @@ def main(page: ft.Page) -> None:
         _style_comprobante_action_buttons()
         actions_row = ft.Row(
             [
-                ft.Row([btn_modal_print, btn_modal_confirm, btn_modal_afip], spacing=8),
+                ft.Row([btn_modal_print, btn_modal_print_no_prices, btn_modal_confirm, btn_modal_afip], spacing=8),
                 ft.Row([btn_modal_reset, btn_modal_close, btn_modal_save], spacing=8),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,

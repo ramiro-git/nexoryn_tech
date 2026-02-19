@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 COLOR_PRIMARY = (15, 23, 42)      # Dark blue for headers
 COLOR_WHITE = (255, 255, 255)
 COLOR_LIGHT_GRAY = (241, 245, 249)  # Light row background
+COLOR_PRINT_SOFT_GRAY = (248, 250, 252)  # Lighter fill for presupuesto/remito print savings
 COLOR_BORDER = (226, 232, 240)
 COLOR_TEXT = (15, 23, 42)
 COLOR_TEXT_MUTED = (100, 116, 139)
@@ -980,7 +981,7 @@ class InvoicePDF(BaseDocumentPDF):
 
         self.set_x(self.l_margin)
         self.set_font("helvetica", "B", 9)
-        self.set_fill_color(*COLOR_LIGHT_GRAY)
+        self.set_fill_color(*COLOR_PRINT_SOFT_GRAY)
         self.set_text_color(*COLOR_TEXT)
         self.set_draw_color(*COLOR_BORDER)
         for width, title in zip(widths, headers):
@@ -1124,7 +1125,7 @@ class InvoicePDF(BaseDocumentPDF):
                 self.add_page()
 
             if idx % 2 == 0:
-                self.set_fill_color(*COLOR_LIGHT_GRAY)
+                self.set_fill_color(*COLOR_PRINT_SOFT_GRAY)
             else:
                 self.set_fill_color(*COLOR_WHITE)
 
@@ -2138,7 +2139,7 @@ class RemitoPDF(BaseDocumentPDF):
 
         self.set_x(self.l_margin)
         self.set_font("helvetica", "B", 9)
-        self.set_fill_color(*COLOR_LIGHT_GRAY)
+        self.set_fill_color(*COLOR_PRINT_SOFT_GRAY)
         self.set_text_color(*COLOR_TEXT)
         self.set_draw_color(*COLOR_BORDER)
         for width, title in zip(widths, headers):
@@ -2301,7 +2302,7 @@ class RemitoPDF(BaseDocumentPDF):
             if self.get_y() + required_height > page_break_at:
                 self.add_page()
 
-            self.set_fill_color(*(COLOR_LIGHT_GRAY if idx % 2 == 0 else COLOR_WHITE))
+            self.set_fill_color(*(COLOR_PRINT_SOFT_GRAY if idx % 2 == 0 else COLOR_WHITE))
             self.set_x(self.l_margin)
             self.set_draw_color(*COLOR_BORDER)
 
