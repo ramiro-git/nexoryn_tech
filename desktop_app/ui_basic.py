@@ -1831,6 +1831,31 @@ def main(page: ft.Page) -> None:
         }
 
     # --- AsyncSelect Loaders ---
+    COMPROBANTE_ENTITY_SORTS: List[Tuple[str, str]] = [("id", "asc"), ("nombre_completo", "asc")]
+    COMPROBANTE_ARTICLE_SORTS: List[Tuple[str, str]] = [("codigo", "asc"), ("nombre", "asc")]
+
+    def _entity_comprobante_sort_key(row: Dict[str, Any]) -> Tuple[int, str]:
+        raw_id = row.get("id")
+        try:
+            entity_id = int(raw_id)
+        except Exception:
+            entity_id = 10**12
+        name_key = str(row.get("nombre_completo") or row.get("razon_social") or "").strip().casefold()
+        return entity_id, name_key
+
+    def _article_codigo_sort_key(row: Dict[str, Any]) -> Tuple[int, int, str, str, int]:
+        raw_code = str(row.get("codigo") or "").strip()
+        is_numeric_code = raw_code.isdigit()
+        numeric_code = int(raw_code) if is_numeric_code else 0
+        code_key = raw_code.casefold()
+        name_key = str(row.get("nombre") or "").strip().casefold()
+        raw_id = row.get("id")
+        try:
+            item_id = int(raw_id)
+        except Exception:
+            item_id = 10**12
+        return (0 if is_numeric_code else 1, numeric_code, code_key, name_key, item_id)
+
     def article_loader(query, offset, limit):
         if not db: return [], False
         rows = db.fetch_articles(search=query, offset=offset, limit=limit)
@@ -1845,8 +1870,25 @@ def main(page: ft.Page) -> None:
 
     def comprobante_entity_loader(query, offset, limit):
         if not db: return [], False
-        rows = db.fetch_entities(search=query, tipo="CLIENTE", offset=offset, limit=limit)
+        rows = db.fetch_entities(
+            search=query,
+            tipo="CLIENTE",
+            sorts=COMPROBANTE_ENTITY_SORTS,
+            offset=offset,
+            limit=limit,
+        )
         items = [_format_entity_option(r, include_tipo=True) for r in rows]
+        return items, len(rows) >= limit
+
+    def comprobante_article_loader(query, offset, limit):
+        if not db: return [], False
+        rows = db.fetch_articles(
+            search=query,
+            sorts=COMPROBANTE_ARTICLE_SORTS,
+            offset=offset,
+            limit=limit,
+        )
+        items = [{"value": r["id"], "label": f"{r['nombre']} (Cod: {r['id']})"} for r in rows]
         return items, len(rows) >= limit
 
     def supplier_loader(query, offset, limit):
@@ -8596,9 +8638,19 @@ def main(page: ft.Page) -> None:
 
         try:
             tipos = db.fetch_tipos_documento()
-            entidades = db.fetch_entities(tipo="CLIENTE", limit=100, offset=0) # Performance limit
+            entidades = db.fetch_entities(
+                tipo="CLIENTE",
+                sorts=COMPROBANTE_ENTITY_SORTS,
+                limit=100,
+                offset=0,
+            )  # Performance limit
             depositos = db.fetch_depositos()
-            articulos = db.list_articulos_simple(limit=100) # Performance limit with price info
+            articulos = db.fetch_articles(
+                activo_only=True,
+                sorts=COMPROBANTE_ARTICLE_SORTS,
+                limit=100,
+                offset=0,
+            )  # Performance limit with price info
             listas = db.fetch_listas_precio(limit=50)
         except Exception as e:
             show_toast(f"Error cargando datos: {e}", kind="error")
@@ -8632,7 +8684,7 @@ def main(page: ft.Page) -> None:
                     if not missing_ent.get("activo", True):
                         missing_ent["nombre_completo"] += " (Inactivo)"
                     entidades.append(missing_ent)
-                    entidades.sort(key=lambda x: x["nombre_completo"])
+                    entidades.sort(key=_entity_comprobante_sort_key)
 
             # Ensure Price List exists
             lid = doc_data.get("id_lista_precio")
@@ -8675,7 +8727,7 @@ def main(page: ft.Page) -> None:
                         listas.append(missing_list_item)
             
             # Re-sort articles for better UX
-            articulos.sort(key=lambda x: x["nombre"])
+            articulos.sort(key=_article_codigo_sort_key)
 
         
         # Form Fields
@@ -10028,7 +10080,7 @@ def main(page: ft.Page) -> None:
             art_initial_items = [{"value": a["id"], "label": f"{a['nombre']} (Cod: {a['id']})"} for a in articulos]
             art_drop = AsyncSelect(
                 label="Artículo *", 
-                loader=article_loader, 
+                loader=comprobante_article_loader, 
                 expand=True,
                 initial_items=art_initial_items,
                 keyboard_accessible=True,
