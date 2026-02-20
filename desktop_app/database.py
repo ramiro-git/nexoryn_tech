@@ -5610,6 +5610,9 @@ class Database:
             pass # We will handle in params
             
         final_fecha = fecha if fecha else datetime.now()
+        fecha_vencimiento_value = fecha_vencimiento
+        if isinstance(fecha_vencimiento_value, str):
+            fecha_vencimiento_value = fecha_vencimiento_value.strip() or None
 
         # Override totals if manual values provided (User Manual Edit)
         if manual_values:
@@ -5634,7 +5637,7 @@ class Database:
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_para_insertar, desc_pct_normalized, desc_imp_normalized, self.current_user_id,
                 neto_total, subtotal, iva_total, total, sena,
-                final_fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
+                final_fecha, fecha_vencimiento_value, id_lista_precio, direccion_entrega
             ))
             res = cur.fetchone()
             doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]
@@ -6398,6 +6401,9 @@ class Database:
                 total = Decimal(str(manual_values["total"]))
 
         final_fecha = fecha if fecha else datetime.now()
+        fecha_vencimiento_value = fecha_vencimiento
+        if isinstance(fecha_vencimiento_value, str):
+            fecha_vencimiento_value = fecha_vencimiento_value.strip() or None
 
         with self._transaction() as cur:
             cur.execute("""
@@ -6412,7 +6418,7 @@ class Database:
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_serie, desc_pct_normalized, desc_imp_normalized,
                 neto_total, subtotal, iva_total, total, sena,
-                final_fecha, fecha_vencimiento, id_lista_precio,
+                final_fecha, fecha_vencimiento_value, id_lista_precio,
                 direccion_entrega, self.current_user_id,
                 doc_id
             ))

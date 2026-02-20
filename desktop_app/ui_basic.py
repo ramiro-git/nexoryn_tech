@@ -8734,8 +8734,8 @@ def main(page: ft.Page) -> None:
         field_fecha = _date_field(page, "Fecha *", width=160)
         field_fecha.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        field_vto = _date_field(page, "Vencimiento *", width=160)
-        field_vto.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        field_vto = _date_field(page, "Vencimiento", width=160)
+        field_vto.value = ""
         lista_options = [ft.dropdown.Option("", "Automático")] + [ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in listas]
         lista_initial_items = [{"value": l["id"], "label": l["nombre"]} for l in listas]
         field_saldo = ft.Text("", size=12, color=COLOR_ACCENT, weight=ft.FontWeight.W_500)
@@ -8901,7 +8901,9 @@ def main(page: ft.Page) -> None:
         if doc_data:
             dropdown_tipo.value = str(doc_data["id_tipo_documento"])
             dropdown_entidad.value = str(doc_data["id_entidad_comercial"])
-            dropdown_deposito.value = str(doc_data["id_deposito"])
+            if depositos:
+                # Requisito de UX: siempre iniciar con el primer depósito disponible.
+                dropdown_deposito.value = str(depositos[0]["id"])
             field_obs.value = doc_data["observacion"]
             
             if edit_doc_id:
@@ -8923,7 +8925,7 @@ def main(page: ft.Page) -> None:
             elif _parse_float(field_descuento_global_imp.value, "Desc. Global $") > 0:
                 global_discount_mode["value"] = "amount"
             global_discount_last_edited["value"] = global_discount_mode["value"]
-            field_vto.value = doc_data["fecha_vencimiento"]
+            field_vto.value = doc_data.get("fecha_vencimiento") or ""
             field_direccion.value = doc_data.get("direccion_entrega", "") or ""
             
             # En edición preservamos la lista histórica del documento;
@@ -10926,9 +10928,6 @@ def main(page: ft.Page) -> None:
             if not dropdown_tipo.value or not dropdown_entidad.value or not dropdown_deposito.value:
                 show_toast("Faltan campos obligatorios", kind="warning")
                 return False
-            if not (field_vto.value and str(field_vto.value).strip()):
-                show_toast("La fecha de vencimiento es obligatoria", kind="warning")
-                return False
 
             # Normalización final para persistir formato consistente sin forzar durante tipeo.
             _normalize_field_numeric_preserve_blank_zero(field_descuento_global_pct, decimals=2, use_grouping=True)
@@ -11063,6 +11062,7 @@ def main(page: ft.Page) -> None:
                 numero_val = str((current_doc_row_ref["value"] or {}).get("numero_serie") or "").strip()
             numero_serie_value = numero_val if numero_val else None
             direccion_entrega_value = str(field_direccion.value or "").strip() or None
+            fecha_vencimiento_value = str(field_vto.value or "").strip() or None
 
             current_doc_id = active_doc_id_ref["value"]
             doc_id = None
@@ -11082,7 +11082,7 @@ def main(page: ft.Page) -> None:
                         descuento_importe=desc_global_imp,
                         descuento_global_mode=global_mode_to_persist,
                         fecha=field_fecha.value, 
-                        fecha_vencimiento=field_vto.value,
+                        fecha_vencimiento=fecha_vencimiento_value,
                         direccion_entrega=direccion_entrega_value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
@@ -11105,7 +11105,7 @@ def main(page: ft.Page) -> None:
                         descuento_importe=desc_global_imp,
                         descuento_global_mode=global_mode_to_persist,
                         fecha=field_fecha.value, 
-                        fecha_vencimiento=field_vto.value,
+                        fecha_vencimiento=fecha_vencimiento_value,
                         direccion_entrega=direccion_entrega_value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
