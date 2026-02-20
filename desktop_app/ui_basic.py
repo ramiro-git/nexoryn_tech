@@ -8926,13 +8926,14 @@ def main(page: ft.Page) -> None:
             field_vto.value = doc_data["fecha_vencimiento"]
             field_direccion.value = doc_data.get("direccion_entrega", "") or ""
             
-            # Set price list if available
-            if doc_data.get("id_lista_precio"):
+            # En edición preservamos la lista histórica del documento;
+            # en copia se prioriza la lista configurada en el cliente.
+            if edit_doc_id and doc_data.get("id_lista_precio"):
                 dropdown_lista_global.value = str(doc_data["id_lista_precio"])
             
             field_sena.value = normalize_input_value(doc_data.get("sena", 0), decimals=2, use_grouping=True)
             
-            _update_entidad_info(None, preserve_values=True)
+            _update_entidad_info(None, preserve_values=bool(edit_doc_id))
         else:
             if not dropdown_tipo.value and allowed_tipos:
                 presupuesto_tipo = next(
@@ -11128,13 +11129,22 @@ def main(page: ft.Page) -> None:
                 show_toast(f"Error al guardar: {ex}", kind="error")
                 return False
         if doc_data:
+            copy_global_list_id = str(getattr(dropdown_lista_global, "value", "") or "").strip() if copy_doc_id else ""
             # Add existing items
             for item in doc_data["items"]:
-                # Inject fallback price list (from header) if item doesn't have one 
-                # (which it won't until DB supports it)
-                if "id_lista_precio" not in item:
-                    item["id_lista_precio"] = doc_data.get("id_lista_precio")
-                _add_line(initial_data=item, update_ui=False)
+                item_payload = dict(item)
+                if copy_doc_id:
+                    # En copia, usar la lista global ya resuelta por cliente.
+                    if copy_global_list_id:
+                        item_payload["id_lista_precio"] = copy_global_list_id
+                    else:
+                        item_payload.pop("id_lista_precio", None)
+                else:
+                    # Inject fallback price list (from header) if item doesn't have one
+                    # (which it won't until DB supports it)
+                    if "id_lista_precio" not in item_payload:
+                        item_payload["id_lista_precio"] = doc_data.get("id_lista_precio")
+                _add_line(initial_data=item_payload, update_ui=False)
             
             # Always add a blank line at the end for automation to work
             _add_line(update_ui=False)
