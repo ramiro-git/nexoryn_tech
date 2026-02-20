@@ -69,6 +69,7 @@ La barra lateral incluye:
 - En `AsyncSelect`: `Enter` selecciona el resultado activo.
 - `Shift + Enter`: salto de línea en observaciones.
 - `Esc`: cerrar modal o cancelar acción activa.
+- En modal de comprobantes: `F8` imprime directo sin precios/importes.
 - En modal de comprobantes: `F9` imprime directo (sin descargar PDF).
 - En modal de comprobantes: `F10` confirma comprobante y con segundo `F10` confirma el diálogo.
 - En modal de comprobantes: `F11` resetea el formulario a estado inicial de venta rápida.
@@ -184,7 +185,7 @@ La vista **Comprobantes** concentra ventas, compras y presupuestos.
 
 # 7. Facturación Electrónica (AFIP/ARCA)
 
-La autorización fiscal se realiza desde el botón **Autorizar AFIP** en comprobantes aptos.
+La autorización fiscal se realiza desde el botón **Facturar AFIP** (en algunas vistas puede figurar como **Autorizar AFIP**) en comprobantes aptos.
 
 ## Requisitos previos
 
@@ -340,6 +341,7 @@ Siempre revisar la vista previa antes de aplicar cambios masivos.
 - `Enter`: avanzar/confirmar campo.
 - `Tab / Shift + Tab`: moverse entre controles.
 - En comprobantes, `Tab / Shift + Tab` no sale del modal mientras esté abierto.
+- En comprobantes, `F8` imprime directo sin precios/importes.
 - En comprobantes, `F9` imprime directo.
 - En comprobantes, `F10` confirma y segundo `F10` confirma el diálogo.
 - En comprobantes, `F11` resetea a formulario nuevo.

@@ -58,7 +58,7 @@ AFIP_PUNTO_VENTA=3
 
 ## Flujo en la UI
 
-- El botón **Autorizar AFIP** se habilita cuando:
+- El botón **Facturar AFIP** (o **Autorizar AFIP**, según la vista) se habilita cuando:
   - el documento está en estado `CONFIRMADO` o `PAGADO`
   - tiene `codigo_afip`
   - no tiene `cae`
