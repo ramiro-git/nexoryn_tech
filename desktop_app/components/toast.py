@@ -1,7 +1,6 @@
 
 import threading
-import time
-from typing import Optional
+from typing import Callable, Optional
 
 import flet as ft
 
@@ -12,13 +11,14 @@ class ToastNotification(ft.Container):
         message: str,
         kind: str = "info",  # info, success, warning, error
         duration: int = 4000,
-        on_dismiss: Optional[callable] = None,
+        on_dismiss: Optional[Callable[["ToastNotification"], None]] = None,
     ):
         super().__init__()
         self.message = message
         self.kind = kind
         self.duration = duration
         self.on_dismiss = on_dismiss
+        self._dismissed = False
         
         # Style configuration based on kind
         self.colors = {
@@ -73,28 +73,47 @@ class ToastNotification(ft.Container):
             pass
 
     def did_mount(self):
+        if self._dismissed:
+            return
         # Trigger entry animation
         self.opacity = 1
         self.offset = ft.Offset(0, 0)
-        self.update()
+        try:
+            self.update()
+        except Exception:
+            # If initial animation update fails we still continue with lifecycle.
+            pass
         
         # Schedule auto-dismiss
         if self.duration > 0:
             self.timer = threading.Timer(self.duration / 1000, self.dismiss)
+            self.timer.daemon = True
             self.timer.start()
 
     def dismiss(self):
-        if hasattr(self, "timer") and self.timer:
-            self.timer.cancel()
-            
+        if self._dismissed:
+            return
+        self._dismissed = True
+
+        timer = getattr(self, "timer", None)
+        if timer:
+            timer.cancel()
+
         self.opacity = 0
         self.offset = ft.Offset(0.5, 0)
+        removed_with_animation = False
         try:
             self.update()
+            removed_with_animation = True
+        except Exception:
+            # Fallback: if update fails (uid/page race), remove toast immediately.
+            self._remove_from_view()
+
+        if removed_with_animation:
             # Wait for animation to finish then remove
-            threading.Timer(0.3, self._remove_from_view).start()
-        except:
-            pass
+            removal_timer = threading.Timer(0.3, self._remove_from_view)
+            removal_timer.daemon = True
+            removal_timer.start()
 
     def _remove_from_view(self):
         if self.on_dismiss:

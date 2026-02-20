@@ -8836,7 +8836,13 @@ def main(page: ft.Page) -> None:
         
         field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs); _maybe_set(field_obs, "shift_enter", True)
         field_direccion = ft.TextField(label="Dirección de Entrega", expand=True); _style_input(field_direccion)
-        field_numero = ft.TextField(label="Número/Serie", width=200, hint_text="Automático", read_only=True)
+        field_numero = ft.TextField(
+            label="Número/Serie",
+            width=200,
+            hint_text="Automático",
+            read_only=True,
+            disabled=True,
+        )
         _style_input(field_numero)
         field_descuento_global_pct = ft.TextField(label="Desc. Global %", width=130, value=""); _style_input(field_descuento_global_pct)
         field_descuento_global_imp = ft.TextField(label="Desc. Global $", width=130, value=""); _style_input(field_descuento_global_imp)
@@ -8899,14 +8905,10 @@ def main(page: ft.Page) -> None:
             field_obs.value = doc_data["observacion"]
             
             if edit_doc_id:
-                field_numero.read_only = False
-                field_numero.hint_text = ""
                 field_numero.value = doc_data["numero_serie"]
                 field_fecha.value = _normalize_datetime_input(doc_data.get("fecha")) or field_fecha.value
             elif copy_doc_id:
                 field_obs.value = f"Copia de {doc_data.get('numero_serie','')}. " + (doc_data.get('observacion','') or "")
-                field_numero.read_only = True
-                field_numero.hint_text = "Automático"
                 field_numero.value = ""
                 field_fecha.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -9857,7 +9859,6 @@ def main(page: ft.Page) -> None:
         field_vto.on_submit = _chain_handler_and_focus(field_vto.on_submit, field_vto)
         field_obs.on_submit = _chain_handler_and_focus(field_obs.on_submit, field_obs)
         field_direccion.on_submit = _chain_handler_and_focus(field_direccion.on_submit, field_direccion)
-        field_numero.on_submit = _chain_handler_and_focus(field_numero.on_submit, field_numero)
 
         def _on_entidad_change_with_item_focus(_: Any) -> Any:
             _update_entidad_info(None)
