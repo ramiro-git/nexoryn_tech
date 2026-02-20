@@ -9879,6 +9879,7 @@ def main(page: ft.Page) -> None:
             auto_scroll=True,
         )
         duplicate_item_dialog = ft.AlertDialog(modal=True)
+        duplicate_item_dialog_state: Dict[str, Any] = {"close_callback": None, "is_open": False}
         modal_bottom_scroll_done_ref = {"value": False}
 
         def _scroll_comprobante_modal_to_bottom_once() -> None:
@@ -9956,7 +9957,13 @@ def main(page: ft.Page) -> None:
             if art_drop_ctrl is not None:
                 art_drop_ctrl.value = None
             if lista_drop_ctrl is not None:
-                lista_drop_ctrl.value = None
+                global_lista_raw = getattr(dropdown_lista_global, "value", None)
+                global_lista_value = str(global_lista_raw).strip() if global_lista_raw not in (None, "") else ""
+                lista_drop_ctrl.value = global_lista_value if global_lista_value else ""
+                try:
+                    lista_drop_ctrl.clear_cache()
+                except Exception:
+                    pass
             if cant_field_ctrl is not None:
                 cant_field_ctrl.value = ""
             if price_field_ctrl is not None:
@@ -10009,48 +10016,75 @@ def main(page: ft.Page) -> None:
             if recalc:
                 _recalc_total()
 
-        def _merge_duplicate_rows(source_row: Any, target_row: Any) -> None:
-            source_map = getattr(source_row, "data", None) or {}
-            target_map = getattr(target_row, "data", None) or {}
-            source_qty_raw = getattr(source_map.get("cant_field"), "value", None)
-            target_qty_raw = getattr(target_map.get("cant_field"), "value", None)
+        def _ask_duplicate_item_confirmation(source_row: Any, apply_article_change: Callable[[], None]) -> None:
+            duplicate_focus_state: Dict[str, str] = {"action": "clear"}
+            previous_handler = getattr(page, "on_keyboard_event", None)
 
-            try:
-                source_qty = _parse_int_quantity(source_qty_raw, "Cantidad")
-            except Exception:
-                source_qty = 0
-            try:
-                target_qty = _parse_int_quantity(target_qty_raw, "Cantidad")
-            except Exception:
-                target_qty = 0
+            def _set_focused_action(action: str) -> None:
+                duplicate_focus_state["action"] = action
 
-            merged_qty = target_qty + source_qty
-            target_qty_ctrl = target_map.get("cant_field")
-            if target_qty_ctrl is not None:
-                target_qty_ctrl.value = normalize_input_value(merged_qty, decimals=0, use_grouping=False) or "0"
+            def _focus_action_button(action: str) -> None:
+                target = no_btn if action == "clear" else add_btn
+                _set_focused_action(action)
+                _focus_control(target)
 
-            recalc_target = target_map.get("recalculate_line")
-            if callable(recalc_target):
-                recalc_target()
-            check_stock_target = target_map.get("check_stock_warning")
-            if callable(check_stock_target):
-                check_stock_target()
+            def _restore_keyboard_handler() -> None:
+                if previous_handler:
+                    page.on_keyboard_event = previous_handler
+                else:
+                    page.on_keyboard_event = None
 
-            _clear_line_for_duplicate(source_row, recalc=False)
-            _safe_update_multiple(target_qty_ctrl, lines_container)
-            _recalc_total()
-
-        def _ask_duplicate_item_confirmation(source_row: Any, target_row: Any) -> None:
             def _close(_: Any = None) -> None:
+                _restore_keyboard_handler()
+                duplicate_item_dialog_state["close_callback"] = None
+                duplicate_item_dialog_state["is_open"] = False
                 _safe_page_close(page, duplicate_item_dialog, "duplicate_item_confirmation")
 
-            def _confirm_merge(_: Any) -> None:
-                _close(None)
-                _merge_duplicate_rows(source_row, target_row)
-
-            def _confirm_clear(_: Any) -> None:
+            def _confirm_clear(_: Any = None) -> None:
                 _close(None)
                 _clear_line_for_duplicate(source_row)
+                source_row_map = getattr(source_row, "data", None) or {}
+                _focus_control(source_row_map.get("art_drop"))
+
+            def _confirm_add(_: Any = None) -> None:
+                _close(None)
+                apply_article_change()
+                source_row_map = getattr(source_row, "data", None) or {}
+                _focus_control(source_row_map.get("cant_field"))
+
+            def _on_duplicate_dialog_key(e: ft.KeyboardEvent) -> None:
+                key = str(getattr(e, "key", "") or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+                if not _is_keydown_event(e):
+                    return
+                if key in {"arrowleft", "left"}:
+                    _focus_action_button("clear")
+                    return
+                if key in {"arrowright", "right"}:
+                    _focus_action_button("add")
+                    return
+                if key in {"enter", "numpadenter", "return"}:
+                    if duplicate_focus_state.get("action") == "add":
+                        _confirm_add(None)
+                    else:
+                        _confirm_clear(None)
+                    return
+                if key in {"esc", "escape"}:
+                    _confirm_clear(None)
+                    return
+
+            no_btn = _cancel_button("No", on_click=_confirm_clear)
+            _maybe_set(no_btn, "on_focus", lambda _: _set_focused_action("clear"))
+            _maybe_set(no_btn, "autofocus", True)
+            add_btn = ft.ElevatedButton(
+                "Agregar",
+                bgcolor=COLOR_ACCENT,
+                color="#FFFFFF",
+                on_click=_confirm_add,
+                on_focus=lambda _: _set_focused_action("add"),
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+            )
+
+            page.on_keyboard_event = _on_duplicate_dialog_key
 
             duplicate_item_dialog.title = ft.Text("Artículo ya ingresado", size=20, weight=ft.FontWeight.BOLD)
             duplicate_item_dialog.content = ft.Container(
@@ -10062,17 +10096,28 @@ def main(page: ft.Page) -> None:
                 padding=ft.padding.symmetric(vertical=10),
             )
             duplicate_item_dialog.shape = ft.RoundedRectangleBorder(radius=16)
-            duplicate_item_dialog.actions = [
-                _cancel_button("No", on_click=_confirm_clear),
-                ft.ElevatedButton(
-                    "Sí, sumar",
-                    bgcolor=COLOR_ACCENT,
-                    color="#FFFFFF",
-                    on_click=_confirm_merge,
-                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-                ),
-            ]
-            _safe_page_open(page, duplicate_item_dialog, "duplicate_item_confirmation")
+            duplicate_item_dialog.actions = [no_btn, add_btn]
+            opened = _safe_page_open(page, duplicate_item_dialog, "duplicate_item_confirmation")
+            if not opened:
+                _restore_keyboard_handler()
+                duplicate_item_dialog_state["close_callback"] = None
+                duplicate_item_dialog_state["is_open"] = False
+                return
+            duplicate_item_dialog_state["close_callback"] = _close
+            duplicate_item_dialog_state["is_open"] = True
+
+            def _focus_no_button() -> None:
+                _focus_action_button("clear")
+
+            def _delayed_focus():
+                try:
+                    time.sleep(0.08)
+                    _run_on_ui(_focus_no_button)
+                except Exception:
+                    pass
+
+            _run_on_ui(_focus_no_button)
+            _run_in_background(_delayed_focus)
 
         def _add_line(_=None, update_ui=True, initial_data=None):
             if is_read_only_ref["value"]:
@@ -10267,9 +10312,15 @@ def main(page: ft.Page) -> None:
                 """Actualiza el precio basado en artículo y lista seleccionados"""
                 art_id_val = art_drop.value
                 # Primero intentar usar la lista del ítem, si no la lista global
-                lid = lista_drop.value
-                if not lid or lid == "":
-                    lid = dropdown_lista_global.value
+                lid_raw = getattr(lista_drop, "value", None)
+                lid = str(lid_raw).strip() if lid_raw not in (None, "") else ""
+                if not lid:
+                    global_lid_raw = getattr(dropdown_lista_global, "value", None)
+                    global_lid = str(global_lid_raw).strip() if global_lid_raw not in (None, "") else ""
+                    if global_lid:
+                        lid = global_lid
+                        lista_drop.value = global_lid
+                        _safe_update_control(lista_drop)
                 
                 if not art_id_val:
                     return
@@ -10340,16 +10391,39 @@ def main(page: ft.Page) -> None:
                 except Exception as e:
                     logger.warning(f"Falló al actualizar interfaz: {e}")
 
-            def _refresh_lista_labels_with_prices() -> None:
+            def _refresh_lista_labels_with_prices(preferred_list: Any = None) -> str:
                 try:
                     items, _ = item_price_list_loader("", 0, 100)
                     opts = [ft.dropdown.Option(str(i["value"]), i["label"]) for i in items]
-                    current_value = lista_drop.value
+                    valid_ids = {str(i["value"]) for i in items}
+                    global_list_raw = getattr(dropdown_lista_global, "value", None)
+                    global_list = str(global_list_raw).strip() if global_list_raw not in (None, "") else ""
+                    current_raw = preferred_list if preferred_list is not None else getattr(lista_drop, "value", None)
+                    current_value = str(current_raw).strip() if current_raw not in (None, "") else ""
+                    if not current_value and global_list:
+                        current_value = global_list
+                    if current_value and valid_ids and current_value not in valid_ids:
+                        if global_list and global_list in valid_ids:
+                            current_value = global_list
+                        else:
+                            current_value = ""
                     lista_drop.options = opts
                     lista_drop.value = current_value
                     _safe_update_control(lista_drop)
+                    return current_value
                 except Exception as ex:
                     logger.warning(f"No se pudieron refrescar labels de listas con precios: {ex}")
+                    fallback_raw = preferred_list if preferred_list is not None else getattr(lista_drop, "value", None)
+                    return str(fallback_raw).strip() if fallback_raw not in (None, "") else ""
+
+            def _apply_article_change_effects() -> None:
+                _refresh_lista_labels_with_prices()
+                _sync_fiscal_iva_from_visible(source="article_change")
+                _update_price_from_list()
+                _check_stock_warning(force_refresh=True)
+                if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
+                    _add_line()
+                    _scroll_comprobante_modal_to_bottom_once()
 
             def _on_art_change(e):
                 current_row_map = row.data or {}
@@ -10358,20 +10432,12 @@ def main(page: ft.Page) -> None:
                 current_row_map["article_name"] = selected_name
                 current_row_map["duplicate_desc"] = selected_name
 
-                _refresh_lista_labels_with_prices()
                 if art_drop.value:
                     duplicate_target = _find_duplicate_target_row(row)
                     if duplicate_target is not None:
-                        _ask_duplicate_item_confirmation(row, duplicate_target)
+                        _ask_duplicate_item_confirmation(row, _apply_article_change_effects)
                         return False
-                _sync_fiscal_iva_from_visible(source="article_change")
-                _update_price_from_list()
-                _check_stock_warning(force_refresh=True)
-                
-                # Automation: if an article is selected and this is the last line, add a new one
-                if art_drop.value and lines_container.controls and lines_container.controls[-1] == row:
-                    _add_line()
-                    _scroll_comprobante_modal_to_bottom_once()
+                _apply_article_change_effects()
                 return True
 
             def _on_art_change_and_focus_qty(e):
@@ -11196,6 +11262,11 @@ def main(page: ft.Page) -> None:
             _confirm_afip_authorization(doc_row, close_after=False, on_success=_handle_modal_doc_state_change)
 
         def _close_comprobante_form(e: Any = None) -> None:
+            close_duplicate = duplicate_item_dialog_state.get("close_callback")
+            if callable(close_duplicate):
+                close_duplicate(None)
+            elif getattr(duplicate_item_dialog, "open", False):
+                _safe_page_close(page, duplicate_item_dialog, "close_comprobante_duplicate_dialog")
             if _is_confirm_dialog_open():
                 confirm_dialog_state["on_confirm"] = None
                 confirm_dialog_state["is_open"] = False
@@ -11215,6 +11286,11 @@ def main(page: ft.Page) -> None:
             _safe_update_control(main_app_container)
 
         def _reset_comprobante_form(_=None) -> None:
+            close_duplicate = duplicate_item_dialog_state.get("close_callback")
+            if callable(close_duplicate):
+                close_duplicate(None)
+            elif getattr(duplicate_item_dialog, "open", False):
+                _safe_page_close(page, duplicate_item_dialog, "reset_comprobante_duplicate_dialog")
             if _is_confirm_dialog_open():
                 confirm_dialog_state["on_confirm"] = None
                 confirm_dialog_state["is_open"] = False
