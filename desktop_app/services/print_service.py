@@ -35,6 +35,12 @@ COLOR_TEXT = (15, 23, 42)
 COLOR_TEXT_MUTED = (100, 116, 139)
 AFIP_IVA_RATES = (27.0, 21.0, 10.5, 5.0, 2.5, 0.0)
 
+def _no_window_flags() -> int:
+    """Return creationflags to suppress console window popups on Windows."""
+    if platform.system() == "Windows":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return 0
+
 
 def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
     try:
@@ -295,6 +301,7 @@ def _get_default_windows_printer_name() -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=5,
+            creationflags=_no_window_flags(),
         )
         if completed.returncode == 0:
             out = (completed.stdout or "").strip()
@@ -323,6 +330,7 @@ def _get_windows_print_job_count(printer_name: str) -> Optional[int]:
             capture_output=True,
             text=True,
             timeout=4,
+            creationflags=_no_window_flags(),
         )
         if completed.returncode != 0:
             return None
@@ -351,6 +359,7 @@ def _log_windows_printer_snapshot(context: str) -> None:
             capture_output=True,
             text=True,
             timeout=6,
+            creationflags=_no_window_flags(),
         )
         if completed.returncode != 0:
             return
@@ -610,6 +619,7 @@ def _run_pdf_tool_print(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                creationflags=_no_window_flags(),
             )
             if completed.returncode != 0:
                 logger.debug(
@@ -753,7 +763,7 @@ def _print_pdf_windows_default(path: str, *, copies: int = 1) -> bool:
 
 class BaseDocumentPDF(FPDF):
     """Base class for all document PDFs with common header/footer and company data."""
-    
+
     def __init__(
         self,
         doc_data: Dict[str, Any],
@@ -774,23 +784,23 @@ class BaseDocumentPDF(FPDF):
         self._table_header_active: bool = False
         self._table_header_drawer: Optional[Callable[[], None]] = None
         self._table_header_last_page: int = 0
-        
+
         # Document type info for header
         self._doc_type_label = ""
         self._doc_letter = ""
 
     def _get_company_name(self) -> str:
         return self.company.get("nombre_sistema") or "NEXORYN TECH"
-    
+
     def _get_company_slogan(self) -> str:
         return self.company.get("slogan") or "Soluciones tecnológicas y logísticas"
-    
+
     def _get_company_cuit(self) -> str:
         return self.company.get("cuit_empresa") or "-"
-    
+
     def _get_company_address(self) -> str:
         return self.company.get("domicilio_empresa") or "-"
-    
+
     def _get_company_razon_social(self) -> str:
         return self.company.get("razon_social") or self._get_company_name()
 
@@ -800,18 +810,18 @@ class BaseDocumentPDF(FPDF):
         self.set_fill_color(*COLOR_PRIMARY)
         self.set_draw_color(*COLOR_PRIMARY)
         self.rect(0, 0, self.w, 28, "F")
-        
+
         # Company name (left side)
         self.set_font("helvetica", "B", 20)
         self.set_text_color(*COLOR_WHITE)
         self.set_xy(12, 7)
         self.cell(100, 10, self._get_company_name(), border=0)
-        
+
         # Slogan
         self.set_font("helvetica", "", 9)
         self.set_xy(12, 17)
         self.cell(100, 5, self._get_company_slogan(), border=0)
-        
+
         # Document type (right side)
         if self._doc_type_label:
             # Calculate positions - letter box first if present
@@ -828,7 +838,7 @@ class BaseDocumentPDF(FPDF):
                 self.set_font("helvetica", "B", 14)
                 self.set_xy(letter_x, letter_y + 4)
                 self.cell(letter_box_size, 10, self._doc_letter, border=0, align="C")
-                
+
                 # Document type text to the left of the box
                 self.set_text_color(*COLOR_WHITE)
                 self.set_font("helvetica", "B", 14)
@@ -842,13 +852,13 @@ class BaseDocumentPDF(FPDF):
                 doc_type_width = self.get_string_width(self._doc_type_label) + 10
                 self.set_xy(self.w - doc_type_width - 12, 9)
                 self.cell(doc_type_width, 8, self._doc_type_label, border=0, align="R")
-        
+
         # Reset text color
         self.set_text_color(*COLOR_TEXT)
-        
+
         # Position for content
         self.set_y(32)
-        
+
         # Re-draw table header on new pages if active
         if self._table_header_active and self._table_header_drawer:
             current_page = self.page_no()
@@ -890,7 +900,7 @@ class BaseDocumentPDF(FPDF):
 
 class InvoicePDF(BaseDocumentPDF):
     """PDF generator for invoices and similar documents (quotes, etc.)."""
-    
+
     def __init__(
         self,
         doc_data: Dict[str, Any],
@@ -909,7 +919,7 @@ class InvoicePDF(BaseDocumentPDF):
         self.neto = self._resolve_neto()
         self.iva_total = self._resolve_iva_total()
         self.total = self._resolve_total()
-        
+
         # Set document type for header
         self._setup_doc_type()
 
@@ -917,11 +927,11 @@ class InvoicePDF(BaseDocumentPDF):
         """Configure document type label and letter for header."""
         doc_type = str(self.doc.get("tipo_documento") or "COMPROBANTE").strip().upper()
         letter = str(self.doc.get("letra") or "").strip().upper()
-        
+
         # Clean up doc_type - remove letter if already included
         if letter and doc_type.endswith(f" {letter}"):
             doc_type = doc_type[:-len(f" {letter}")]
-        
+
         self._doc_type_label = doc_type
         self._doc_letter = letter
 
@@ -940,10 +950,10 @@ class InvoicePDF(BaseDocumentPDF):
             return
 
         self._draw_document_info()
-        
+
         if self.is_invoice:
             self._draw_afip_block()
-        
+
         self._draw_client_block()
         self.ln(4)
         self._draw_items_table()
@@ -1320,25 +1330,25 @@ class InvoicePDF(BaseDocumentPDF):
         number = self.doc.get("numero_serie") or "-"
         date = self.doc.get("fecha") or datetime.now().strftime("%Y-%m-%d")
         state = str(self.doc.get("estado") or "").upper()
-        
+
         label_width = 35
-        
+
         self.set_font("helvetica", "B", 10)
         self.set_text_color(*COLOR_TEXT)
         self.cell(label_width, 6, "Número:", border=0)
         self.set_font("helvetica", "", 10)
         self.cell(0, 6, str(number), border=0, ln=1)
-        
+
         self.set_font("helvetica", "B", 10)
         self.cell(label_width, 6, "Fecha emisión:", border=0)
         self.set_font("helvetica", "", 10)
         self.cell(0, 6, _format_date(date), border=0, ln=1)
-        
+
         self.set_font("helvetica", "B", 10)
         self.cell(label_width, 6, "Estado:", border=0)
         self.set_font("helvetica", "", 10)
         self.cell(0, 6, state or "-", border=0, ln=1)
-        
+
         self.ln(2)
 
     def _draw_afip_block(self) -> None:
@@ -1347,37 +1357,37 @@ class InvoicePDF(BaseDocumentPDF):
         cae_vto = self.doc.get("cae_vencimiento")
         cuit_emisor = self.doc.get("cuit_emisor") or self._get_company_cuit()
         qr_data = self.doc.get("qr_data")
-        
+
         start_y = self.get_y()
         box_x = self.l_margin
         box_width = self.w - self.l_margin - self.r_margin
         qr_size = 55 if qr_data else 0
         text_width = box_width - qr_size - 10 if qr_data else box_width - 10
-        
+
         # Draw border box
         self.set_draw_color(*COLOR_BORDER)
         self.set_line_width(0.3)
         box_height = 30
         self.rect(box_x, start_y, text_width + 10, box_height)
-        
+
         # CAE info inside box
         self.set_xy(box_x + 4, start_y + 4)
         self.set_font("helvetica", "B", 9)
         self.set_text_color(*COLOR_TEXT)
         self.cell(text_width, 5, f"CAE: {cae}", border=0, ln=1)
-        
+
         self.set_x(box_x + 4)
         self.set_font("helvetica", "", 9)
         if cae_vto:
             self.cell(text_width, 5, f"Vencimiento CAE: {cae_vto}", border=0, ln=1)
             self.set_x(box_x + 4)
         self.cell(text_width, 5, f"CUIT Emisor: {cuit_emisor}", border=0, ln=1)
-        
+
         # QR code on the right
         if qr_data:
             qr_x = box_x + text_width + 15
             qr_y = start_y - 5
-            
+
             image_path = _create_qr_png(qr_data)
             if image_path:
                 self._register_temp_image(image_path)
@@ -1387,7 +1397,7 @@ class InvoicePDF(BaseDocumentPDF):
                 self.set_font("helvetica", "", 8)
                 self.set_text_color(*COLOR_TEXT_MUTED)
                 self.cell(qr_size, 4, "QR fiscal", border=0, align="C")
-        
+
         self.set_y(start_y + max(box_height, qr_size) + 8)
         self.set_text_color(*COLOR_TEXT)
 
@@ -1408,22 +1418,22 @@ class InvoicePDF(BaseDocumentPDF):
         self.set_text_color(*COLOR_TEXT)
         self.set_font("helvetica", "", 9)
         self.ln(2)
-        
+
         self.set_font("helvetica", "B", 9)
         self.cell(30, 5, "Razón social:", border=0)
         self.set_font("helvetica", "", 9)
         self.cell(0, 5, name, border=0, ln=1)
-        
+
         self.set_font("helvetica", "B", 9)
         self.cell(30, 5, "CUIT:", border=0)
         self.set_font("helvetica", "", 9)
         self.cell(0, 5, cuit, border=0, ln=1)
-        
+
         self.set_font("helvetica", "B", 9)
         self.cell(30, 5, "Domicilio:", border=0)
         self.set_font("helvetica", "", 9)
         self.cell(0, 5, addr, border=0, ln=1)
-        
+
         self.set_font("helvetica", "B", 9)
         self.cell(30, 5, "Condición IVA:", border=0)
         self.set_font("helvetica", "", 9)
@@ -1440,7 +1450,7 @@ class InvoicePDF(BaseDocumentPDF):
         start_x = self.l_margin
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
         col_widths = _distribute_width(table_width, col_ratios)
-        
+
         def _draw_table_header() -> None:
             self.set_font("helvetica", "B", 9)
             self.set_fill_color(*COLOR_PRIMARY)
@@ -1478,28 +1488,28 @@ class InvoicePDF(BaseDocumentPDF):
                 sign = 1 if base >= 0 else -1
                 total = base - (sign * max(0.0, desc_imp))
             desc = (item.get("articulo_nombre") or item.get("descripcion") or f"Artículo {item.get('id_articulo', '-')}")
-            
+
             # Alternating row colors
             if idx % 2 == 0:
                 self.set_fill_color(*COLOR_LIGHT_GRAY)
             else:
                 self.set_fill_color(*COLOR_WHITE)
-            
+
             # Check for page break
             page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
             if self.get_y() + row_height > page_break_at:
                 self.add_page()
-            
+
             self.set_x(start_x)
             self.set_draw_color(*COLOR_BORDER)
-            
+
             # Description (truncated if needed)
             desc_width = col_widths[0]
             content_width = desc_width - (getattr(self, "c_margin", 0.5) * 2)
             desc_text = _truncate_text_to_width(self, desc, max(content_width, 0))
-            
+
             self.cell(col_widths[0], row_height, f" {desc_text}", border="TB", fill=True, align="L")
-            
+
             # Format quantity as integer if it's a whole number
             qty_str = str(int(qty)) if qty == int(qty) else f"{qty:.2f}"
             self.cell(col_widths[1], row_height, qty_str, border="TB", align="C", fill=True)
@@ -1528,9 +1538,9 @@ class InvoicePDF(BaseDocumentPDF):
         label_width = 57
         value_width = 38
         x_start = self.w - self.r_margin - totals_width
-        
+
         self.ln(2)
-        
+
         # Subtotal bruto
         self.set_x(x_start)
         self.set_font("helvetica", "", 10)
@@ -1556,14 +1566,14 @@ class InvoicePDF(BaseDocumentPDF):
         self.cell(label_width, 6, "Neto gravado:", border=0, align="R")
         self.cell(value_width, 6, _format_money(self.neto), border=0, align="R")
         self.ln()
-        
+
         # IVA details for Factura A
         if self._should_discriminate_iva():
             self.set_x(x_start)
             self.cell(label_width, 6, "IVA total:", border=0, align="R")
             self.cell(value_width, 6, _format_money(self.iva_total), border=0, align="R")
             self.ln()
-            
+
             if self.tax_summary:
                 self.set_x(x_start)
                 self.set_font("helvetica", "B", 9)
@@ -1575,9 +1585,9 @@ class InvoicePDF(BaseDocumentPDF):
                     self.cell(label_width, 5, f"Base {format_percent(pct, decimals=2)}: {_format_money(values['base'])}  |  IVA:", border=0, align="R")
                     self.cell(value_width, 5, _format_money(values["iva"]), border=0, align="R")
                     self.ln()
-        
+
         self.ln(2)
-        
+
         # Total box
         self.set_x(x_start)
         self.set_fill_color(*COLOR_PRIMARY)
@@ -2103,7 +2113,7 @@ class AfipInvoicePDF(BaseDocumentPDF):
 
 class RemitoPDF(BaseDocumentPDF):
     """PDF generator for remitos with presupuesto-like layout."""
-    
+
     def __init__(
         self,
         remito_data: Dict[str, Any],
@@ -2558,7 +2568,7 @@ def generate_pdf_and_open(
 ) -> str:
     """
     Generate a PDF document and open it.
-    
+
     Args:
         doc_data: Document data (invoice, quote, remito, etc.)
         entity_data: Client/entity data
@@ -2571,7 +2581,7 @@ def generate_pdf_and_open(
             - domicilio_empresa: Company address
             - slogan: Company slogan
         show_prices: If False, hides monetary values in printed PDF.
-    
+
     Returns:
         Path to the generated PDF file
     """
