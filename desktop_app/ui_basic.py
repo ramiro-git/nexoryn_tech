@@ -6432,9 +6432,7 @@ def main(page: ft.Page) -> None:
                 on_click=_save_state,
             ),
         ]
-        page.overlay.append(dialog)
-        dialog.open = True
-        page.update()
+        page.open(dialog)
 
     def _movimiento_observacion_dialog(observacion: Optional[str]):
         if not observacion:

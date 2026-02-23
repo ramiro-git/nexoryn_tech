@@ -614,12 +614,37 @@ class AsyncSelect(ft.Column):
             self._active_index = 0
 
     def _select_active_option(self) -> None:
+        if self._loading:
+            return
         self._normalize_active_index()
         if self._active_index < 0 or self._active_index >= len(self._items):
             return
         self._on_option_click(self._items[self._active_index])
 
     def _on_search_submit(self, _e: Any) -> None:
+        # If a debounced search is still pending, the current items are stale.
+        # Cancel the debounce, run the search immediately, then select.
+        if self._debounce_task and not self._debounce_task.done():
+            pending_query = self._search_field.value if self._search_field else ""
+            self._debounce_task.cancel()
+            self._debounce_task = None
+
+            page = self._get_page()
+            if not page:
+                return
+
+            async def _immediate_search_then_select():
+                self._query = pending_query
+                self._cache.clear()
+                await self._load_items(pending_query, 0, is_search=True)
+                # After fresh results loaded, select the first item
+                self._active_index = 0
+                self._select_active_option()
+
+            page.run_task(_immediate_search_then_select)
+            return
+
+        # No pending search — items are fresh, select normally
         self._select_active_option()
 
     def _is_keydown_event(self, event: Any) -> bool:
