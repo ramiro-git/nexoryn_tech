@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Color constants for consistent styling
 COLOR_PRIMARY = (15, 23, 42)      # Dark blue for headers
 COLOR_WHITE = (255, 255, 255)
+COLOR_BLACK = (0, 0, 0)
 COLOR_LIGHT_GRAY = (241, 245, 249)  # Light row background
 COLOR_PRINT_SOFT_GRAY = (248, 250, 252)  # Lighter fill for presupuesto/remito print savings
 COLOR_BORDER = (226, 232, 240)
@@ -973,7 +974,7 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _presupuesto_table_widths(self) -> List[float]:
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        return _distribute_width(table_width, [0.10, 0.09, 0.07, 0.40, 0.17, 0.17])
+        return _distribute_width(table_width, [0.085, 0.09, 0.07, 0.49, 0.10, 0.165])
 
     def _draw_presupuesto_table_header(self) -> None:
         headers = self._presupuesto_table_headers()
@@ -995,6 +996,7 @@ class InvoicePDF(BaseDocumentPDF):
 
         client_name = self._resolve_presupuesto_client_name()
         domicilio = self.entity.get("domicilio") or self.doc.get("direccion_entrega") or "-"
+        localidad = self.entity.get("localidad") or self.doc.get("localidad") or "-"
         provincia = self.entity.get("provincia") or "-"
         telefono = self.entity.get("telefono") or "-"
         condicion_iva = self.entity.get("condicion_iva") or "-"
@@ -1002,6 +1004,7 @@ class InvoicePDF(BaseDocumentPDF):
 
         content_width = self.w - self.l_margin - self.r_margin
         left_x = self.l_margin
+        c_margin = getattr(self, "c_margin", 0.5)
 
         self.set_draw_color(*COLOR_TEXT)
         self.set_text_color(*COLOR_TEXT)
@@ -1023,22 +1026,31 @@ class InvoicePDF(BaseDocumentPDF):
         self.cell(0, 5, "DOCUMENTO NO VÁLIDO COMO FACTURA", border=0, ln=1, align="C")
         self.ln(1)
 
-        left_width = content_width * 0.62
+        left_width = content_width * 0.68
         right_width = content_width - left_width
         self.set_font("helvetica", "", 9)
         self.set_x(left_x)
         client_text = _truncate_text_to_width(
             self,
             f"Cliente: {client_name}",
-            left_width - (getattr(self, "c_margin", 0.5) * 2),
+            left_width - (c_margin * 2),
         )
-        dom_text = _truncate_text_to_width(
+        loc_text = _truncate_text_to_width(
             self,
-            f"Dom: {domicilio}",
-            right_width - (getattr(self, "c_margin", 0.5) * 2),
+            f"Localidad: {localidad}",
+            right_width - (c_margin * 2),
         )
         self.cell(left_width, 5, client_text, border=0, align="L")
-        self.cell(right_width, 5, dom_text, border=0, align="R")
+        self.cell(right_width, 5, loc_text, border=0, align="R")
+        self.ln()
+
+        self.set_x(left_x)
+        dom_text = _truncate_text_to_width(
+            self,
+            f"Domicilio: {domicilio}",
+            content_width - (c_margin * 2),
+        )
+        self.cell(content_width, 5, dom_text, border=0, align="C")
         self.ln()
 
         details_widths = _distribute_width(content_width, [0.27, 0.23, 0.18, 0.32])
@@ -1053,13 +1065,14 @@ class InvoicePDF(BaseDocumentPDF):
             clipped = _truncate_text_to_width(
                 self,
                 text,
-                width - (getattr(self, "c_margin", 0.5) * 2),
+                width - (c_margin * 2),
             )
             self.cell(width, 5, clipped, border=0, align="R" if idx == 3 else "L")
         self.ln(5)
 
         line_y = self.get_y()
         self.set_line_width(0.3)
+        self.set_draw_color(*COLOR_WHITE)
         self.line(self.l_margin, line_y, self.w - self.r_margin, line_y)
         self.set_y(line_y + 1.5)
 
@@ -1071,6 +1084,7 @@ class InvoicePDF(BaseDocumentPDF):
         self.set_y(10)
         line_y = self.get_y() + 1
         self.set_line_width(0.3)
+        self.set_draw_color(*COLOR_WHITE)
         self.line(self.l_margin, line_y, self.w - self.r_margin, line_y)
         self.set_y(line_y + 1.5)
         self._draw_presupuesto_table_header()
@@ -1131,6 +1145,7 @@ class InvoicePDF(BaseDocumentPDF):
 
             self.set_x(self.l_margin)
             self.set_draw_color(*COLOR_BORDER)
+            row_top_y = self.get_y()
 
             code_text = _truncate_text_to_width(
                 self,
@@ -1146,10 +1161,13 @@ class InvoicePDF(BaseDocumentPDF):
             self.cell(widths[0], row_height, code_text, border=1, align="C", fill=True)
             self.cell(widths[1], row_height, self._format_qty(qty), border=1, align="C", fill=True)
             self.cell(widths[2], row_height, bultos_text, border=1, align="C", fill=True)
-            self.cell(widths[3], row_height, f" {article_text}", border=1, align="L", fill=True)
+            self.cell(widths[3], row_height, article_text, border=1, align="L", fill=True)
             self.cell(widths[4], row_height, _format_money(unit) if self.show_prices else "---", border=1, align="R", fill=True)
             self.cell(widths[5], row_height, _format_money(total) if self.show_prices else "---", border=1, align="R", fill=True)
             self.ln()
+            row_sep_y = row_top_y + 0.12
+            self.set_draw_color(*COLOR_BLACK)
+            self.line(self.l_margin, row_sep_y, self.l_margin + sum(widths), row_sep_y)
 
     def _draw_presupuesto_totals_note_block(self) -> None:
         content_width = self.w - self.l_margin - self.r_margin
@@ -1176,7 +1194,7 @@ class InvoicePDF(BaseDocumentPDF):
 
         values = [
             f"Cant/Prod: {line_count}",
-            f"Neto: {_format_money(self.neto)}" if self.show_prices else "Neto: ---",
+            f"Bruto: {_format_money(self.neto)}" if self.show_prices else "Bruto: ---",
             f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
             (
                 f"%Desc: {format_percent(desc_pct, decimals=2)} {_format_money(self.descuento_global)}"
@@ -2129,7 +2147,7 @@ class RemitoPDF(BaseDocumentPDF):
 
     def _remito_table_widths(self) -> List[float]:
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        return _distribute_width(table_width, [0.10, 0.09, 0.07, 0.40, 0.17, 0.17])
+        return _distribute_width(table_width, [0.085, 0.09, 0.07, 0.49, 0.10, 0.165])
 
     def _draw_remito_table_header(self) -> None:
         headers = self._remito_table_headers()
@@ -2151,6 +2169,7 @@ class RemitoPDF(BaseDocumentPDF):
 
         client_name = self._resolve_client_name()
         domicilio = self.entity.get("domicilio") or self.remito.get("direccion_entrega") or "-"
+        localidad = self.entity.get("localidad") or self.remito.get("localidad") or "-"
         provincia = self.entity.get("provincia") or "-"
         telefono = self.entity.get("telefono") or "-"
         condicion_iva = self.entity.get("condicion_iva") or "-"
@@ -2180,7 +2199,7 @@ class RemitoPDF(BaseDocumentPDF):
         self.cell(0, 5, "DOCUMENTO NO VÁLIDO COMO FACTURA", border=0, ln=1, align="C")
         self.ln(1)
 
-        left_width = content_width * 0.62
+        left_width = content_width * 0.68
         right_width = content_width - left_width
         self.set_font("helvetica", "", 9)
         self.set_x(left_x)
@@ -2189,13 +2208,22 @@ class RemitoPDF(BaseDocumentPDF):
             f"Cliente: {client_name}",
             left_width - (c_margin * 2),
         )
-        dom_text = _truncate_text_to_width(
+        loc_text = _truncate_text_to_width(
             self,
-            f"Dom: {domicilio}",
+            f"Localidad: {localidad}",
             right_width - (c_margin * 2),
         )
         self.cell(left_width, 5, client_text, border=0, align="L")
-        self.cell(right_width, 5, dom_text, border=0, align="R")
+        self.cell(right_width, 5, loc_text, border=0, align="R")
+        self.ln()
+
+        self.set_x(left_x)
+        dom_text = _truncate_text_to_width(
+            self,
+            f"Domicilio: {domicilio}",
+            content_width - (c_margin * 2),
+        )
+        self.cell(content_width, 5, dom_text, border=0, align="C")
         self.ln()
 
         details_widths = _distribute_width(content_width, [0.31, 0.29, 0.40])
@@ -2229,6 +2257,7 @@ class RemitoPDF(BaseDocumentPDF):
 
         line_y = self.get_y()
         self.set_line_width(0.3)
+        self.set_draw_color(*COLOR_WHITE)
         self.line(self.l_margin, line_y, self.w - self.r_margin, line_y)
         self.set_y(line_y + 1.5)
 
@@ -2240,6 +2269,7 @@ class RemitoPDF(BaseDocumentPDF):
         self.set_y(10)
         line_y = self.get_y() + 1
         self.set_line_width(0.3)
+        self.set_draw_color(*COLOR_WHITE)
         self.line(self.l_margin, line_y, self.w - self.r_margin, line_y)
         self.set_y(line_y + 1.5)
         self._draw_remito_table_header()
@@ -2303,6 +2333,7 @@ class RemitoPDF(BaseDocumentPDF):
             self.set_fill_color(*(COLOR_PRINT_SOFT_GRAY if idx % 2 == 0 else COLOR_WHITE))
             self.set_x(self.l_margin)
             self.set_draw_color(*COLOR_BORDER)
+            row_top_y = self.get_y()
 
             code_text = _truncate_text_to_width(
                 self,
@@ -2320,10 +2351,13 @@ class RemitoPDF(BaseDocumentPDF):
             self.cell(widths[0], row_height, code_text, border=1, align="C", fill=True)
             self.cell(widths[1], row_height, self._format_qty(qty), border=1, align="C", fill=True)
             self.cell(widths[2], row_height, bultos_text, border=1, align="C", fill=True)
-            self.cell(widths[3], row_height, f" {article_text}", border=1, align="L", fill=True)
+            self.cell(widths[3], row_height, article_text, border=1, align="L", fill=True)
             self.cell(widths[4], row_height, unit_text, border=1, align="R", fill=True)
             self.cell(widths[5], row_height, total_text, border=1, align="R", fill=True)
             self.ln()
+            row_sep_y = row_top_y + 0.12
+            self.set_draw_color(*COLOR_BLACK)
+            self.line(self.l_margin, row_sep_y, self.l_margin + sum(widths), row_sep_y)
 
     def _resolve_remito_neto(self) -> float:
         neto = _safe_float(self.remito.get("neto"), None)
@@ -2383,7 +2417,7 @@ class RemitoPDF(BaseDocumentPDF):
 
         values = [
             f"Cant/Prod: {line_count}",
-            f"Neto: {_format_money(neto)}" if self.show_prices else "Neto: ---",
+            f"Bruto: {_format_money(neto)}" if self.show_prices else "Bruto: ---",
             f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
             (
                 f"%Desc: {format_percent(desc_pct, decimals=2)} {_format_money(desc_global)}"
