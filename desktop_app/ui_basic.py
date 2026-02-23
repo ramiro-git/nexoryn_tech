@@ -3389,7 +3389,12 @@ def main(page: ft.Page) -> None:
     _style_input(nuevo_articulo_tipo_iva)
     nuevo_articulo_unidad = ft.Dropdown(label="Unidad Medida *", width=275, options=[], value="")
     _style_input(nuevo_articulo_unidad)
-    nuevo_articulo_proveedor = AsyncSelect(label="Proveedor Habitual", loader=supplier_loader, width=560)
+    nuevo_articulo_proveedor = AsyncSelect(
+        label="Proveedor Habitual",
+        loader=supplier_loader,
+        width=560,
+        placeholder="Seleccionar proveedor",
+    )
     
     nuevo_articulo_costo = _number_field("Costo *", width=275)
     nuevo_articulo_stock_minimo = _number_field("Stock mínimo *", width=275)
@@ -3912,7 +3917,12 @@ def main(page: ft.Page) -> None:
         try:
             supplier_rows = db.fetch_entities(tipo="PROVEEDOR", limit=500, offset=0)
             supplier_options: List[Dict[str, Any]] = [
-                {"value": "", "label": "—", "selected_label": "—", "tooltip": "—"}
+                {
+                    "value": "",
+                    "label": "Seleccionar proveedor",
+                    "selected_label": "Seleccionar proveedor",
+                    "tooltip": "Seleccionar proveedor",
+                }
             ]
             supplier_options.extend(
                 _format_entity_option(row, include_tipo=False, force_tipo="Proveedor")
@@ -3920,7 +3930,7 @@ def main(page: ft.Page) -> None:
             )
             nuevo_articulo_proveedor.options = supplier_options
         except Exception:
-            nuevo_articulo_proveedor.options = [ft.dropdown.Option("", "—")] + [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in proveedores_values]
+            nuevo_articulo_proveedor.options = [ft.dropdown.Option("", "Seleccionar proveedor")] + [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in proveedores_values]
         nuevo_articulo_ubicacion.options = [ft.dropdown.Option(d["nombre"], d["nombre"]) for d in depositos]
         if depositos:
             nuevo_articulo_ubicacion.value = depositos[0]["nombre"]

@@ -973,7 +973,7 @@ class InvoicePDF(BaseDocumentPDF):
 
     def _presupuesto_table_widths(self) -> List[float]:
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        return _distribute_width(table_width, [0.13, 0.09, 0.09, 0.35, 0.17, 0.17])
+        return _distribute_width(table_width, [0.10, 0.09, 0.07, 0.40, 0.17, 0.17])
 
     def _draw_presupuesto_table_header(self) -> None:
         headers = self._presupuesto_table_headers()
@@ -1164,7 +1164,6 @@ class InvoicePDF(BaseDocumentPDF):
         self.set_y(max(self.get_y(), footer_start_y))
 
         line_count = len(self.items)
-        qty_total = sum(_safe_float(item.get("cantidad"), 0.0) for item in self.items)
         desc_total = max(0.0, self.descuento_lineas) + max(0.0, self.descuento_global)
         desc_pct = max(0.0, _safe_float(self.doc.get("descuento_porcentaje"), 0.0))
         note = str(self.doc.get("observacion") or "-").strip() or "-"
@@ -1176,8 +1175,7 @@ class InvoicePDF(BaseDocumentPDF):
         self.set_y(sep_y + 2)
 
         values = [
-            f"Cant/Líneas: {line_count}",
-            f"Cant/Prod: {self._format_qty(qty_total)}",
+            f"Cant/Prod: {line_count}",
             f"Neto: {_format_money(self.neto)}" if self.show_prices else "Neto: ---",
             f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
             (
@@ -1187,7 +1185,7 @@ class InvoicePDF(BaseDocumentPDF):
             ),
             f"Total: {_format_money(self.total)}" if self.show_prices else "Total: ---",
         ]
-        widths = _distribute_width(content_width, [0.13, 0.14, 0.16, 0.14, 0.22, 0.21])
+        widths = _distribute_width(content_width, [0.19, 0.19, 0.16, 0.22, 0.24])
 
         self.set_font("helvetica", "B", 9)
         self.set_text_color(*COLOR_TEXT)
@@ -1204,7 +1202,7 @@ class InvoicePDF(BaseDocumentPDF):
                 clipped = clipped.rstrip(" ,.;:")
                 if not clipped:
                     clipped = "-"
-            self.cell(width, line_height, clipped, border=0, align="R" if idx == 5 else "L")
+            self.cell(width, line_height, clipped, border=0, align="R" if idx == (len(values) - 1) else "L")
         self.ln()
 
         self.set_font("helvetica", "", 9)
@@ -2131,7 +2129,7 @@ class RemitoPDF(BaseDocumentPDF):
 
     def _remito_table_widths(self) -> List[float]:
         table_width = max(self.w - self.l_margin - self.r_margin, 20)
-        return _distribute_width(table_width, [0.13, 0.09, 0.09, 0.35, 0.17, 0.17])
+        return _distribute_width(table_width, [0.10, 0.09, 0.07, 0.40, 0.17, 0.17])
 
     def _draw_remito_table_header(self) -> None:
         headers = self._remito_table_headers()
@@ -2369,7 +2367,6 @@ class RemitoPDF(BaseDocumentPDF):
         self.set_y(max(self.get_y(), footer_start_y))
 
         line_count = len(self.items)
-        qty_total = sum(_safe_float(item.get("cantidad"), 0.0) or 0.0 for item in self.items)
         neto = self._resolve_remito_neto()
         total = self._resolve_remito_total()
         desc_lineas = max(0.0, self._resolve_remito_line_discount_total())
@@ -2385,8 +2382,7 @@ class RemitoPDF(BaseDocumentPDF):
         self.set_y(sep_y + 2)
 
         values = [
-            f"Cant/Líneas: {line_count}",
-            f"Cant/Prod: {self._format_qty(qty_total)}",
+            f"Cant/Prod: {line_count}",
             f"Neto: {_format_money(neto)}" if self.show_prices else "Neto: ---",
             f"Desc: {_format_money(desc_total)}" if self.show_prices else "Desc: ---",
             (
@@ -2396,7 +2392,7 @@ class RemitoPDF(BaseDocumentPDF):
             ),
             f"Total: {_format_money(total)}" if self.show_prices else "Total: ---",
         ]
-        widths = _distribute_width(content_width, [0.13, 0.14, 0.16, 0.14, 0.22, 0.21])
+        widths = _distribute_width(content_width, [0.19, 0.19, 0.16, 0.22, 0.24])
 
         self.set_font("helvetica", "B", 9)
         self.set_text_color(*COLOR_TEXT)
@@ -2413,7 +2409,7 @@ class RemitoPDF(BaseDocumentPDF):
                 clipped = clipped.rstrip(" ,.;:")
                 if not clipped:
                     clipped = "-"
-            self.cell(width, line_height, clipped, border=0, align="R" if idx == 5 else "L")
+            self.cell(width, line_height, clipped, border=0, align="R" if idx == (len(values) - 1) else "L")
         self.ln()
 
         self.set_font("helvetica", "", 9)
