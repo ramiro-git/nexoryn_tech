@@ -1884,6 +1884,7 @@ def main(page: ft.Page) -> None:
         if not db: return [], False
         rows = db.fetch_articles(
             search=query,
+            activo_only=True,
             sorts=COMPROBANTE_ARTICLE_SORTS,
             offset=offset,
             limit=limit,
