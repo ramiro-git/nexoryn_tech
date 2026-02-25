@@ -1876,6 +1876,7 @@ def main(page: ft.Page) -> None:
             sorts=COMPROBANTE_ENTITY_SORTS,
             offset=offset,
             limit=limit,
+            search_by_cuit=False,
         )
         items = [_format_entity_option(r, include_tipo=True) for r in rows]
         return items, len(rows) >= limit

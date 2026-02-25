@@ -1745,6 +1745,7 @@ class Database:
         search: Optional[str],
         tipo: Optional[str],
         advanced: Optional[Dict[str, Any]] = None,
+        search_by_cuit: bool = True,
     ) -> Tuple[str, List[Any]]:
         filters: List[str] = ["1=1"]
         params: List[Any] = []
@@ -1770,10 +1771,19 @@ class Database:
 
         if search:
             search_pattern = f"%{search.strip()}%"
-            filters.append(
-                "(id::text ILIKE %s OR nombre_completo ILIKE %s OR razon_social ILIKE %s OR cuit ILIKE %s OR apellido ILIKE %s OR nombre ILIKE %s OR domicilio ILIKE %s)"
-            )
-            params.extend([search_pattern] * 7)
+            search_columns = [
+                "id::text",
+                "nombre_completo",
+                "razon_social",
+                "apellido",
+                "nombre",
+                "domicilio",
+            ]
+            if search_by_cuit:
+                search_columns.insert(3, "cuit")
+            search_sql = " OR ".join(f"{col} ILIKE %s" for col in search_columns)
+            filters.append(f"({search_sql})")
+            params.extend([search_pattern] * len(search_columns))
 
         cuit = advanced.get("cuit")
         if isinstance(cuit, str) and cuit.strip():
@@ -1871,8 +1881,14 @@ class Database:
         sorts: Optional[Sequence[Tuple[str, str]]] = None,
         limit: int = 60,
         offset: int = 0,
+        search_by_cuit: bool = True,
     ) -> List[Dict[str, Any]]:
-        where_clause, params = self._build_entity_filters(search, tipo, advanced)
+        where_clause, params = self._build_entity_filters(
+            search,
+            tipo,
+            advanced,
+            search_by_cuit=search_by_cuit,
+        )
 
         sort_columns = {
             "id": "id",
