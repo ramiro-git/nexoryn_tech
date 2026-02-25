@@ -8690,6 +8690,7 @@ def main(page: ft.Page) -> None:
         btn_modal_save: Optional[ft.ElevatedButton] = None
         btn_modal_reset: Optional[ft.ElevatedButton] = None
         btn_modal_close: Optional[ft.ElevatedButton] = None
+        warn_inactive_historical_items = False
             
         if doc_data:
             # Ensure Entity exists
@@ -8744,6 +8745,38 @@ def main(page: ft.Page) -> None:
             
             # Re-sort articles for better UX
             articulos.sort(key=_article_codigo_sort_key)
+
+            tipo_documento_nombre = str(
+                next(
+                    (
+                        t.get("nombre")
+                        for t in tipos
+                        if str(t.get("id")) == str(doc_data.get("id_tipo_documento"))
+                    ),
+                    "",
+                )
+                or ""
+            ).upper()
+            is_historical_sales_doc = bool(edit_doc_id or copy_doc_id) and (
+                "FACTURA" in tipo_documento_nombre or "PRESUPUESTO" in tipo_documento_nombre
+            )
+            if is_historical_sales_doc:
+                articles_active_by_id: Dict[int, bool] = {}
+                for art in articulos:
+                    try:
+                        art_id = int(art.get("id"))
+                    except Exception:
+                        continue
+                    articles_active_by_id[art_id] = bool(art.get("activo", True))
+
+                for item in doc_data.get("items", []):
+                    try:
+                        item_art_id = int(item.get("id_articulo"))
+                    except Exception:
+                        continue
+                    if not articles_active_by_id.get(item_art_id, True):
+                        warn_inactive_historical_items = True
+                        break
 
         
         # Form Fields
@@ -11485,6 +11518,11 @@ def main(page: ft.Page) -> None:
             page.overlay.remove(form_dialog)
         page.overlay.append(form_dialog)
         page.update()
+        if warn_inactive_historical_items:
+            show_toast(
+                "Algunos productos están inactivos actualmente, aunque podés continuar igual.",
+                kind="warning",
+            )
         _refresh_keyboard_navigation_order()
         if not _focus_control(dropdown_entidad):
             _focus_control(field_fecha)
