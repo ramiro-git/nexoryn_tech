@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 from fpdf import FPDF
@@ -194,6 +194,124 @@ def _safe_multicell(pdf: FPDF, width: float, height: float, text: str, **kwargs:
     pdf.multi_cell(width, height, safe_text, **kwargs)
 
 
+def _label_prefix(text: str) -> str:
+    raw = str(text or "")
+    if ":" not in raw:
+        return ""
+    label = raw.split(":", 1)[0].strip()
+    if not label:
+        return ""
+    return f"{label}: "
+
+
+def _compute_dynamic_row_widths(
+    pdf: FPDF,
+    values: Sequence[str],
+    *,
+    total_width: float,
+    c_margin: float,
+    preferred_expand_idx: int = 0,
+    min_width: float = 14.0,
+) -> List[float]:
+    if not values:
+        return []
+
+    natural_widths: List[float] = []
+    min_widths: List[float] = []
+
+    for value in values:
+        text = str(value or "")
+        prefix = _label_prefix(text)
+        natural = pdf.get_string_width(text) + (c_margin * 2) + 1.0
+        min_for_label = pdf.get_string_width(prefix) + (c_margin * 2) + 1.0 if prefix else 0.0
+        natural_widths.append(max(min_width, natural))
+        min_widths.append(max(min_width, min_for_label))
+
+    min_total = sum(min_widths)
+    if min_total >= total_width:
+        return _distribute_width(total_width, min_widths, min_width=0.1)
+
+    widths = min_widths[:]
+    remaining = total_width - min_total
+    extras = [max(n - m, 0.0) for n, m in zip(natural_widths, min_widths)]
+    extras_total = sum(extras)
+
+    if extras_total > 0:
+        if extras_total <= remaining:
+            widths = [m + e for m, e in zip(min_widths, extras)]
+            remaining = total_width - sum(widths)
+            if remaining > 1e-6:
+                target = max(0, min(preferred_expand_idx, len(widths) - 1))
+                widths[target] += remaining
+        else:
+            factor = remaining / extras_total
+            widths = [m + (e * factor) for m, e in zip(min_widths, extras)]
+    else:
+        target = max(0, min(preferred_expand_idx, len(widths) - 1))
+        widths[target] += remaining
+
+    return _distribute_width(total_width, widths, min_width=0.1)
+
+
+def _draw_adaptive_columns_row(
+    pdf: FPDF,
+    *,
+    left_x: float,
+    widths: Sequence[float],
+    values: Sequence[str],
+    aligns: Sequence[str],
+    c_margin: float,
+    line_height: float = 5.0,
+    min_font_size: float = 7.0,
+) -> None:
+    if not widths:
+        return
+
+    family = getattr(pdf, "font_family", "helvetica") or "helvetica"
+    style = getattr(pdf, "font_style", "") or ""
+    base_size = float(getattr(pdf, "font_size_pt", 9.0) or 9.0)
+    values_text = [str(v or "") for v in values]
+
+    def _fits_single_line() -> bool:
+        for width, text in zip(widths, values_text):
+            if pdf.get_string_width(text) > max(width - (c_margin * 2), 0.1):
+                return False
+        return True
+
+    size = base_size
+    while size >= (min_font_size - 1e-6):
+        pdf.set_font(family, style, size)
+        if _fits_single_line():
+            pdf.set_x(left_x)
+            for width, text, align in zip(widths, values_text, aligns):
+                pdf.cell(width, line_height, text, border=0, align=align)
+            pdf.ln(line_height)
+            if abs(size - base_size) > 1e-6:
+                pdf.set_font(family, style, base_size)
+            return
+        size = round(size - 0.2, 2)
+
+    # Fallback: if it still doesn't fit, keep full text and wrap without ellipsis.
+    pdf.set_font(family, style, min_font_size)
+    wrapped_columns: List[List[str]] = []
+    for width, text in zip(widths, values_text):
+        content_width = max(width - (c_margin * 2), 0.1)
+        wrapped = _wrap_text_to_width(pdf, text, content_width)
+        wrapped_columns.append(wrapped.splitlines() or [""])
+
+    max_lines = max((len(lines) for lines in wrapped_columns), default=1)
+    for line_idx in range(max_lines):
+        pdf.set_x(left_x)
+        for col_idx, (width, align) in enumerate(zip(widths, aligns)):
+            lines = wrapped_columns[col_idx] if col_idx < len(wrapped_columns) else [""]
+            text = lines[line_idx] if line_idx < len(lines) else ""
+            pdf.cell(width, line_height, text, border=0, align=align)
+        pdf.ln(line_height)
+
+    if abs(min_font_size - base_size) > 1e-6:
+        pdf.set_font(family, style, base_size)
+
+
 def _draw_customer_compact_rows(
     pdf: FPDF,
     *,
@@ -206,28 +324,45 @@ def _draw_customer_compact_rows(
     localidad: str,
     provincia: str,
 ) -> None:
-    row_1_widths = _distribute_width(content_width, [0.76, 0.24])
+    row_1_widths = _compute_dynamic_row_widths(
+        pdf,
+        [f"Cliente: {client_name}", f"N° de cliente: {numero_cliente}"],
+        total_width=content_width,
+        c_margin=c_margin,
+        preferred_expand_idx=0,
+    )
     row_1_values = [f"Cliente: {client_name}", f"N° de cliente: {numero_cliente}"]
+    row_1_align = ["L", "R"]
+    _draw_adaptive_columns_row(
+        pdf,
+        left_x=left_x,
+        widths=row_1_widths,
+        values=row_1_values,
+        aligns=row_1_align,
+        c_margin=c_margin,
+    )
 
-    pdf.set_x(left_x)
-    for idx, (width, value) in enumerate(zip(row_1_widths, row_1_values)):
-        clipped = _truncate_text_to_width(pdf, value, width - (c_margin * 2))
-        pdf.cell(width, 5, clipped, border=0, align="R" if idx == 1 else "L")
-    pdf.ln()
-
-    row_2_widths = _distribute_width(content_width, [0.56, 0.22, 0.22])
+    row_2_widths = _compute_dynamic_row_widths(
+        pdf,
+        [f"Domicilio: {domicilio}", f"Localidad: {localidad}", f"Provincia: {provincia}"],
+        total_width=content_width,
+        c_margin=c_margin,
+        preferred_expand_idx=0,
+    )
     row_2_values = [
         f"Domicilio: {domicilio}",
         f"Localidad: {localidad}",
         f"Provincia: {provincia}",
     ]
     row_2_align = ["L", "L", "R"]
-
-    pdf.set_x(left_x)
-    for width, value, align in zip(row_2_widths, row_2_values, row_2_align):
-        clipped = _truncate_text_to_width(pdf, value, width - (c_margin * 2))
-        pdf.cell(width, 5, clipped, border=0, align=align)
-    pdf.ln()
+    _draw_adaptive_columns_row(
+        pdf,
+        left_x=left_x,
+        widths=row_2_widths,
+        values=row_2_values,
+        aligns=row_2_align,
+        c_margin=c_margin,
+    )
 
 
 def _draw_horizontal_double_line(pdf: FPDF, y: float, gap: float = 0.2) -> float:
@@ -1109,21 +1244,28 @@ class InvoicePDF(BaseDocumentPDF):
             provincia=str(provincia),
         )
 
-        details_widths = _distribute_width(content_width, [0.30, 0.28, 0.42])
+        details_widths = _compute_dynamic_row_widths(
+            self,
+            [f"Teléfono: {telefono}", f"IVA: {condicion_iva}", f"C.U.I.T.: {cuit}"],
+            total_width=content_width,
+            c_margin=c_margin,
+            preferred_expand_idx=2,
+        )
         details = [
             f"Teléfono: {telefono}",
             f"IVA: {condicion_iva}",
             f"C.U.I.T.: {cuit}",
         ]
-        self.set_x(left_x)
-        for idx, (width, text) in enumerate(zip(details_widths, details)):
-            clipped = _truncate_text_to_width(
-                self,
-                text,
-                width - (c_margin * 2),
-            )
-            self.cell(width, 5, clipped, border=0, align="R" if idx == (len(details) - 1) else "L")
-        self.ln(6)
+        _draw_adaptive_columns_row(
+            self,
+            left_x=left_x,
+            widths=details_widths,
+            values=details,
+            aligns=["L", "L", "R"],
+            c_margin=c_margin,
+            line_height=5.0,
+        )
+        self.ln(1)
 
         sep_y = self.get_y()
         second_sep_y = _draw_horizontal_double_line(self, sep_y)
@@ -2276,21 +2418,28 @@ class RemitoPDF(BaseDocumentPDF):
             provincia=str(provincia),
         )
 
-        details_widths = _distribute_width(content_width, [0.30, 0.28, 0.42])
+        details_widths = _compute_dynamic_row_widths(
+            self,
+            [f"Teléfono: {telefono}", f"IVA: {condicion_iva}", f"C.U.I.T.: {cuit}"],
+            total_width=content_width,
+            c_margin=c_margin,
+            preferred_expand_idx=2,
+        )
         details = [
             f"Teléfono: {telefono}",
             f"IVA: {condicion_iva}",
             f"C.U.I.T.: {cuit}",
         ]
-        self.set_x(left_x)
-        for idx, (width, text) in enumerate(zip(details_widths, details)):
-            clipped = _truncate_text_to_width(
-                self,
-                text,
-                width - (c_margin * 2),
-            )
-            self.cell(width, 5, clipped, border=0, align="R" if idx == (len(details) - 1) else "L")
-        self.ln(6)
+        _draw_adaptive_columns_row(
+            self,
+            left_x=left_x,
+            widths=details_widths,
+            values=details,
+            aligns=["L", "L", "R"],
+            c_margin=c_margin,
+            line_height=5.0,
+        )
+        self.ln(1)
 
         sep_y = self.get_y()
         second_sep_y = _draw_horizontal_double_line(self, sep_y)
