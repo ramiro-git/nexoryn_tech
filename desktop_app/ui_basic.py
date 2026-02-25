@@ -10463,9 +10463,18 @@ def main(page: ft.Page) -> None:
                 result = _on_art_change(e)
                 if result is False:
                     return False
-                if _focus_control(cant_field):
-                    return False
-                return True
+                # Focus the quantity field immediately
+                _focus_control(cant_field)
+                # Schedule a retry to guarantee focus lands after any pending UI updates
+                try:
+                    import asyncio as _asyncio
+                    async def _retry_focus_qty():
+                        await _asyncio.sleep(0.05)
+                        _focus_control(cant_field)
+                    page.run_task(_retry_focus_qty)
+                except Exception:
+                    pass
+                return False
             
             def _on_value_change(_):
                 _update_line_total()

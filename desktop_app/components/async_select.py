@@ -591,7 +591,16 @@ class AsyncSelect(ft.Column):
         self._close_dialog()
 
         if self._on_change_callback:
-            self._on_change_callback(self._value)
+            callback = self._on_change_callback
+            value = self._value
+            page = self._get_page()
+            if page:
+                async def _deferred_on_change():
+                    await asyncio.sleep(0)
+                    callback(value)
+                page.run_task(_deferred_on_change)
+            else:
+                callback(value)
 
         # Update trigger manualy before general update
         if self._trigger_label is not None:

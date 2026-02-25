@@ -1982,6 +1982,7 @@ class Database:
         search: Optional[str],
         activo_only: Optional[bool],
         advanced: Optional[Dict[str, Any]] = None,
+        article_id_expr: str = "id",
     ) -> Tuple[str, List[Any]]:
         filters: List[str] = ["1=1"]
         params: List[Any] = []
@@ -1995,7 +1996,9 @@ class Database:
 
         if search:
             pattern = f"%{search.strip()}%"
-            filters.append("(nombre ILIKE %s OR codigo ILIKE %s OR id::text ILIKE %s)")
+            filters.append(
+                f"(nombre ILIKE %s OR codigo ILIKE %s OR {article_id_expr}::text ILIKE %s)"
+            )
             params.extend([pattern, pattern, pattern])
 
         def add_like(field: str, value: Any) -> None:
@@ -2061,7 +2064,10 @@ class Database:
         lp_id = _to_id(advanced.get("id_lista_precio"))
         if lp_id is not None:
              # If filtering by specific list, we just ensure the article has a price on that list
-            filters.append("id IN (SELECT id_articulo FROM app.articulo_precio WHERE id_lista_precio = %s)")
+            filters.append(
+                f"{article_id_expr} IN "
+                "(SELECT id_articulo FROM app.articulo_precio WHERE id_lista_precio = %s)"
+            )
             params.append(lp_id)
 
         iva_id = _to_id(advanced.get("id_tipo_iva"))
@@ -2174,7 +2180,8 @@ class Database:
         where_clause, params = self._build_article_filters(
             search=filters.get("search"),
             activo_only=filters.get("activo_only"),
-            advanced=filters
+            advanced=filters,
+            article_id_expr="a.id",
         )
 
         limit_offset_sql = ""
@@ -2211,10 +2218,10 @@ class Database:
                     payload["meta"]["active_lists"] = active_lists
 
                     query = f"""
-                        SELECT id, nombre, costo
-                        FROM app.articulo
+                        SELECT a.id, a.nombre, a.costo
+                        FROM app.articulo a
                         WHERE {where_clause}
-                        ORDER BY nombre ASC, id ASC
+                        ORDER BY a.nombre ASC, a.id ASC
                         {limit_offset_sql}
                     """
                     query_params = params + paging_params
@@ -2382,13 +2389,14 @@ class Database:
             where_clause, params = self._build_article_filters(
                 search=filters.get("search"),
                 activo_only=filters.get("activo_only"),
-                advanced=filters
+                advanced=filters,
+                article_id_expr="a.id",
             )
         with self._transaction() as cur:
             if target == "COSTO":
                 expr_cost = expr.replace("current_val", "costo")
                 sql = f"""
-                    UPDATE app.articulo
+                    UPDATE app.articulo a
                     SET costo = GREATEST(0, {expr_cost})
                     WHERE {where_clause}
                 """
@@ -2397,8 +2405,8 @@ class Database:
 
                 sql_prices = f"""
                     WITH target_articles AS (
-                        SELECT id
-                        FROM app.articulo
+                        SELECT a.id
+                        FROM app.articulo a
                         WHERE {where_clause}
                     )
                     UPDATE app.articulo_precio ap
@@ -2429,8 +2437,8 @@ class Database:
                 expr_selected = expr.replace("current_val", "ap.precio")
                 sql_cost = f"""
                     WITH target_articles AS (
-                        SELECT id
-                        FROM app.articulo
+                        SELECT a.id
+                        FROM app.articulo a
                         WHERE {where_clause}
                     ),
                     selected_base AS (
@@ -2482,8 +2490,8 @@ class Database:
 
                 sql_prices = f"""
                     WITH target_articles AS (
-                        SELECT id
-                        FROM app.articulo
+                        SELECT a.id
+                        FROM app.articulo a
                         WHERE {where_clause}
                     ),
                     valid_articles AS (
@@ -2548,7 +2556,12 @@ class Database:
         limit: int = 40,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        where_clause, params = self._build_article_filters(search, activo_only, advanced)
+        where_clause, params = self._build_article_filters(
+            search,
+            activo_only,
+            advanced,
+            article_id_expr="ad.id",
+        )
         order_by = _build_article_order_by_clause(sorts, _ARTICLE_SORT_COLUMNS)
 
         lp_id = _to_id((advanced or {}).get("id_lista_precio"))
@@ -2582,9 +2595,14 @@ class Database:
         simple: Optional[str] = None,
         advanced: Optional[Dict[str, Any]] = None,
     ) -> int:
-        where_clause, params = self._build_article_filters(search, activo_only, advanced)
+        where_clause, params = self._build_article_filters(
+            search,
+            activo_only,
+            advanced,
+            article_id_expr="ad.id",
+        )
         # where_clause is safe (from _build_article_filters with parametrized conditions)
-        query = f"SELECT COUNT(*) AS total FROM app.v_articulo_detallado WHERE {where_clause}"
+        query = f"SELECT COUNT(*) AS total FROM app.v_articulo_detallado ad WHERE {where_clause}"
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
