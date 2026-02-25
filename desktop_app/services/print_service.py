@@ -2276,31 +2276,21 @@ class RemitoPDF(BaseDocumentPDF):
             provincia=str(provincia),
         )
 
-        details_widths = _distribute_width(content_width, [0.45, 0.55])
+        details_widths = _distribute_width(content_width, [0.30, 0.28, 0.42])
         details = [
             f"Teléfono: {telefono}",
+            f"IVA: {condicion_iva}",
             f"C.U.I.T.: {cuit}",
         ]
         self.set_x(left_x)
-        for width, text in zip(details_widths, details):
+        for idx, (width, text) in enumerate(zip(details_widths, details)):
             clipped = _truncate_text_to_width(
                 self,
                 text,
                 width - (c_margin * 2),
             )
-            self.cell(width, 5, clipped, border=0, align="L")
-        self.ln(5)
-
-        self.set_x(left_x)
-        _safe_multicell(
-            self,
-            content_width,
-            5,
-            f"Condición IVA: {condicion_iva}",
-            border=0,
-            align="L",
-        )
-        self.ln(3)
+            self.cell(width, 5, clipped, border=0, align="R" if idx == (len(details) - 1) else "L")
+        self.ln(6)
 
         sep_y = self.get_y()
         second_sep_y = _draw_horizontal_double_line(self, sep_y)
