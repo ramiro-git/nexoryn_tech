@@ -1876,6 +1876,7 @@ class Database:
 
         sort_columns = {
             "id": "id",
+            "codigo": "id",
             "tipo": "tipo",
             "nombre_completo": "nombre_completo",
             "apellido": "apellido",
@@ -1902,6 +1903,7 @@ class Database:
         query = f"""
             SELECT
                 id,
+                id::text AS codigo,
                 tipo,
                 nombre_completo,
                 apellido,

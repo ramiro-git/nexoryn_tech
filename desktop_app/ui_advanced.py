@@ -508,6 +508,11 @@ def main(page: ft.Page) -> None:
 
         # ---------- Tables (generic & reusable) ----------
         entity_columns = [
+            ColumnConfig(
+                key="codigo",
+                label="Código",
+                formatter=lambda v, row: str(v or row.get("id") or "—"),
+            ),
             ColumnConfig(key="nombre_completo", label="Entidad"),
             ColumnConfig(key="tipo", label="Tipo", formatter=lambda v, _: v or "—"),
             ColumnConfig(key="lista_precio", label="Lista"),

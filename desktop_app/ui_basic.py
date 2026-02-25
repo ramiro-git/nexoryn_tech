@@ -2373,6 +2373,12 @@ def main(page: ft.Page) -> None:
 
     entidades_table = GenericTable(
         columns=[
+            ColumnConfig(
+                key="codigo",
+                label="Código",
+                width=90,
+                formatter=lambda v, row: str(v or row.get("id") or "—"),
+            ),
             ColumnConfig(key="apellido", label="Apellido", width=120, editable=True),
             ColumnConfig(key="nombre", label="Nombre", width=120, editable=True),
             ColumnConfig(key="razon_social", label="Razón Social", width=180, editable=True),
@@ -2562,7 +2568,7 @@ def main(page: ft.Page) -> None:
         show_export_button=True,
         show_export_scope=True,
     )
-    entidades_table.search_field.hint_text = "Búsqueda global (nombre/razón social/cuit)…"
+    entidades_table.search_field.hint_text = "Búsqueda global (código/nombre/razón social/cuit)…"
     
     entidades_view = ft.Column([
         ft.Row([
