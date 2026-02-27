@@ -5570,9 +5570,9 @@ class Database:
                     raw_qty = raw_qty.strip().replace(",", ".")
                 qty_dec = Decimal(str(raw_qty))
             except Exception:
-                raise ValueError("La cantidad debe ser un número entero.")
-            if qty_dec != qty_dec.to_integral_value():
-                raise ValueError("La cantidad debe ser un número entero.")
+                raise ValueError("La cantidad debe ser un número válido.")
+            if not qty_dec.is_finite():
+                raise ValueError("La cantidad debe ser un número válido.")
 
     def _build_unidades_por_bulto_snapshot(
         self,
@@ -6033,17 +6033,18 @@ class Database:
             numeric = 1
         return str(numeric)
 
-    def _normalize_remito_quantity(self, raw_qty: Any, *, line_no: int) -> int:
+    def _normalize_remito_quantity(self, raw_qty: Any, *, line_no: int) -> Decimal:
         try:
+            if isinstance(raw_qty, str):
+                raw_qty = raw_qty.strip().replace(",", ".")
             qty_dec = Decimal(str(raw_qty))
         except Exception:
             raise ValueError(f"La cantidad de la línea {line_no} no es un número válido para remito.")
-        if qty_dec != qty_dec.to_integral_value():
-            raise ValueError(f"La cantidad de la línea {line_no} debe ser un número entero para remito.")
-        qty_int = int(qty_dec)
-        if qty_int <= 0:
+        if not qty_dec.is_finite():
+            raise ValueError(f"La cantidad de la línea {line_no} no es un número válido para remito.")
+        if qty_dec <= 0:
             raise ValueError(f"La cantidad de la línea {line_no} debe ser mayor a 0 para remito.")
-        return qty_int
+        return qty_dec
 
     def _insert_remito_detalle_from_document(self, cur, doc_id: int, remito_id: int) -> None:
         cur.execute(

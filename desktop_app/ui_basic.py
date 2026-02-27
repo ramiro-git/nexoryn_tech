@@ -172,15 +172,13 @@ def _parse_float(value: Any, label: str = "valor") -> float:
     return float(parsed)
 
 
-def _parse_int_quantity(value: Any, label: str = "Cantidad") -> int:
+def _parse_quantity(value: Any, label: str = "Cantidad") -> float:
     if value is None or (isinstance(value, str) and not value.strip()):
-        return 0
+        return 0.0
     parsed = parse_locale_number(value)
     if parsed is None:
-        raise ValueError(f"El campo '{label}' debe ser un número entero. Recibido: '{value}'")
-    if parsed != parsed.to_integral_value():
-        raise ValueError(f"El campo '{label}' debe ser un número entero (sin decimales).")
-    return int(parsed)
+        raise ValueError(f"El campo '{label}' debe ser un número válido. Recibido: '{value}'")
+    return float(parsed)
 
 
 def _parse_positive_float_optional(value: Any, label: str = "valor") -> float:
@@ -354,13 +352,12 @@ def _format_quantity(value: Any, row: Optional[Dict[str, Any]] = None) -> str:
     if value is None:
         return "0"
     try:
-        val = float(value)
-        # Display as integer
-        return f"{int(val):,}".replace(",", ".") # European/Arg style dots for thousands? Or just clean int?
-        # User said "son enteros no flotantes". Let's just use standard int string.
-        # But thousands separator is nice.
-        # Let's stick to simple int() for now, or f"{int(val)}"
-        return str(int(val))
+        parsed = parse_locale_number(value)
+        if parsed is None:
+            return str(value)
+        decimals = 0 if parsed == parsed.to_integral_value() else 2
+        normalized = normalize_input_value(parsed, decimals=decimals, use_grouping=True)
+        return normalized if normalized else "0"
     except Exception:
         return str(value)
 
@@ -9674,20 +9671,21 @@ def main(page: ft.Page) -> None:
             field.value = "" if parsed is not None and parsed == 0 else normalized
             _safe_update_control(field)
 
-        def _normalize_quantity_field(field: Optional[ft.TextField], *, label: str = "Cantidad") -> int:
+        def _normalize_quantity_field(field: Optional[ft.TextField], *, label: str = "Cantidad") -> float:
             if not field:
                 raise ValueError(f"El campo '{label}' es obligatorio.")
-            qty_int = _parse_int_quantity(field.value, label)
-            field.value = normalize_input_value(qty_int, decimals=0, use_grouping=False) or "0"
+            qty_value = _parse_quantity(field.value, label)
+            decimals = 0 if float(qty_value).is_integer() else 2
+            field.value = normalize_input_value(qty_value, decimals=decimals, use_grouping=False) or "0"
             _safe_update_control(field)
-            return qty_int
+            return qty_value
 
         def _base_neto_lineas() -> Any:
             subtotal_neto_lineas = to_decimal("0")
             for row in lines_container.controls:
                 row_map = row.data or {}
                 try:
-                    cantidad_val = to_decimal(_parse_int_quantity(row_map["cant_field"].value, "Cantidad"))
+                    cantidad_val = to_decimal(_parse_quantity(row_map["cant_field"].value, "Cantidad"))
                     precio_val = to_decimal(_parse_float(row_map["price_field"].value, "Precio"))
                     d_pct = row_map.get("desc_pct_field").value
                     d_imp = row_map.get("desc_imp_field").value
@@ -9792,7 +9790,7 @@ def main(page: ft.Page) -> None:
             for row in lines_container.controls:
                 row_map = row.data or {}
                 try:
-                    c_cant = _parse_int_quantity(row_map["cant_field"].value, "Cantidad")
+                    c_cant = _parse_quantity(row_map["cant_field"].value, "Cantidad")
                     c_price = _parse_float(row_map["price_field"].value, "Precio")
                     c_iva = _parse_float(row_map["iva_field"].value, "IVA")
                     d_pct = _parse_float(row_map["desc_pct_field"].value, "Desc. %")
@@ -10353,7 +10351,7 @@ def main(page: ft.Page) -> None:
 
             def _update_bultos_field() -> None:
                 try:
-                    cantidad_value = _parse_int_quantity(cant_field.value, "Cantidad")
+                    cantidad_value = _parse_quantity(cant_field.value, "Cantidad")
                 except Exception:
                     cantidad_value = None
                 bultos_value = calculate_bultos(
@@ -10392,7 +10390,7 @@ def main(page: ft.Page) -> None:
             def _update_line_total(active_field: Optional[ft.TextField] = None, normalize_active: bool = False):
                 """Actualiza el total de la línea"""
                 try:
-                    c_cant = _parse_int_quantity(cant_field.value, "Cantidad")
+                    c_cant = _parse_quantity(cant_field.value, "Cantidad")
                     c_price = _parse_float(price_field.value, "Precio")
                     base_line = to_decimal(c_cant) * to_decimal(c_price)
                     d_pct, d_imp = normalize_discount_pair(
@@ -10475,7 +10473,7 @@ def main(page: ft.Page) -> None:
             def _check_stock_warning(*, force_refresh: bool = False):
                 if not art_drop.value: return
                 try:
-                    requested = _parse_int_quantity(cant_field.value, "Cantidad")
+                    requested = _parse_quantity(cant_field.value, "Cantidad")
                     current_art_id = int(art_drop.value)
                     cached_art_id = stock_cache.get("article_id")
                     cached_available = stock_cache.get("available")
@@ -10484,12 +10482,12 @@ def main(page: ft.Page) -> None:
                         and cached_available is not None
                         and cached_art_id == current_art_id
                     ):
-                        available = int(cached_available)
+                        available = float(cached_available)
                     else:
                         available = db.get_article_stock(current_art_id)
                         stock_cache["article_id"] = current_art_id
                         stock_cache["available"] = available
-                    stock_text.value = f"Stock: {available}"
+                    stock_text.value = f"Stock: {_format_quantity(available)}"
                     if requested > available:
                         stock_text.color = COLOR_ERROR
                         stock_text.weight = ft.FontWeight.BOLD
@@ -10577,7 +10575,7 @@ def main(page: ft.Page) -> None:
 
             def _line_discount_limit_message() -> Optional[str]:
                 try:
-                    c_cant = _parse_int_quantity(cant_field.value, "Cantidad")
+                    c_cant = _parse_quantity(cant_field.value, "Cantidad")
                     c_price = _parse_float(price_field.value, "Precio")
                 except Exception:
                     return None
@@ -10602,7 +10600,7 @@ def main(page: ft.Page) -> None:
                     return current_mode
 
                 try:
-                    c_cant = _parse_int_quantity(cant_field.value, "Cantidad")
+                    c_cant = _parse_quantity(cant_field.value, "Cantidad")
                     c_price = _parse_float(price_field.value, "Precio")
                 except Exception:
                     return current_mode
@@ -11093,7 +11091,7 @@ def main(page: ft.Page) -> None:
                 try:
                     fiscal_iva_ref = row_map.get("fiscal_iva_rate_ref") or {}
                     fiscal_iva_rate = float(to_decimal(fiscal_iva_ref.get("value", 0)))
-                    cantidad_val = _parse_int_quantity(row_map["cant_field"].value, "Cantidad")
+                    cantidad_val = _parse_quantity(row_map["cant_field"].value, "Cantidad")
                     precio_unitario_val = _parse_float(row_map["price_field"].value, "Precio Unitario")
                     descuento_pct_val = _parse_float(row_map["desc_pct_field"].value, "Desc. %")
                     descuento_imp_val = _parse_float(row_map["desc_imp_field"].value, "Desc. $")
