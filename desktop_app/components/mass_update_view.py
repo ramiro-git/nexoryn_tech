@@ -919,8 +919,7 @@ class MassUpdateView(ft.Container):
         def close_dlg(_e=None):
             if dlg is None:
                 return
-            dlg.open = False
-            self.page.update()
+            self.page.close(dlg)
 
         def do_apply(_e=None):
             close_dlg()
