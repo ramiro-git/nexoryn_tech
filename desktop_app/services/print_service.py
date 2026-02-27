@@ -20,7 +20,7 @@ from fpdf import FPDF
 
 from desktop_app.enums import DocumentoEstado, RemotoEstado
 from desktop_app.services.bultos import calculate_bultos
-from desktop_app.services.number_locale import format_currency, format_percent
+from desktop_app.services.number_locale import format_currency, format_decimal, format_percent, parse_locale_number
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,15 @@ def _format_money(value: Any) -> str:
     if number is None:
         return "-"
     return format_currency(number)
+
+
+def _format_quantity(value: Any, decimals: int = 2) -> str:
+    parsed = parse_locale_number(value)
+    if parsed is None:
+        return "0"
+    if parsed == parsed.to_integral_value():
+        return str(int(parsed))
+    return format_decimal(parsed, decimals=decimals)
 
 
 def _format_date(value: Any) -> str:
@@ -1285,9 +1294,7 @@ class InvoicePDF(BaseDocumentPDF):
         self._draw_presupuesto_table_header()
 
     def _format_qty(self, qty: float) -> str:
-        if qty == int(qty):
-            return str(int(qty))
-        return f"{qty:.2f}"
+        return _format_quantity(qty)
 
     def _presupuesto_footer_height(self) -> float:
         line_height = 6
@@ -1705,8 +1712,7 @@ class InvoicePDF(BaseDocumentPDF):
 
             self.cell(col_widths[0], row_height, f" {desc_text}", border="TB", fill=True, align="L")
 
-            # Format quantity as integer if it's a whole number
-            qty_str = str(int(qty)) if qty == int(qty) else f"{qty:.2f}"
+            qty_str = _format_quantity(qty)
             self.cell(col_widths[1], row_height, qty_str, border="TB", align="C", fill=True)
             if self.show_prices:
                 self.cell(col_widths[2], row_height, _format_money(unit), border="TB", align="R", fill=True)
@@ -1933,10 +1939,7 @@ class AfipInvoicePDF(BaseDocumentPDF):
         return _format_money(value) if self.show_prices else "---"
 
     def _format_qty(self, qty: Any) -> str:
-        value = _safe_float(qty, 0.0) or 0.0
-        if value == int(value):
-            return str(int(value))
-        return f"{value:.2f}"
+        return _format_quantity(qty)
 
     def _ensure_space(self, required_height: float) -> None:
         page_break_at = getattr(self, "page_break_trigger", self.h - self.b_margin)
@@ -2459,9 +2462,7 @@ class RemitoPDF(BaseDocumentPDF):
         self._draw_remito_table_header()
 
     def _format_qty(self, qty: float) -> str:
-        if qty == int(qty):
-            return str(int(qty))
-        return f"{qty:.2f}"
+        return _format_quantity(qty)
 
     def _remito_totals_note_height(self) -> float:
         line_height = 6
