@@ -3790,11 +3790,34 @@ class Database:
                 cur.execute(query, params)
                 return _rows_to_dicts(cur)
 
-    def fetch_localidades_by_provincia(self, id_provincia: int) -> List[Dict[str, Any]]:
-        query = "SELECT id, nombre, id_provincia FROM ref.localidad WHERE id_provincia = %s ORDER BY nombre"
+    def fetch_localidades_by_provincia(
+        self,
+        id_provincia: int,
+        *,
+        search: Optional[str] = None,
+        limit: int = 80,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        filters = ["l.id_provincia = %s"]
+        params: List[Any] = [int(id_provincia)]
+        if search:
+            search_value = str(search).strip()
+            if search_value:
+                filters.append("l.nombre ILIKE %s")
+                params.append(f"%{search_value}%")
+        where_clause = " AND ".join(filters)
+        query = f"""
+            SELECT l.id, l.nombre, l.id_provincia, p.nombre AS provincia
+            FROM ref.localidad l
+            JOIN ref.provincia p ON p.id = l.id_provincia
+            WHERE {where_clause}
+            ORDER BY l.nombre
+            LIMIT %s OFFSET %s
+        """
+        params.extend([int(limit), int(offset)])
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (id_provincia,))
+                cur.execute(query, params)
                 return _rows_to_dicts(cur)
 
     def count_localidades(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:

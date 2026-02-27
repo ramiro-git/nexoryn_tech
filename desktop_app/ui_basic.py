@@ -1912,24 +1912,64 @@ def main(page: ft.Page) -> None:
         items = [{"value": r["id"], "label": r["nombre"]} for r in rows]
         return items, len(rows) >= limit
 
+    localidad_meta_by_id: Dict[str, Dict[str, Any]] = {}
+
+    def _cache_localidad_meta(rows: Sequence[Dict[str, Any]]) -> None:
+        for row in rows:
+            raw_id = row.get("id")
+            if raw_id is None:
+                continue
+            raw_pid = row.get("id_provincia")
+            provincia_id: Optional[int] = None
+            if raw_pid is not None and str(raw_pid).strip():
+                try:
+                    provincia_id = int(raw_pid)
+                except Exception:
+                    provincia_id = None
+            localidad_meta_by_id[str(raw_id)] = {
+                "id_provincia": provincia_id,
+                "provincia": str(row.get("provincia") or "").strip(),
+            }
+
     def localidad_search_loader(query, offset, limit):
         if not db: return [], False
         rows = db.fetch_localidades(search=query, offset=offset, limit=limit)
+        _cache_localidad_meta(rows)
         items = [{"value": r["id"], "label": f"{r['nombre']} ({r['provincia']})"} for r in rows]
         return items, len(rows) >= limit
 
     def locality_loader(query, offset, limit):
         if not db: return [], False
-        pid = nueva_entidad_provincia.value
-        if not pid:
-            return [], False
-        rows = db.fetch_localidades_by_provincia(int(pid))
-        if query:
-            q = query.lower()
-            rows = [r for r in rows if q in (r.get("nombre") or "").lower()]
-        slice_rows = rows[offset:offset + limit]
-        items = [{"value": r["id"], "label": r["nombre"]} for r in slice_rows]
-        return items, offset + limit < len(rows)
+        pid = str(nueva_entidad_provincia.value or "").strip()
+        if pid:
+            rows = db.fetch_localidades_by_provincia(
+                int(pid),
+                search=query,
+                limit=limit,
+                offset=offset,
+            )
+            _cache_localidad_meta(rows)
+            items = [
+                {
+                    "value": r["id"],
+                    "label": r["nombre"],
+                    "selected_label": r["nombre"],
+                }
+                for r in rows
+            ]
+            return items, len(rows) >= limit
+
+        rows = db.fetch_localidades(search=query, offset=offset, limit=limit)
+        _cache_localidad_meta(rows)
+        items = [
+            {
+                "value": r["id"],
+                "label": f"{r['nombre']} ({r['provincia']})",
+                "selected_label": r["nombre"],
+            }
+            for r in rows
+        ]
+        return items, len(rows) >= limit
     status_icon_value = ft.icons.CHECK_CIRCLE_ROUNDED if db and not db_error else ft.icons.ERROR_OUTLINE_ROUNDED
     status_color = "#166534" if db and not db_error else "#991B1B"
     status_badge.content.controls.extend(
@@ -3007,9 +3047,9 @@ def main(page: ft.Page) -> None:
         value="",
         width=250,
     )
-    nueva_entidad_cuit = ft.TextField(label="CUIT *", width=250)
+    nueva_entidad_cuit = ft.TextField(label="CUIT", width=250)
     _style_input(nueva_entidad_cuit)
-    nueva_entidad_telefono = ft.TextField(label="Teléfono *", width=250)
+    nueva_entidad_telefono = ft.TextField(label="Teléfono", width=250)
     _style_input(nueva_entidad_telefono)
     nueva_entidad_email = ft.TextField(label="Email", width=510)
     _style_input(nueva_entidad_email)
@@ -3021,8 +3061,8 @@ def main(page: ft.Page) -> None:
     nueva_entidad_activo = ft.Switch(label="Activo", value=True)
     
     # New Fields for Entity
-    nueva_entidad_provincia = AsyncSelect(label="Provincia *", loader=province_loader, width=250, on_change=lambda _: _on_provincia_change(None))
-    nueva_entidad_localidad = AsyncSelect(label="Localidad *", loader=locality_loader, width=250, disabled=True)
+    nueva_entidad_provincia = AsyncSelect(label="Provincia", loader=province_loader, width=250, on_change=lambda _: _on_provincia_change(None))
+    nueva_entidad_localidad = AsyncSelect(label="Localidad", loader=locality_loader, width=250)
     nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA *", width=250, options=[])
     _style_input(nueva_entidad_condicion_iva)
     nueva_entidad_notas = ft.TextField(label="Notas", width=510, multiline=True, min_lines=2, max_lines=4)
@@ -3057,28 +3097,52 @@ def main(page: ft.Page) -> None:
 
     # Cascading logic for Province -> City
     def _on_provincia_change(e):
-        pid = nueva_entidad_provincia.value
-        # Reset locality
-        nueva_entidad_localidad.value = ""
+        # Provincia y localidad deben mantenerse consistentes.
+        nueva_entidad_localidad.value = None
         nueva_entidad_localidad.clear_cache()
-        if not pid:
-            nueva_entidad_localidad.disabled = True
-            nueva_entidad_localidad.set_busy(False)
+        nueva_entidad_localidad.disabled = False
+        try:
+            nueva_entidad_provincia.update()
+        except Exception:
+            pass
+        try:
             nueva_entidad_localidad.update()
+        except Exception:
+            pass
+
+    def _on_localidad_change(localidad_value: Any) -> None:
+        key = str(localidad_value or "").strip()
+        if not key:
             return
 
-        nueva_entidad_localidad.set_busy(True)
-        def _done():
-            nueva_entidad_localidad.set_busy(False)
-            nueva_entidad_localidad.disabled = False
-            try:
-                nueva_entidad_localidad.update()
-            except Exception:
-                pass
-        nueva_entidad_localidad.prefetch(on_done=_done)
-        nueva_entidad_localidad.update()
+        loc_meta = localidad_meta_by_id.get(key)
+        if not loc_meta:
+            return
+
+        provincia_id = loc_meta.get("id_provincia")
+        if provincia_id is None:
+            return
+
+        provincia_id_str = str(provincia_id)
+        if str(nueva_entidad_provincia.value or "").strip() == provincia_id_str:
+            return
+
+        provincia_nombre = str(loc_meta.get("provincia") or "").strip()
+        if provincia_nombre:
+            nueva_entidad_provincia.options = [ft.dropdown.Option(provincia_id_str, provincia_nombre)]
+
+        nueva_entidad_provincia.value = provincia_id_str
+        try:
+            nueva_entidad_provincia.update()
+        except Exception:
+            pass
+        try:
+            nueva_entidad_localidad.update()
+        except Exception:
+            pass
     
     nueva_entidad_provincia.on_change = _on_provincia_change
+    nueva_entidad_localidad.on_change = _on_localidad_change
 
     editing_entity_id: Optional[int] = None
 
@@ -3093,17 +3157,13 @@ def main(page: ft.Page) -> None:
         
         # Extended validation
         f_tipo = bool((nueva_entidad_tipo.value or "").strip())
-        f_cuit = bool((nueva_entidad_cuit.value or "").strip())
         f_iva = bool((nueva_entidad_condicion_iva.value or "").strip())
-        f_tel = bool((nueva_entidad_telefono.value or "").strip())
-        f_prov = bool(str(nueva_entidad_provincia.value or "").strip())
-        f_loc = bool(str(nueva_entidad_localidad.value or "").strip())
 
         if not (has_name or has_razon):
             show_toast("Completá Nombre y Apellido O Razón Social.", kind="warning")
             return
         
-        if not all([f_tipo, f_cuit, f_iva, f_tel, f_prov, f_loc]):
+        if not all([f_tipo, f_iva]):
             show_toast("Faltan campos obligatorios (*).", kind="warning")
             return
 
@@ -3161,11 +3221,11 @@ def main(page: ft.Page) -> None:
         nueva_entidad_provincia.value = None
         nueva_entidad_localidad.value = None
         nueva_entidad_localidad.options = []
-        nueva_entidad_localidad.disabled = True
         nueva_entidad_condicion_iva.value = ""
         nueva_entidad_notas.value = ""
 
         try:
+            localidad_meta_by_id.clear()
             nueva_entidad_localidad.clear_cache()
         except Exception:
             pass
@@ -3230,24 +3290,24 @@ def main(page: ft.Page) -> None:
             if pid:
                 nueva_entidad_provincia.options = [ft.dropdown.Option(str(pid), ent.get("provincia") or "")]
                 nueva_entidad_provincia.value = str(pid)
-                # Manually trigger locality reload
-                _on_provincia_change(None)
-                if lid:
-                    nueva_entidad_localidad.options = [ft.dropdown.Option(str(lid), ent.get("localidad") or "")]
-                    nueva_entidad_localidad.value = str(lid)
-                    nueva_entidad_localidad.disabled = False
             else:
                 nueva_entidad_provincia.value = None
                 nueva_entidad_provincia.options = []
+
+            if lid:
+                nueva_entidad_localidad.options = [ft.dropdown.Option(str(lid), ent.get("localidad") or "")]
+                nueva_entidad_localidad.value = str(lid)
+                localidad_meta_by_id[str(lid)] = {
+                    "id_provincia": int(pid) if pid is not None else None,
+                    "provincia": str(ent.get("provincia") or "").strip(),
+                }
+            else:
                 nueva_entidad_localidad.value = None
                 nueva_entidad_localidad.options = []
-                nueva_entidad_localidad.disabled = True
 
             try:
                 nueva_entidad_provincia.prefetch()
                 nueva_entidad_lista_precio.prefetch()
-                if pid:
-                    nueva_entidad_localidad.prefetch()
             except Exception:
                 pass
             
@@ -3272,17 +3332,13 @@ def main(page: ft.Page) -> None:
         
         # Extended validation
         f_tipo = bool((nueva_entidad_tipo.value or "").strip())
-        f_cuit = bool((nueva_entidad_cuit.value or "").strip())
         f_iva = bool((nueva_entidad_condicion_iva.value or "").strip())
-        f_tel = bool((nueva_entidad_telefono.value or "").strip())
-        f_prov = bool(str(nueva_entidad_provincia.value or "").strip())
-        f_loc = bool(str(nueva_entidad_localidad.value or "").strip())
 
         if not (has_name or has_razon):
             show_toast("Completá Nombre y Apellido O Razón Social.", kind="warning")
             return
         
-        if not all([f_tipo, f_cuit, f_iva, f_tel, f_prov, f_loc]):
+        if not all([f_tipo, f_iva]):
             show_toast("Faltan campos obligatorios (*).", kind="warning")
             return
 
