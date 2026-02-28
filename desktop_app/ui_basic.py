@@ -9648,6 +9648,65 @@ def main(page: ft.Page) -> None:
             field.value = normalized if normalized else normalize_input_value("0", decimals=decimals, use_grouping=use_grouping)
             _safe_update_control(field)
 
+        def _sanitize_comprobante_price_raw(raw_value: Any) -> str:
+            raw = str(raw_value or "").strip()
+            if not raw:
+                return ""
+
+            compact = (
+                raw.replace("\u00a0", "")
+                .replace(" ", "")
+                .replace("$", "")
+                .replace("AR$", "")
+                .replace("ARS", "")
+            )
+
+            # Corrige casos al editar valores prellenados, ej: "19,9,00" -> "19,9".
+            for suffix in (",00", ".00"):
+                if not compact.endswith(suffix):
+                    continue
+                prefix = compact[:-len(suffix)]
+                if not prefix:
+                    continue
+                decimal_like = False
+                for sep in (",", "."):
+                    sep_idx = prefix.rfind(sep)
+                    if sep_idx <= 0:
+                        continue
+                    int_digits = "".join(ch for ch in prefix[:sep_idx] if ch.isdigit())
+                    frac_digits = "".join(ch for ch in prefix[sep_idx + 1 :] if ch.isdigit())
+                    if int_digits and 1 <= len(frac_digits) <= 2:
+                        decimal_like = True
+                        break
+                if decimal_like:
+                    compact = prefix
+                    break
+
+            return compact
+
+        def _price_decimals_from_raw(raw_value: Any) -> int:
+            raw = str(raw_value or "").strip()
+            if not raw:
+                return 2
+            last_dot = raw.rfind(".")
+            last_comma = raw.rfind(",")
+            sep_idx = max(last_dot, last_comma)
+            if sep_idx < 0:
+                return 2
+            frac_digits = "".join(ch for ch in raw[sep_idx + 1 :] if ch.isdigit())
+            if len(frac_digits) == 1:
+                return 1
+            return 2
+
+        def _normalize_comprobante_price_field(field: Optional[ft.TextField]) -> None:
+            if not field:
+                return
+            sanitized_raw = _sanitize_comprobante_price_raw(field.value)
+            decimals = _price_decimals_from_raw(sanitized_raw)
+            normalized = normalize_input_value(sanitized_raw, decimals=decimals, use_grouping=True)
+            field.value = normalized if normalized else normalize_input_value("0", decimals=2, use_grouping=True)
+            _safe_update_control(field)
+
         def _normalize_field_numeric_preserve_blank_zero(
             field: Optional[ft.TextField],
             decimals: int = 2,
@@ -10565,6 +10624,11 @@ def main(page: ft.Page) -> None:
                 return False
             
             def _on_value_change(_):
+                raw_price_value = str(price_field.value or "")
+                sanitized_price_value = _sanitize_comprobante_price_raw(raw_price_value)
+                if sanitized_price_value != raw_price_value:
+                    price_field.value = sanitized_price_value
+                    _safe_update_control(price_field)
                 _update_line_total()
                 _recalc_total()
 
@@ -10665,7 +10729,7 @@ def main(page: ft.Page) -> None:
                 return True
 
             def _on_price_commit(_):
-                _normalize_field_numeric(price_field, decimals=2, use_grouping=True)
+                _normalize_comprobante_price_field(price_field)
                 _update_line_total()
                 _recalc_total()
                 return True
@@ -11057,7 +11121,7 @@ def main(page: ft.Page) -> None:
                 except ValueError as exc:
                     show_toast(str(exc), kind="error")
                     return False
-                _normalize_field_numeric(row_map.get("price_field"), decimals=2, use_grouping=True)
+                _normalize_comprobante_price_field(row_map.get("price_field"))
                 _normalize_field_numeric_preserve_blank_zero(row_map.get("iva_field"), decimals=2, use_grouping=True)
                 sync_fiscal = row_map.get("sync_fiscal_iva")
                 if callable(sync_fiscal):
