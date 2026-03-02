@@ -3844,6 +3844,109 @@ class Database:
                 conn.commit()
                 return res.get("id") if isinstance(res, dict) else res[0]
 
+    def resolve_or_create_localidad(
+        self,
+        *,
+        provincia: Optional[str] = None,
+        localidad: Optional[str] = None,
+    ) -> Optional[int]:
+        provincia_nombre = str(provincia or "").strip()
+        localidad_nombre = str(localidad or "").strip()
+        if not localidad_nombre:
+            return None
+
+        def _row_id(row: Any) -> Optional[int]:
+            if not row:
+                return None
+            if isinstance(row, dict):
+                val = row.get("id")
+            else:
+                val = row[0]
+            try:
+                return int(val) if val is not None else None
+            except Exception:
+                return None
+
+        with self._transaction() as cur:
+            if not provincia_nombre:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM ref.localidad
+                    WHERE lower(nombre) = lower(%s)
+                    ORDER BY id
+                    LIMIT 2
+                    """,
+                    (localidad_nombre,),
+                )
+                rows = cur.fetchall() or []
+                if not rows:
+                    raise ValueError("Para crear una localidad nueva, indicá también la provincia.")
+                if len(rows) > 1:
+                    raise ValueError("La localidad existe en más de una provincia. Indicá provincia.")
+                return _row_id(rows[0])
+
+            cur.execute(
+                "SELECT id FROM ref.provincia WHERE lower(nombre) = lower(%s) LIMIT 1",
+                (provincia_nombre,),
+            )
+            provincia_id = _row_id(cur.fetchone())
+            if provincia_id is None:
+                try:
+                    cur.execute(
+                        "INSERT INTO ref.provincia (nombre) VALUES (%s) RETURNING id",
+                        (provincia_nombre,),
+                    )
+                    provincia_id = _row_id(cur.fetchone())
+                except IntegrityError:
+                    cur.execute(
+                        "SELECT id FROM ref.provincia WHERE lower(nombre) = lower(%s) LIMIT 1",
+                        (provincia_nombre,),
+                    )
+                    provincia_id = _row_id(cur.fetchone())
+                    if provincia_id is None:
+                        raise
+
+            cur.execute(
+                """
+                SELECT id
+                FROM ref.localidad
+                WHERE id_provincia = %s
+                  AND lower(nombre) = lower(%s)
+                LIMIT 1
+                """,
+                (provincia_id, localidad_nombre),
+            )
+            localidad_id = _row_id(cur.fetchone())
+            if localidad_id is not None:
+                return localidad_id
+
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO ref.localidad (nombre, id_provincia)
+                    VALUES (%s, %s)
+                    RETURNING id
+                    """,
+                    (localidad_nombre, provincia_id),
+                )
+                localidad_id = _row_id(cur.fetchone())
+            except IntegrityError:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM ref.localidad
+                    WHERE id_provincia = %s
+                      AND lower(nombre) = lower(%s)
+                    LIMIT 1
+                    """,
+                    (provincia_id, localidad_nombre),
+                )
+                localidad_id = _row_id(cur.fetchone())
+                if localidad_id is None:
+                    raise
+            return localidad_id
+
     def update_localidad_fields(self, id: int, updates: Dict[str, Any]) -> None:
         allowed = {"nombre", "id_provincia"}
         filtered = {k: v for k, v in updates.items() if k in allowed}

@@ -1909,63 +1909,10 @@ def main(page: ft.Page) -> None:
         items = [{"value": r["id"], "label": r["nombre"]} for r in rows]
         return items, len(rows) >= limit
 
-    localidad_meta_by_id: Dict[str, Dict[str, Any]] = {}
-
-    def _cache_localidad_meta(rows: Sequence[Dict[str, Any]]) -> None:
-        for row in rows:
-            raw_id = row.get("id")
-            if raw_id is None:
-                continue
-            raw_pid = row.get("id_provincia")
-            provincia_id: Optional[int] = None
-            if raw_pid is not None and str(raw_pid).strip():
-                try:
-                    provincia_id = int(raw_pid)
-                except Exception:
-                    provincia_id = None
-            localidad_meta_by_id[str(raw_id)] = {
-                "id_provincia": provincia_id,
-                "provincia": str(row.get("provincia") or "").strip(),
-            }
-
     def localidad_search_loader(query, offset, limit):
         if not db: return [], False
         rows = db.fetch_localidades(search=query, offset=offset, limit=limit)
-        _cache_localidad_meta(rows)
         items = [{"value": r["id"], "label": f"{r['nombre']} ({r['provincia']})"} for r in rows]
-        return items, len(rows) >= limit
-
-    def locality_loader(query, offset, limit):
-        if not db: return [], False
-        pid = str(nueva_entidad_provincia.value or "").strip()
-        if pid:
-            rows = db.fetch_localidades_by_provincia(
-                int(pid),
-                search=query,
-                limit=limit,
-                offset=offset,
-            )
-            _cache_localidad_meta(rows)
-            items = [
-                {
-                    "value": r["id"],
-                    "label": r["nombre"],
-                    "selected_label": r["nombre"],
-                }
-                for r in rows
-            ]
-            return items, len(rows) >= limit
-
-        rows = db.fetch_localidades(search=query, offset=offset, limit=limit)
-        _cache_localidad_meta(rows)
-        items = [
-            {
-                "value": r["id"],
-                "label": f"{r['nombre']} ({r['provincia']})",
-                "selected_label": r["nombre"],
-            }
-            for r in rows
-        ]
         return items, len(rows) >= limit
     status_icon_value = ft.icons.CHECK_CIRCLE_ROUNDED if db and not db_error else ft.icons.ERROR_OUTLINE_ROUNDED
     status_color = "#166534" if db and not db_error else "#991B1B"
@@ -3058,8 +3005,10 @@ def main(page: ft.Page) -> None:
     nueva_entidad_activo = ft.Switch(label="Activo", value=True)
     
     # New Fields for Entity
-    nueva_entidad_provincia = AsyncSelect(label="Provincia", loader=province_loader, width=250, on_change=lambda _: _on_provincia_change(None))
-    nueva_entidad_localidad = AsyncSelect(label="Localidad", loader=locality_loader, width=250)
+    nueva_entidad_provincia = ft.TextField(label="Provincia", width=250)
+    _style_input(nueva_entidad_provincia)
+    nueva_entidad_localidad = ft.TextField(label="Localidad", width=250)
+    _style_input(nueva_entidad_localidad)
     nueva_entidad_condicion_iva = ft.Dropdown(label="Condición IVA *", width=250, options=[])
     _style_input(nueva_entidad_condicion_iva)
     nueva_entidad_notas = ft.TextField(label="Notas", width=510, multiline=True, min_lines=2, max_lines=4)
@@ -3085,61 +3034,11 @@ def main(page: ft.Page) -> None:
                 logger.debug(f"No se pudieron actualizar campos IVA (controles no agregados a la página): {e}")
 
             try:
-                nueva_entidad_provincia.prefetch()
                 nueva_entidad_lista_precio.prefetch()
             except Exception as e:
                 logger.warning(f"Falló al precargar dropdowns de entidad: {e}")
         except Exception as e:
             print(f"Error loading entity dropdowns: {e}")
-
-    # Cascading logic for Province -> City
-    def _on_provincia_change(e):
-        # Provincia y localidad deben mantenerse consistentes.
-        nueva_entidad_localidad.value = None
-        nueva_entidad_localidad.clear_cache()
-        nueva_entidad_localidad.disabled = False
-        try:
-            nueva_entidad_provincia.update()
-        except Exception:
-            pass
-        try:
-            nueva_entidad_localidad.update()
-        except Exception:
-            pass
-
-    def _on_localidad_change(localidad_value: Any) -> None:
-        key = str(localidad_value or "").strip()
-        if not key:
-            return
-
-        loc_meta = localidad_meta_by_id.get(key)
-        if not loc_meta:
-            return
-
-        provincia_id = loc_meta.get("id_provincia")
-        if provincia_id is None:
-            return
-
-        provincia_id_str = str(provincia_id)
-        if str(nueva_entidad_provincia.value or "").strip() == provincia_id_str:
-            return
-
-        provincia_nombre = str(loc_meta.get("provincia") or "").strip()
-        if provincia_nombre:
-            nueva_entidad_provincia.options = [ft.dropdown.Option(provincia_id_str, provincia_nombre)]
-
-        nueva_entidad_provincia.value = provincia_id_str
-        try:
-            nueva_entidad_provincia.update()
-        except Exception:
-            pass
-        try:
-            nueva_entidad_localidad.update()
-        except Exception:
-            pass
-    
-    nueva_entidad_provincia.on_change = _on_provincia_change
-    nueva_entidad_localidad.on_change = _on_localidad_change
 
     editing_entity_id: Optional[int] = None
 
@@ -3165,6 +3064,16 @@ def main(page: ft.Page) -> None:
             return
 
         try:
+            provincia_nombre = str(nueva_entidad_provincia.value or "").strip()
+            localidad_nombre = str(nueva_entidad_localidad.value or "").strip()
+            if provincia_nombre and not localidad_nombre:
+                show_toast("Si completás provincia, completá también localidad.", kind="warning")
+                return
+            id_localidad = db_conn.resolve_or_create_localidad(
+                provincia=provincia_nombre,
+                localidad=localidad_nombre,
+            )
+
             # Atomic creation
             eid = db_conn.create_entity_full(
                 nombre=nueva_entidad_nombre.value,
@@ -3176,7 +3085,7 @@ def main(page: ft.Page) -> None:
                 domicilio=nueva_entidad_domicilio.value,
                 tipo=nueva_entidad_tipo.value if nueva_entidad_tipo.value else None,
                 activo=bool(nueva_entidad_activo.value),
-                id_localidad=int(nueva_entidad_localidad.value) if nueva_entidad_localidad.value else None,
+                id_localidad=id_localidad,
                 id_condicion_iva=int(nueva_entidad_condicion_iva.value) if nueva_entidad_condicion_iva.value else None,
                 notas=nueva_entidad_notas.value,
                 # Pricing
@@ -3215,17 +3124,10 @@ def main(page: ft.Page) -> None:
         nueva_entidad_activo.value = True
         
         # Reset new fields
-        nueva_entidad_provincia.value = None
-        nueva_entidad_localidad.value = None
-        nueva_entidad_localidad.options = []
+        nueva_entidad_provincia.value = ""
+        nueva_entidad_localidad.value = ""
         nueva_entidad_condicion_iva.value = ""
         nueva_entidad_notas.value = ""
-
-        try:
-            localidad_meta_by_id.clear()
-            nueva_entidad_localidad.clear_cache()
-        except Exception:
-            pass
 
         _reload_entity_dropdowns()
         open_form("Nueva entidad", _prepare_entity_form_content(), [
@@ -3282,28 +3184,10 @@ def main(page: ft.Page) -> None:
             nueva_entidad_condicion_iva.value = str(ent["id_condicion_iva"]) if ent.get("id_condicion_iva") else ""
             
             # Handle Location
-            pid = ent.get("id_provincia")
-            lid = ent.get("id_localidad")
-            if pid:
-                nueva_entidad_provincia.options = [ft.dropdown.Option(str(pid), ent.get("provincia") or "")]
-                nueva_entidad_provincia.value = str(pid)
-            else:
-                nueva_entidad_provincia.value = None
-                nueva_entidad_provincia.options = []
-
-            if lid:
-                nueva_entidad_localidad.options = [ft.dropdown.Option(str(lid), ent.get("localidad") or "")]
-                nueva_entidad_localidad.value = str(lid)
-                localidad_meta_by_id[str(lid)] = {
-                    "id_provincia": int(pid) if pid is not None else None,
-                    "provincia": str(ent.get("provincia") or "").strip(),
-                }
-            else:
-                nueva_entidad_localidad.value = None
-                nueva_entidad_localidad.options = []
+            nueva_entidad_provincia.value = str(ent.get("provincia") or "").strip()
+            nueva_entidad_localidad.value = str(ent.get("localidad") or "").strip()
 
             try:
-                nueva_entidad_provincia.prefetch()
                 nueva_entidad_lista_precio.prefetch()
             except Exception:
                 pass
@@ -3340,6 +3224,16 @@ def main(page: ft.Page) -> None:
             return
 
         try:
+            provincia_nombre = str(nueva_entidad_provincia.value or "").strip()
+            localidad_nombre = str(nueva_entidad_localidad.value or "").strip()
+            if provincia_nombre and not localidad_nombre:
+                show_toast("Si completás provincia, completá también localidad.", kind="warning")
+                return
+            id_localidad = db_conn.resolve_or_create_localidad(
+                provincia=provincia_nombre,
+                localidad=localidad_nombre,
+            )
+
             updates = {
                 "nombre": nueva_entidad_nombre.value,
                 "apellido": nueva_entidad_apellido.value,
@@ -3350,7 +3244,7 @@ def main(page: ft.Page) -> None:
                 "domicilio": nueva_entidad_domicilio.value,
                 "tipo": nueva_entidad_tipo.value if nueva_entidad_tipo.value else None,
                 "activo": bool(nueva_entidad_activo.value),
-                "id_localidad": int(nueva_entidad_localidad.value) if nueva_entidad_localidad.value else None,
+                "id_localidad": id_localidad,
                 "id_condicion_iva": int(nueva_entidad_condicion_iva.value) if nueva_entidad_condicion_iva.value else None,
                 "notas": nueva_entidad_notas.value,
             }
@@ -3386,10 +3280,6 @@ def main(page: ft.Page) -> None:
         nueva_entidad_lista_precio.options = [ft.dropdown.Option("", "—")] + [
             ft.dropdown.Option(str(l["id"]), l["nombre"]) for l in lists
         ]
-        
-        # Load Provinces and Condicion IVA
-        provs = db.fetch_provincias()
-        nueva_entidad_provincia.options = [ft.dropdown.Option(str(p["id"]), p["nombre"]) for p in provs]
         
         conds = db.fetch_condiciones_iva()
         nueva_entidad_condicion_iva.options = [ft.dropdown.Option(str(c["id"]), c["nombre"]) for c in conds]
