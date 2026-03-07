@@ -86,6 +86,13 @@ def _to_id(val: Any) -> Optional[int]:
         return None
 
 
+def _normalize_optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
@@ -300,10 +307,20 @@ class Database:
                     
                     # 2. Add stock_resultante column to movimiento_articulo for stock history tracking
                     cur.execute("""
-                        ALTER TABLE app.movimiento_articulo 
+                        ALTER TABLE app.movimiento_articulo
                         ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
                     """)
-                    
+
+                    cur.execute("""
+                        ALTER TABLE app.documento
+                        ADD COLUMN IF NOT EXISTS controlado_por TEXT;
+                    """)
+                    cur.execute("""
+                        UPDATE app.documento
+                        SET controlado_por = NULLIF(BTRIM(controlado_por), '')
+                        WHERE controlado_por IS DISTINCT FROM NULLIF(BTRIM(controlado_por), '');
+                    """)
+
                     # 3. Ensure per-line discount amount exists for legacy DBs
                     cur.execute("""
                         ALTER TABLE app.documento_detalle
@@ -5063,7 +5080,19 @@ class Database:
             with conn.cursor() as cur:
                 cur.execute(query, (int(doc_id),))
                 rows = _rows_to_dicts(cur)
-                return rows[0] if rows else None
+                if not rows:
+                    return None
+                row = rows[0]
+                if "controlado_por" not in row:
+                    cur.execute("SELECT controlado_por FROM app.documento WHERE id = %s", (int(doc_id),))
+                    extra = cur.fetchone()
+                    if isinstance(extra, dict):
+                        row["controlado_por"] = extra.get("controlado_por")
+                    elif extra:
+                        row["controlado_por"] = extra[0]
+                    else:
+                        row["controlado_por"] = None
+                return row
 
     def count_documentos_resumen(self, search: Optional[str] = None, simple: Optional[str] = None, advanced: Optional[Dict[str, Any]] = None) -> int:
         filters = ["1=1"]
@@ -5717,6 +5746,7 @@ class Database:
                         fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
                         id_lista_precio: Optional[int] = None,
                         direccion_entrega: Optional[str] = None,
+                        controlado_por: Optional[str] = None,
                         sena: float = 0,
                         manual_values: Optional[Dict[str, float]] = None) -> int:
         """
@@ -5729,8 +5759,9 @@ class Database:
             INSERT INTO app.documento (
                 id_tipo_documento, id_entidad_comercial, id_deposito, 
                 observacion, numero_serie, descuento_porcentaje, descuento_importe, id_usuario,
-                neto, subtotal, iva_total, total, sena, fecha, fecha_vencimiento, id_lista_precio, direccion_entrega
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                neto, subtotal, iva_total, total, sena, fecha, fecha_vencimiento, id_lista_precio, direccion_entrega,
+                controlado_por
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """
 
@@ -5775,6 +5806,7 @@ class Database:
         fecha_vencimiento_value = fecha_vencimiento
         if isinstance(fecha_vencimiento_value, str):
             fecha_vencimiento_value = fecha_vencimiento_value.strip() or None
+        controlado_por_value = _normalize_optional_text(controlado_por)
 
         # Override totals if manual values provided (User Manual Edit)
         if manual_values:
@@ -5799,7 +5831,7 @@ class Database:
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_para_insertar, desc_pct_normalized, desc_imp_normalized, self.current_user_id,
                 neto_total, subtotal, iva_total, total, sena,
-                final_fecha, fecha_vencimiento_value, id_lista_precio, direccion_entrega
+                final_fecha, fecha_vencimiento_value, id_lista_precio, direccion_entrega, controlado_por_value
             ))
             res = cur.fetchone()
             doc_id = res[0] if isinstance(res, (list, tuple)) else res["id"]
@@ -6484,7 +6516,7 @@ class Database:
                            d.fecha::text, d.fecha_vencimiento::text, d.id_lista_precio,
                            d.neto, d.subtotal, d.iva_total, d.total, d.sena, d.estado, d.cae,
                            d.cae_vencimiento, d.cuit_emisor, d.qr_data, d.punto_venta, d.tipo_comprobante_afip,
-                           d.direccion_entrega, td.nombre, td.letra
+                           d.direccion_entrega, td.nombre, td.letra, d.controlado_por
                     FROM app.documento d
                     JOIN ref.tipo_documento td ON td.id = d.id_tipo_documento
                     WHERE d.id = %s
@@ -6502,7 +6534,7 @@ class Database:
                     "estado": head[16], "cae": head[17], "cae_vencimiento": head[18],
                     "cuit_emisor": head[19], "qr_data": head[20], "punto_venta": head[21],
                     "tipo_comprobante_afip": head[22], "direccion_entrega": head[23],
-                    "tipo_documento": head[24], "letra": head[25],
+                    "tipo_documento": head[24], "letra": head[25], "controlado_por": head[26],
                 }
                 
                 cur.execute("""
@@ -6536,6 +6568,7 @@ class Database:
                         fecha: Optional[str] = None, fecha_vencimiento: Optional[str] = None,
                         id_lista_precio: Optional[int] = None,
                         direccion_entrega: Optional[str] = None,
+                        controlado_por: Optional[str] = None,
                         sena: float = 0,
                         manual_values: Optional[Dict[str, float]] = None) -> bool:
         self._validate_document_item_quantities(items)
@@ -6567,6 +6600,7 @@ class Database:
         fecha_vencimiento_value = fecha_vencimiento
         if isinstance(fecha_vencimiento_value, str):
             fecha_vencimiento_value = fecha_vencimiento_value.strip() or None
+        controlado_por_value = _normalize_optional_text(controlado_por)
 
         with self._transaction() as cur:
             cur.execute("""
@@ -6575,14 +6609,14 @@ class Database:
                     observacion=%s, numero_serie=%s, descuento_porcentaje=%s, descuento_importe=%s,
                     neto=%s, subtotal=%s, iva_total=%s, total=%s, sena=%s,
                     fecha=%s, fecha_vencimiento=%s, id_lista_precio=%s,
-                    direccion_entrega=%s, id_usuario=%s
+                    direccion_entrega=%s, controlado_por=%s, id_usuario=%s
                 WHERE id=%s
             """, (
                 id_tipo_documento, id_entidad_comercial, id_deposito,
                 observacion, numero_serie, desc_pct_normalized, desc_imp_normalized,
                 neto_total, subtotal, iva_total, total, sena,
                 final_fecha, fecha_vencimiento_value, id_lista_precio,
-                direccion_entrega, self.current_user_id,
+                direccion_entrega, controlado_por_value, self.current_user_id,
                 doc_id
             ))
             

@@ -5859,7 +5859,7 @@ def main(page: ft.Page) -> None:
                             logger.warning(f"No se pudieron cargar datos del comprobante para remito: {exc}")
 
                     if doc_summary:
-                        for key in ("neto", "total", "descuento_porcentaje", "descuento_importe"):
+                        for key in ("neto", "total", "descuento_porcentaje", "descuento_importe", "controlado_por"):
                             value = doc_summary.get(key)
                             if value is not None:
                                 doc_for_print[key] = value
@@ -8828,6 +8828,7 @@ def main(page: ft.Page) -> None:
         
         field_obs = ft.TextField(label="Observaciones (Internas)", multiline=True, expand=True, height=80); _style_input(field_obs); _maybe_set(field_obs, "shift_enter", True)
         field_direccion = ft.TextField(label="Dirección de Entrega", expand=True); _style_input(field_direccion)
+        field_controlado_por = ft.TextField(label="Controlado por", width=260, hint_text="Opcional"); _style_input(field_controlado_por)
         field_numero = ft.TextField(
             label="Número/Serie",
             width=200,
@@ -8844,6 +8845,7 @@ def main(page: ft.Page) -> None:
             field_vto,
             field_obs,
             field_direccion,
+            field_controlado_por,
             field_numero,
             field_descuento_global_pct,
             field_descuento_global_imp,
@@ -8919,6 +8921,7 @@ def main(page: ft.Page) -> None:
             global_discount_last_edited["value"] = global_discount_mode["value"]
             field_vto.value = doc_data.get("fecha_vencimiento") or ""
             field_direccion.value = doc_data.get("direccion_entrega", "") or ""
+            field_controlado_por.value = doc_data.get("controlado_por", "") or ""
             
             # En edición preservamos la lista histórica del documento;
             # en copia se prioriza la lista configurada en el cliente.
@@ -9256,6 +9259,7 @@ def main(page: ft.Page) -> None:
                 field_fecha,
                 field_vto,
                 dropdown_tipo,
+                field_controlado_por,
                 dropdown_entidad,
                 dropdown_lista_global,
                 dropdown_deposito,
@@ -9912,6 +9916,7 @@ def main(page: ft.Page) -> None:
         # Keyboard flow for header fields
         field_fecha.on_submit = _chain_handler_and_focus(field_fecha.on_submit, field_fecha)
         field_vto.on_submit = _chain_handler_and_focus(field_vto.on_submit, field_vto)
+        field_controlado_por.on_submit = _chain_handler_and_focus(field_controlado_por.on_submit, field_controlado_por)
         field_obs.on_submit = _chain_handler_and_focus(field_obs.on_submit, field_obs)
         field_direccion.on_submit = _chain_handler_and_focus(field_direccion.on_submit, field_direccion)
 
@@ -10905,6 +10910,7 @@ def main(page: ft.Page) -> None:
                 field_fecha,
                 field_vto,
                 dropdown_tipo,
+                field_controlado_por,
                 dropdown_entidad,
                 dropdown_lista_global,
                 dropdown_deposito,
@@ -10933,6 +10939,7 @@ def main(page: ft.Page) -> None:
                 field_fecha,
                 field_vto,
                 dropdown_tipo,
+                field_controlado_por,
                 dropdown_entidad,
                 dropdown_lista_global,
                 dropdown_deposito,
@@ -10969,7 +10976,11 @@ def main(page: ft.Page) -> None:
             doc_number = str(doc_row.get("numero_serie") or "").strip()
             if doc_number:
                 field_numero.value = doc_number
-                _safe_update_control(field_numero)
+            controls_to_update = [field_numero]
+            if current_doc_id:
+                field_controlado_por.value = str(doc_row.get("controlado_por") or "").strip()
+                controls_to_update.append(field_controlado_por)
+            _safe_update_multiple(*controls_to_update)
 
             is_non_draft = bool(doc_row and doc_row.get("estado") != DocumentoEstado.BORRADOR.value)
             if is_non_draft and not is_read_only_ref["value"]:
@@ -11129,6 +11140,7 @@ def main(page: ft.Page) -> None:
             numero_serie_value = numero_val if numero_val else None
             direccion_entrega_value = str(field_direccion.value or "").strip() or None
             fecha_vencimiento_value = str(field_vto.value or "").strip() or None
+            controlado_por_value = str(field_controlado_por.value or "").strip() or None
 
             current_doc_id = active_doc_id_ref["value"]
             doc_id = None
@@ -11150,6 +11162,7 @@ def main(page: ft.Page) -> None:
                         fecha=field_fecha.value, 
                         fecha_vencimiento=fecha_vencimiento_value,
                         direccion_entrega=direccion_entrega_value,
+                        controlado_por=controlado_por_value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
                         manual_values={
@@ -11173,6 +11186,7 @@ def main(page: ft.Page) -> None:
                         fecha=field_fecha.value, 
                         fecha_vencimiento=fecha_vencimiento_value,
                         direccion_entrega=direccion_entrega_value,
+                        controlado_por=controlado_por_value,
                         id_lista_precio=doc_lista_precio,
                         sena=_parse_float(field_sena.value, "Seña"),
                         manual_values={
@@ -11464,7 +11478,7 @@ def main(page: ft.Page) -> None:
                         ft.Text("Nuevo Comprobante", size=20, weight=ft.FontWeight.BOLD),
                         ft.IconButton(ft.icons.CLOSE, on_click=_close_comprobante_form)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Row([field_fecha, field_vto, dropdown_tipo], spacing=10),
+                    ft.Row([field_fecha, field_vto, dropdown_tipo, field_controlado_por], spacing=10),
                     ft.Row([dropdown_entidad, field_saldo], spacing=10),
                     ft.Row([dropdown_lista_global], spacing=10),
                     ft.Row([dropdown_deposito, field_numero, field_sena], spacing=10),

@@ -374,6 +374,30 @@ def _draw_customer_compact_rows(
     )
 
 
+def _draw_controlado_por_row(
+    pdf: FPDF,
+    *,
+    left_x: float,
+    content_width: float,
+    c_margin: float,
+    controlado_por: Any,
+) -> bool:
+    controlado_text = str(controlado_por or "").strip()
+    if not controlado_text:
+        return False
+    value = f"Controlado por: {controlado_text}"
+    _draw_adaptive_columns_row(
+        pdf,
+        left_x=left_x,
+        widths=[content_width],
+        values=[value],
+        aligns=["R"],
+        c_margin=c_margin,
+        line_height=5.0,
+    )
+    return True
+
+
 def _draw_horizontal_double_line(pdf: FPDF, y: float, gap: float = 0.2) -> float:
     default_line_width = getattr(pdf, "line_width", 0.2)
     second_y = y + max(0.1, gap)
@@ -955,6 +979,13 @@ def _print_pdf_windows_default(path: str, *, copies: int = 1) -> bool:
 class BaseDocumentPDF(FPDF):
     """Base class for all document PDFs with common header/footer and company data."""
 
+    NON_FISCAL_NOTICE_TOP_Y = 2.5
+    NON_FISCAL_NOTICE_X_HEIGHT = 3.4
+    NON_FISCAL_NOTICE_LABEL_HEIGHT = 3.6
+    NON_FISCAL_NOTICE_TO_HEADER_GAP = 2.0
+    HEADER_TO_CONTROLADO_SPACER = 6.0
+    HEADER_TO_CUSTOMER_SPACER = 3.0
+
     def __init__(
         self,
         doc_data: Dict[str, Any],
@@ -1006,6 +1037,32 @@ class BaseDocumentPDF(FPDF):
 
         text = str(raw_value or "").strip()
         return text or "-"
+
+    def _draw_non_fiscal_notice(self) -> None:
+        content_width = self.w - self.l_margin - self.r_margin
+
+        self.set_xy(self.l_margin, self.NON_FISCAL_NOTICE_TOP_Y)
+        self.set_font("helvetica", "B", 10)
+        self.cell(content_width, self.NON_FISCAL_NOTICE_X_HEIGHT, "X", border=0, ln=1, align="C")
+
+        self.set_x(self.l_margin)
+        self.set_font("helvetica", "B", 9)
+        self.cell(
+            content_width,
+            self.NON_FISCAL_NOTICE_LABEL_HEIGHT,
+            "DOCUMENTO NO VÁLIDO COMO FACTURA",
+            border=0,
+            ln=1,
+            align="C",
+        )
+
+    def _non_fiscal_header_start_y(self) -> float:
+        return (
+            self.NON_FISCAL_NOTICE_TOP_Y
+            + self.NON_FISCAL_NOTICE_X_HEIGHT
+            + self.NON_FISCAL_NOTICE_LABEL_HEIGHT
+            + self.NON_FISCAL_NOTICE_TO_HEADER_GAP
+        )
 
     def header(self) -> None:
         """Draw document header with company info and document type."""
@@ -1222,23 +1279,25 @@ class InvoicePDF(BaseDocumentPDF):
 
         self.set_draw_color(*COLOR_TEXT)
         self.set_text_color(*COLOR_TEXT)
-        self.set_y(10)
+        self._draw_non_fiscal_notice()
+        self.set_y(self._non_fiscal_header_start_y())
         self.set_x(left_x)
 
         self.set_font("helvetica", "B", 12)
         self.cell(content_width * 0.62, 6, f"PRESUPUESTO N°: {number}", border=0, align="L")
         self.set_font("helvetica", "B", 10)
         self.cell(content_width * 0.38, 6, f"FECHA: {_format_date(date)}", border=0, align="R")
-        self.ln(5)
+        self.ln(self.HEADER_TO_CONTROLADO_SPACER)
 
-        self.set_x(left_x)
-        self.set_font("helvetica", "B", 10)
-        self.cell(0, 5, "X", border=0, ln=1, align="C")
-
-        self.set_x(left_x)
-        self.set_font("helvetica", "B", 9)
-        self.cell(0, 5, "DOCUMENTO NO VÁLIDO COMO FACTURA", border=0, ln=1, align="C")
-        self.ln(1)
+        self.set_font("helvetica", "", 9)
+        drew_controlado = _draw_controlado_por_row(
+            self,
+            left_x=left_x,
+            content_width=content_width,
+            c_margin=c_margin,
+            controlado_por=self.doc.get("controlado_por"),
+        )
+        self.ln(self.HEADER_TO_CUSTOMER_SPACER + (1.5 if drew_controlado else 0.0))
 
         self.set_font("helvetica", "", 9)
         _draw_customer_compact_rows(
@@ -2390,23 +2449,25 @@ class RemitoPDF(BaseDocumentPDF):
 
         self.set_draw_color(*COLOR_TEXT)
         self.set_text_color(*COLOR_TEXT)
-        self.set_y(10)
+        self._draw_non_fiscal_notice()
+        self.set_y(self._non_fiscal_header_start_y())
         self.set_x(left_x)
 
         self.set_font("helvetica", "B", 12)
         self.cell(content_width * 0.62, 6, f"REMITO N°: {number}", border=0, align="L")
         self.set_font("helvetica", "B", 10)
         self.cell(content_width * 0.38, 6, f"FECHA: {_format_date(date)}", border=0, align="R")
-        self.ln(5)
+        self.ln(self.HEADER_TO_CONTROLADO_SPACER)
 
-        self.set_x(left_x)
-        self.set_font("helvetica", "B", 10)
-        self.cell(0, 5, "X", border=0, ln=1, align="C")
-
-        self.set_x(left_x)
-        self.set_font("helvetica", "B", 9)
-        self.cell(0, 5, "DOCUMENTO NO VÁLIDO COMO FACTURA", border=0, ln=1, align="C")
-        self.ln(1)
+        self.set_font("helvetica", "", 9)
+        drew_controlado = _draw_controlado_por_row(
+            self,
+            left_x=left_x,
+            content_width=content_width,
+            c_margin=c_margin,
+            controlado_por=self.remito.get("controlado_por"),
+        )
+        self.ln(self.HEADER_TO_CUSTOMER_SPACER + (1.5 if drew_controlado else 0.0))
 
         self.set_font("helvetica", "", 9)
         _draw_customer_compact_rows(

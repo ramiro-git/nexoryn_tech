@@ -1,6 +1,6 @@
 -- ============================================================================
 -- NEXORYN TECH - Database Schema (PostgreSQL)
--- Version: 2.6 - Logs desacoplados a TXT diario
+-- Version: 2.7 - Controlado por en comprobantes
 -- ============================================================================
 
 -- Acquire advisory lock to prevent concurrent schema updates from multiple instances
@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS app.documento (
   descuento_porcentaje    NUMERIC(6,2) NOT NULL DEFAULT 0,
   descuento_importe       NUMERIC(14,4) NOT NULL DEFAULT 0,
   observacion             TEXT,
+  controlado_por          TEXT,
   direccion_entrega       TEXT,
   fecha_vencimiento       DATE,
   id_deposito             BIGINT REFERENCES ref.deposito(id) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -341,9 +342,14 @@ CREATE TABLE IF NOT EXISTS app.remito_detalle (
 
 -- Schema updates for existing tables (ensure columns exist before views)
 ALTER TABLE app.movimiento_articulo ADD COLUMN IF NOT EXISTS stock_resultante NUMERIC(14,4);
+ALTER TABLE app.documento ADD COLUMN IF NOT EXISTS controlado_por TEXT;
 ALTER TABLE app.documento_detalle ADD COLUMN IF NOT EXISTS descuento_importe NUMERIC(14,4) NOT NULL DEFAULT 0;
 ALTER TABLE app.documento_detalle ADD COLUMN IF NOT EXISTS unidades_por_bulto_historico INTEGER;
 ALTER TABLE app.articulo ADD COLUMN IF NOT EXISTS unidades_por_bulto INTEGER;
+
+UPDATE app.documento
+SET controlado_por = NULLIF(BTRIM(controlado_por), '')
+WHERE controlado_por IS DISTINCT FROM NULLIF(BTRIM(controlado_por), '');
 
 -- Normalize legacy invalid values before enforcing constraint
 UPDATE app.documento_detalle
@@ -531,6 +537,7 @@ SELECT
   doc.cae,
   doc.cae_vencimiento,
   doc.observacion,
+  doc.controlado_por,
   ec.id AS id_entidad,
   COALESCE(ec.razon_social, TRIM(COALESCE(ec.apellido, '') || ' ' || COALESCE(ec.nombre, ''))) AS entidad,
   ec.cuit AS cuit_receptor,
@@ -1591,9 +1598,9 @@ WHERE clave IN ('log_retencion_dias', 'log_directorio_archivo');
 -- VERSION STAMP
 -- ============================================================================
 INSERT INTO seguridad.config_sistema (clave, valor, tipo, descripcion)
-VALUES ('db_version', '2.6', 'TEXT', 'Versión actual de la base de datos')
+VALUES ('db_version', '2.7', 'TEXT', 'Versión actual de la base de datos')
 ON CONFLICT (clave) DO UPDATE 
-SET valor = '2.6';
+SET valor = '2.7';
 
 -- Release advisory lock
 SELECT pg_advisory_unlock(543210);
